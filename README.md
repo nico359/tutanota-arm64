@@ -36,3 +36,4 @@ See [BUILDING.md](doc/BUILDING.md).
 See [HACKING.md](doc/HACKING.md).
 
 # tutanota-arm64
+See arm64-support branch
