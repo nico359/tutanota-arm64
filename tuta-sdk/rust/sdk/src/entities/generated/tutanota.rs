@@ -389,6 +389,8 @@ pub struct Mail {
 	pub processNeeded: bool,
 	#[serde(rename = "1784")]
 	pub sendAt: Option<DateTime>,
+	#[serde(rename = "1814")]
+	pub serverClassificationData: Option<String>,
 	#[serde(rename = "111")]
 	pub sender: MailAddress,
 	#[serde(rename = "115")]
@@ -1294,6 +1296,8 @@ pub struct SendDraftData {
 	pub sessionEncEncryptionAuthStatus: Option<Vec<u8>>,
 	#[serde(rename = "1809")]
 	pub sendAt: Option<DateTime>,
+	#[serde(rename = "1822")]
+	pub allowUndo: bool,
 	#[serde(rename = "553")]
 	pub internalRecipientKeyData: Vec<InternalRecipientKeyData>,
 	#[serde(rename = "554")]
@@ -1330,6 +1334,8 @@ pub struct SendDraftReturn {
 	pub notifications: Vec<NotificationMail>,
 	#[serde(rename = "562")]
 	pub sentMail: IdTupleGenerated,
+	#[serde(rename = "1823")]
+	pub sendJob: Option<IdTupleGenerated>,
 }
 
 impl Entity for SendDraftReturn {
@@ -1843,6 +1849,10 @@ pub struct CalendarEvent {
 	pub recurrenceId: Option<DateTime>,
 	#[serde(rename = "1401")]
 	pub _ownerKeyVersion: Option<i64>,
+	#[serde(rename = "1812")]
+	pub sender: Option<String>,
+	#[serde(rename = "1813")]
+	pub pendingInvitation: Option<bool>,
 	#[serde(rename = "945")]
 	pub repeatRule: Option<CalendarRepeatRule>,
 	#[serde(rename = "946")]
@@ -2029,14 +2039,14 @@ impl Entity for UserSettingsGroupRoot {
 
 #[derive(uniffi::Record, Clone, Serialize, Deserialize)]
 #[cfg_attr(any(test, feature = "testing"), derive(PartialEq, Debug))]
-pub struct CalendarDeleteData {
+pub struct CalendarDeleteIn {
 	#[serde(rename = "983")]
 	pub _format: i64,
 	#[serde(rename = "984")]
 	pub groupRootId: GeneratedId,
 }
 
-impl Entity for CalendarDeleteData {
+impl Entity for CalendarDeleteIn {
 	fn type_ref() -> TypeRef {
 		TypeRef {
 			app: AppName::Tutanota,
@@ -4071,7 +4081,10 @@ pub struct ClientSpamTrainingDatum {
 	pub spamDecision: i64,
 	#[serde(rename = "1746")]
 	#[serde(with = "serde_bytes")]
-	pub vector: Vec<u8>,
+	pub vectorLegacy: Vec<u8>,
+	#[serde(rename = "1817")]
+	#[serde(with = "serde_bytes")]
+	pub vectorWithServerClassifiers: Option<Vec<u8>>,
 
 	#[serde(default)]
 	pub _errors: Errors,
@@ -4124,7 +4137,10 @@ pub struct ProcessInboxDatum {
 	pub classifierType: Option<i64>,
 	#[serde(rename = "1763")]
 	#[serde(with = "serde_bytes")]
-	pub encVector: Vec<u8>,
+	pub encVectorLegacy: Vec<u8>,
+	#[serde(rename = "1815")]
+	#[serde(with = "serde_bytes")]
+	pub encVectorWithServerClassifiers: Option<Vec<u8>>,
 	#[serde(rename = "1760")]
 	pub mailId: IdTupleGenerated,
 	#[serde(rename = "1761")]
@@ -4178,7 +4194,10 @@ pub struct PopulateClientSpamTrainingDatum {
 	pub confidence: i64,
 	#[serde(rename = "1777")]
 	#[serde(with = "serde_bytes")]
-	pub encVector: Vec<u8>,
+	pub encVectorLegacy: Vec<u8>,
+	#[serde(rename = "1816")]
+	#[serde(with = "serde_bytes")]
+	pub encVectorWithServerClassifiers: Option<Vec<u8>>,
 	#[serde(rename = "1774")]
 	pub mailId: IdTupleGenerated,
 }
@@ -4219,6 +4238,8 @@ pub struct SendDraftDeleteIn {
 	pub _format: i64,
 	#[serde(rename = "1787")]
 	pub mail: IdTupleGenerated,
+	#[serde(rename = "1824")]
+	pub sendJob: Option<IdTupleGenerated>,
 }
 
 impl Entity for SendDraftDeleteIn {

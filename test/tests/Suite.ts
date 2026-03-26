@@ -1,5 +1,6 @@
 import o from "@tutao/otest"
 
+import "./misc/WebsocketConnectivityModelTest"
 import "./api/common/error/RestErrorTest.js"
 import "./api/common/error/TutanotaErrorTest.js"
 import "./api/common/mail/CommonMailUtilsTest.js"
@@ -95,6 +96,8 @@ import "./calendar/CalendarGuiUtilsTest.js"
 import "./calendar/CalendarImporterTest.js"
 import "./calendar/CalendarInvitesTest.js"
 import "./calendar/CalendarModelTest.js"
+import "./calendar/CalendarEventUpdateCoordinatorTest.js"
+import "./calendar/gui/ImportExportUtilsTest.js"
 import "./calendar/CalendarParserTest.js"
 import "./calendar/CalendarUtilsTest.js"
 import "./calendar/CalendarViewModelTest.js"
@@ -111,6 +114,7 @@ import "./contacts/ContactUtilsTest.js"
 import "./contacts/VCardExporterTest.js"
 import "./contacts/VCardImporterTest.js"
 import "./drive/DriveViewModelTest.js"
+import "./drive/DriveMimeUtilsTest.js"
 import "./file/FileControllerTest.js"
 import "./gui/ColorTest.js"
 import "./gui/GuiUtilsTest.js"
@@ -190,6 +194,9 @@ import "./mail/SpamClassificationHandlerTest.js"
 import "./misc/quickactions/QuickActionsModelTest.js"
 import "./calendar/CalendarTimeGridTest"
 import "./calendar/AllDaySectionTest"
+import "./mail/view/LabelsPopupViewModelTest.js"
+import "./settings/NotificationSettingsViewerModelTest.js"
+import "./drive/DriveTransferControllerTest.js"
 
 import * as td from "testdouble"
 import { random } from "@tutao/tutanota-crypto"
@@ -222,6 +229,7 @@ async function setupSuite({ integration }: { integration?: boolean }) {
 		// setup the Entropy for all testcases
 		await random.addEntropy([{ data: 36, entropy: 256, source: "key" }])
 		await import("./api/worker/utils/spamClassification/SparseVectorCompressorTest.js")
+		await import("./api/worker/utils/spamClassification/SpamMailProcessorTest.js")
 		await import("./api/worker/utils/spamClassification/SpamClassifierTest.js")
 		await import("./api/worker/offline/OfflineStorageMigratorTest.js")
 		await import("./api/worker/offline/OfflineStorageTest.js")

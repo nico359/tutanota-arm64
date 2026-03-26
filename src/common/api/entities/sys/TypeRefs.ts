@@ -400,6 +400,7 @@ export type AccountingInfo = {
 	paypalBillingAgreement: null | string;
 	_modified: Date;
 	_ownerKeyVersion: null | NumberString;
+	lastUsedOffer: null | string;
 
 	invoiceInfo: null | Id;
 	appStoreSubscription: null | IdTuple;
@@ -436,6 +437,8 @@ export type CustomerInfo = {
 	perUserStorageCapacity: NumberString;
 	perUserAliasCount: NumberString;
 	plan: NumberString;
+	promotionId: null | string;
+	confirmedHuman: boolean;
 
 	customer: Id;
 	accountingInfo: Id;
@@ -447,6 +450,8 @@ export type CustomerInfo = {
 	referredBy: null | Id;
 	customPlan: null | PlanConfiguration;
 	supportInfo: null | Id;
+	managedByPartner: null | Id;
+	partnerManagedCustomers: null | Id;
 }
 export const SentGroupInvitationTypeRef: TypeRef<SentGroupInvitation> = new TypeRef("sys", 195)
 
@@ -2233,6 +2238,8 @@ export type RegistrationCaptchaServiceGetData = {
 	timelockChallengeSolution: null | string;
 	language: string;
 	isAutomatedBrowser: boolean;
+
+	adAttribution: null | AdAttribution;
 }
 export const WebsocketEntityDataTypeRef: TypeRef<WebsocketEntityData> = new TypeRef("sys", 1483)
 
@@ -3268,6 +3275,7 @@ export type PlanConfiguration = {
 	contactList: boolean;
 	maxLabels: NumberString;
 	scheduledMails: boolean;
+	drive: boolean;
 }
 export const PlanServiceGetOutTypeRef: TypeRef<PlanServiceGetOut> = new TypeRef("sys", 2115)
 
@@ -4138,4 +4146,56 @@ export type AbuseInfo = {
 	_id: Id;
 	criterion: string;
 	value: string;
+}
+export const PartnerManagedCustomerTypeRef: TypeRef<PartnerManagedCustomer> = new TypeRef("sys", 2672)
+
+export function createPartnerManagedCustomer(values: StrippedEntity<PartnerManagedCustomer>): PartnerManagedCustomer {
+    return Object.assign(create(typeModels[PartnerManagedCustomerTypeRef.typeId], PartnerManagedCustomerTypeRef), values)
+}
+
+export type PartnerManagedCustomer = {
+	_type: TypeRef<PartnerManagedCustomer>;
+	_errors: Object;
+	_original?: PartnerManagedCustomer
+
+	_id: IdTuple;
+	_permissions: Id;
+	_format: NumberString;
+	_ownerGroup: null | Id;
+	_ownerEncSessionKey: null | Uint8Array;
+	_ownerKeyVersion: null | NumberString;
+
+	customerInfo: IdTuple;
+}
+export const AdAttributionTypeRef: TypeRef<AdAttribution> = new TypeRef("sys", 2684)
+
+export function createAdAttribution(values: StrippedEntity<AdAttribution>): AdAttribution {
+    return Object.assign(create(typeModels[AdAttributionTypeRef.typeId], AdAttributionTypeRef), values)
+}
+
+export type AdAttribution = {
+	_type: TypeRef<AdAttribution>;
+	_original?: AdAttribution
+
+	_id: Id;
+	attributionId: string;
+	attributionType: NumberString;
+}
+export const OperationStatusUpdateTypeRef: TypeRef<OperationStatusUpdate> = new TypeRef("sys", 2692)
+
+export function createOperationStatusUpdate(values: StrippedEntity<OperationStatusUpdate>): OperationStatusUpdate {
+    return Object.assign(create(typeModels[OperationStatusUpdateTypeRef.typeId], OperationStatusUpdateTypeRef), values)
+}
+
+export type OperationStatusUpdate = {
+	_type: TypeRef<OperationStatusUpdate>;
+	_original?: OperationStatusUpdate
+
+	_format: NumberString;
+	applicationVersionSum: NumberString;
+	applicationTypesHash: string;
+	operationId: Id;
+	status: NumberString;
+	statusCode: null | NumberString;
+	reason: null | string;
 }

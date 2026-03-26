@@ -1,6 +1,6 @@
 {
 	"name": "@tutao/node-mimimi",
-	"version": "327.260213.0",
+	"version": "340.260326.0",
 	"main": "./dist/binding.js",
 	"types": "./dist/binding.d.ts",
 	"napi": {
@@ -14,7 +14,7 @@
 	},
 	"license": "MIT",
 	"devDependencies": {
-		"@tutao/otest": "327.260213.0",
+		"@tutao/otest": "340.260326.0",
 		"@napi-rs/cli": "3.0.0-alpha.68",
 		"typescript": "5.8.3",
 		"zx": "8.6.1"

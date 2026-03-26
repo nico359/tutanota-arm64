@@ -48,12 +48,15 @@ export class EphemeralCacheStorage implements CacheStorage {
 	private lastTrainedFromScratchTime: number | null = null
 	private userId: Id | null = null
 	private lastBatchIdPerGroup = new Map<Id, Id>()
-
 	constructor(
 		private readonly modelMapper: ModelMapper,
 		private readonly typeModelResolver: ServerTypeModelResolver,
 		private readonly customCacheHandlerMap: CustomCacheHandlerMap,
 	) {}
+
+	isInitialized(): boolean {
+		return this.userId != null
+	}
 
 	init({ userId }: EphemeralStorageInitArgs) {
 		this.userId = userId
@@ -199,6 +202,14 @@ export class EphemeralCacheStorage implements CacheStorage {
 				break
 			default:
 				throw new ProgrammingError("must be a persistent type")
+		}
+	}
+
+	async deleteRange<T extends ListElementEntity>(typeRef: TypeRef<T>, listId: string): Promise<void> {
+		const typeId = getTypeString(typeRef)
+		const cache = this.lists.get(typeId)
+		if (cache) {
+			cache.delete(listId)
 		}
 	}
 

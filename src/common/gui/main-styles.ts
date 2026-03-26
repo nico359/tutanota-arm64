@@ -196,6 +196,9 @@ styles.registerStyle("main", () => {
 		".font-weight-600": {
 			"font-weight": "600",
 		},
+		".font-weight-700": {
+			"font-weight": "700",
+		},
 		".i": {
 			"font-style": "italic",
 		},
@@ -939,7 +942,7 @@ styles.registerStyle("main", () => {
 		},
 		"*": {
 			"scrollbar-color": `${theme.on_surface_variant} transparent`,
-			"scrollbar-width": "thin",
+			"scrollbar-width": !client.isMobileDevice() ? "thin" : "none",
 		},
 		"::-webkit-scrollbar": !client.isMobileDevice()
 			? {
@@ -1898,7 +1901,6 @@ styles.registerStyle("main", () => {
 			position: "absolute",
 			left: 0,
 			right: 0,
-			height: px(component_size.list_row_height),
 		},
 		".odd-row": {
 			"background-color": theme.surface,
@@ -1930,6 +1932,7 @@ styles.registerStyle("main", () => {
 			"letter-spacing": "1px",
 			"text-align": "right",
 			"margin-right": "-3px",
+			"font-size": "18px",
 		},
 		".monospace": {
 			"font-family": '"Lucida Console", Monaco, monospace',
@@ -2417,7 +2420,7 @@ styles.registerStyle("main", () => {
 		},
 		".checkbox:after": {
 			"font-family": "'Ionicons'",
-			content: `'${FontIcons.Checkbox}'`,
+			content: `'${FontIcons.CheckboxCheckmark}'`,
 			position: "absolute",
 			display: "none",
 			"font-size": "12px",
@@ -2608,8 +2611,6 @@ styles.registerStyle("main", () => {
 			"border-top": "9px solid transparent",
 			"border-bottom": "9px solid transparent",
 			"border-left": "6px solid green",
-			"margin-top": px(1),
-			"margin-bottom": px(1),
 		},
 		".time-field": {
 			width: "80px",
@@ -2807,7 +2808,6 @@ styles.registerStyle("main", () => {
 			".print": {
 				color: "black",
 				"background-color": "white",
-				display: "block",
 			},
 			"html, body": {
 				position: "initial",
@@ -2947,15 +2947,10 @@ styles.registerStyle("main", () => {
 		".overflow-auto": {
 			overflow: "auto",
 		},
-		".float-action-button": {
+		".fab-position": {
 			position: "fixed",
-			"border-radius": "25%",
-		},
-		".posb-ml": {
-			bottom: px(size.spacing_24),
-		},
-		".posr-ml": {
-			right: px(size.spacing_24),
+			right: px(size.spacing_16),
+			bottom: px(size.spacing_16),
 		},
 		".mb-small-line-height": {
 			"margin-bottom": px(font_size.line_height * font_size.small),
@@ -3276,6 +3271,9 @@ styles.registerStyle("main", () => {
 			"--il-outline": theme.il_outline,
 			"--il-ne-outline": theme.il_ne_outline,
 			"--il-highlight": theme.il_highlight,
+			"--il-sign-up-flow-switch": theme.il_sign_up_flow_switch,
+			"--il-sign-up-flow-switch-2": theme.il_sign_up_flow_switch_2,
+			"--il-sign-up-flow-switch-4": theme.il_sign_up_flow_switch_4,
 		},
 		".svg-fill-primary_container": {
 			fill: theme.primary_container,
@@ -3298,12 +3296,12 @@ styles.registerStyle("main", () => {
 		".base-button-sm": {
 			"padding-inline": px(12),
 			height: px(component_size.button_height_sm),
-			"border-radius": px(size.radius_8),
+			"border-radius": px(size.radius_4),
 			"text-align": "center",
 		},
 		".base-button-md": {
 			"padding-inline": px(16),
-			height: px(component_size.button_height),
+			height: px(component_size.button_height_md),
 			"border-radius": px(size.radius_8),
 			"text-align": "center",
 		},

@@ -2,6 +2,7 @@ export {
 	aesEncrypt,
 	aesEncryptConfigurationDatabaseItem,
 	aesDecrypt,
+	asyncDecryptBytes,
 	aes256EncryptSearchIndexEntry,
 	aesDecryptUnauthenticated,
 	aes256EncryptSearchIndexEntryWithIV,
@@ -115,7 +116,7 @@ export { TotpVerifier } from "./misc/TotpVerifier.js"
 export { TotpSecret } from "./misc/TotpVerifier.js"
 export { murmurHash } from "./hashes/MurmurHash.js"
 export { hkdf } from "./hashes/HKDF.js"
-export { hmacSha256, verifyHmacSha256, MacTag } from "./encryption/Hmac.js"
+export { hmacSha256, verifyHmacSha256, MacTag, verifyHmacSha256Async, hmacSha256Async } from "./encryption/Hmac.js"
 export {
 	aes256RandomKey,
 	keyToUint8Array,
@@ -134,3 +135,5 @@ export {
 	FIXED_IV,
 } from "./encryption/symmetric/SymmetricCipherUtils.js"
 export { AesKeyLength, getAndVerifyAesKeyLength, getKeyLengthInBytes } from "./encryption/symmetric/AesKeyLength.js"
+export { blake3Hash, blake3Mac, blake3MacVerify, blake3Kdf } from "./hashes/Blake3.js"
+export { AeadFacade } from "./encryption/symmetric/AeadFacade.js"

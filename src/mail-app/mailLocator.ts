@@ -128,7 +128,6 @@ import { isEditableDraft, isMailInSpamOrTrash } from "./mail/model/MailChecks.js
 import type { ContactImporter } from "./contacts/ContactImporter.js"
 import { ExternalCalendarFacade } from "../common/native/common/generatedipc/ExternalCalendarFacade.js"
 import { AppType } from "../common/misc/ClientConstants.js"
-import { ParsedEvent } from "../common/calendar/gui/CalendarImporter.js"
 import type { CalendarContactPreviewViewModel } from "../calendar-app/calendar/gui/eventpopup/CalendarContactPreviewViewModel.js"
 import { KeyLoaderFacade } from "../common/api/worker/facades/KeyLoaderFacade.js"
 import { KeyVerificationFacade } from "../common/api/worker/facades/lazy/KeyVerificationFacade"
@@ -161,8 +160,11 @@ import type { QuickActionsModel } from "../common/misc/quickactions/QuickActions
 import { DriveFacade } from "../common/api/worker/facades/lazy/DriveFacade"
 import { DriveViewModel } from "../drive-app/drive/view/DriveViewModel"
 import { TransferProgressDispatcher } from "../common/api/main/TransferProgressDispatcher"
-import { DriveUploadStackModel } from "../drive-app/drive/view/DriveUploadStackModel"
+import { DriveTransferController } from "../drive-app/drive/view/DriveTransferController"
 import { FolderItem } from "../drive-app/drive/view/DriveUtils"
+import { CalendarEventUpdateCoordinator } from "../calendar-app/calendar/model/CalendarEventUpdateCoordinator"
+import { ParsedEvent } from "../common/calendar/gui/ImportExportUtils"
+import { MoveItems } from "../drive-app/drive/view/DriveMoveItemDialog"
 
 assertMainOrNode()
 
@@ -311,7 +313,7 @@ class MailLocator implements CommonLocator {
 	})
 
 	readonly spamClassificationHandler = lazyMemoized(() => {
-		return new SpamClassificationHandler(this.spamClassifier, this.mailFacade, this.logins)
+		return new SpamClassificationHandler(this.spamClassifier, this.contactModel, this.mailFacade, this.logins)
 	})
 
 	readonly processInboxHandler = lazyMemoized(() => {
@@ -453,6 +455,7 @@ class MailLocator implements CommonLocator {
 		const { SendMailModel } = await import("../common/mailFunctionality/SendMailModel.js")
 		const recipientsModel = await this.recipientsModel()
 		const dateProvider = await this.noZoneDateProvider()
+		const undoModel = await this.undoModel()
 		return () =>
 			new SendMailModel(
 				this.mailFacade,
@@ -470,6 +473,7 @@ class MailLocator implements CommonLocator {
 					return !isEditableDraft(mail) || (await isMailInSpamOrTrash(mail, mailLocator.mailModel))
 				},
 				this.syncTracker,
+				undoModel,
 			)
 	}
 
@@ -500,6 +504,7 @@ class MailLocator implements CommonLocator {
 			calendarNotificationSender,
 			this.entityClient,
 			responseTo,
+			await this.calendarInviteHandler(),
 			getTimeZone(),
 			showProgress,
 		)
@@ -864,6 +869,7 @@ class MailLocator implements CommonLocator {
 			this.connectivityModel,
 			this.processInboxHandler,
 			this.progressTracker,
+			this.bulkMailLoader,
 		)
 		this.operationProgressTracker = new OperationProgressTracker()
 		this.infoMessageHandler = new InfoMessageHandler((state: SearchIndexStateInfo) => {
@@ -1079,6 +1085,7 @@ class MailLocator implements CommonLocator {
 			this.mailboxModel,
 			this.calendarFacade,
 			this.fileController,
+			this.contactModel,
 			timeZone,
 			!isBrowser() ? this.externalCalendarFacade : null,
 			deviceConfig,
@@ -1094,6 +1101,20 @@ class MailLocator implements CommonLocator {
 		const { calendarNotificationSender } = await import("../calendar-app/calendar/view/CalendarNotificationSender.js")
 		return new CalendarInviteHandler(this.mailboxModel, await this.calendarModel(), this.logins, calendarNotificationSender, (...arg) =>
 			this.sendMailModel(...arg),
+		)
+	})
+
+	readonly calendarEventUpdateCoordinator: () => Promise<CalendarEventUpdateCoordinator> = lazyMemoized(async () => {
+		const { CalendarEventUpdateCoordinator } = await import("../calendar-app/calendar/model/CalendarEventUpdateCoordinator")
+		const calendarModel = await this.calendarModel()
+		const connectivityModel: WebsocketConnectivityModel = this.connectivityModel
+		return new CalendarEventUpdateCoordinator(
+			connectivityModel,
+			calendarModel,
+			this.eventController,
+			this.entityClient,
+			this.mailboxModel,
+			this.syncTracker,
 		)
 	})
 
@@ -1167,7 +1188,7 @@ class MailLocator implements CommonLocator {
 		const mailboxProperties = await this.mailboxModel.getMailboxProperties(mailboxDetails.mailboxGroupRoot)
 
 		const userController = this.logins.getUserController()
-		const customer = await userController.loadCustomer()
+		const customer = await userController.reloadCustomer()
 		const ownMailAddresses = getEnabledMailAddressesWithUser(mailboxDetails, userController.userGroupInfo)
 		const ownAttendee: CalendarEventAttendee | null = findAttendeeInAddresses(selectedEvent.attendees, ownMailAddresses)
 		const eventType = getEventType(selectedEvent, calendars, ownMailAddresses, userController)
@@ -1181,6 +1202,7 @@ class MailLocator implements CommonLocator {
 			ownAttendee,
 			lazyIndexEntry,
 			async (mode: CalendarOperation, event: CalendarEvent) => this.calendarEventModel(mode, event, mailboxDetails, mailboxProperties, null),
+			this.calendarInviteHandler,
 			highlightedTokens,
 		)
 
@@ -1307,10 +1329,10 @@ class MailLocator implements CommonLocator {
 	readonly driveViewModel = lazyMemoized(async () => {
 		const { DriveViewModel } = await import("../drive-app/drive/view/DriveViewModel.js")
 		const router = new ScopedRouter(this.throttledRouter(), "/drive")
-		const { DriveUploadStackModel } = await import("../drive-app/drive/view/DriveUploadStackModel.js")
+		const { DriveTransferController } = await import("../drive-app/drive/view/DriveTransferController.js")
 
 		const redraw = await this.redraw()
-		const driveUploadStackModel = new DriveUploadStackModel(this.driveFacade, this.blobFacade, redraw)
+		const driveUploadStackModel = new DriveTransferController(this.driveFacade, this.blobFacade, redraw, this.fileController, await this.scheduler())
 
 		const model = new DriveViewModel(
 			this.entityClient,
@@ -1320,7 +1342,6 @@ class MailLocator implements CommonLocator {
 			this.eventController,
 			this.logins,
 			this.userManagementFacade,
-			this.fileController,
 			driveUploadStackModel,
 			redraw,
 		)
@@ -1329,9 +1350,9 @@ class MailLocator implements CommonLocator {
 		return model
 	})
 
-	async showMoveItemDialog(item: FolderItem) {
+	async showMoveItemDialog(items: FolderItem[], moveItems: MoveItems) {
 		const { showMoveDialog } = await import("../drive-app/drive/view/DriveMoveItemDialog.js")
-		showMoveDialog(this.entityClient, this.driveFacade, item)
+		showMoveDialog(this.entityClient, this.driveFacade, items, moveItems)
 	}
 }
 

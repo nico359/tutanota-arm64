@@ -46,7 +46,7 @@ import { styles } from "../../../common/gui/styles"
 import { CalendarTimeBasedView, CalendarTimeBasedViewAttrs } from "./CalendarTimeBasedView"
 import { Dialog } from "../../../common/gui/base/Dialog"
 import { isApp, isDesktop } from "../../../common/api/common/Env"
-import { component_size, layout_size, px, size } from "../../../common/gui/size"
+import { component_size, layout_size } from "../../../common/gui/size"
 import { FolderColumnView } from "../../../common/gui/FolderColumnView.js"
 import { deviceConfig } from "../../../common/misc/DeviceConfig"
 import { exportCalendar, handleCalendarImport } from "../../../common/calendar/gui/CalendarImporterDialog.js"
@@ -78,11 +78,10 @@ import { CalendarOperation } from "../gui/eventeditor-model/CalendarEventModel.j
 import { DaySelectorPopup } from "../gui/day-selector/DaySelectorPopup.js"
 import { CalendarEventPreviewViewModel } from "../gui/eventpopup/CalendarEventPreviewViewModel.js"
 import { client } from "../../../common/misc/ClientDetector.js"
-import { FloatingActionButton } from "../../gui/FloatingActionButton.js"
+import { FloatingActionButton } from "../../../common/gui/base/FloatingActionButton.js"
 import { progressIcon } from "../../../common/gui/base/Icon.js"
 import { Group, GroupInfo, User } from "../../../common/api/entities/sys/TypeRefs.js"
-import { getExternalCalendarName, parseCalendarStringData } from "../../../common/calendar/gui/ImportExportUtils.js"
-import type { ParsedEvent } from "../../../common/calendar/gui/CalendarImporter.js"
+import { getExternalCalendarName, parseCalendarStringData, ParsedEvent } from "../../../common/calendar/gui/ImportExportUtils.js"
 import { showSnackBar } from "../../../common/gui/base/SnackBar.js"
 import { elementIdPart } from "../../../common/api/common/utils/EntityUtils.js"
 import { ContactEventPopup } from "../gui/eventpopup/CalendarContactPopup.js"
@@ -91,7 +90,6 @@ import { ContactEditor } from "../../../mail-app/contacts/ContactEditor.js"
 import { EventEditorDialog } from "../gui/eventeditor-view/CalendarEventEditDialog.js"
 import { getStartOfTheWeekOffset, getStartOfTheWeekOffsetForUser } from "../../../common/misc/weekOffset"
 import { MobileHeader } from "../../../common/gui/MobileHeader.js"
-import { BootIcons } from "../../../common/gui/base/icons/BootIcons.js"
 import {
 	EventDetailsView,
 	EventDetailsViewAttrs,
@@ -184,19 +182,19 @@ export class CalendarView extends BaseTopLevelView implements TopLevelView<Calen
 																label: "addCalendar_action",
 																colors: ButtonColor.Nav,
 																click: () => this.onPressedAddCalendar(CalendarType.Private),
-																icon: Icons.Add,
+																icon: Icons.Plus,
 																size: ButtonSize.Compact,
 															},
 															{
 																label: "addCalendarFromURL_action",
-																icon: Icons.Link,
+																icon: Icons.Chainlink,
 																size: ButtonSize.Compact,
 																click: () => this.onPressedAddCalendar(CalendarType.External),
 															},
 														],
 													})
 												: () => this.onPressedAddCalendar(CalendarType.Private),
-										icon: Icons.Add,
+										icon: Icons.Plus,
 										size: ButtonSize.Compact,
 									}),
 									hideIfEmpty: true,
@@ -620,7 +618,7 @@ export class CalendarView extends BaseTopLevelView implements TopLevelView<Calen
 			if (previewModel.canSendUpdates) {
 				actions.push(
 					m(IconButton, {
-						icon: BootIcons.Mail,
+						icon: Icons.MailFilled,
 						title: "sendUpdates_label",
 						click: () => handleSendUpdatesClick(previewModel),
 					}),
@@ -629,7 +627,7 @@ export class CalendarView extends BaseTopLevelView implements TopLevelView<Calen
 			if (previewModel.canEdit) {
 				actions.push(
 					m(IconButton, {
-						icon: Icons.Edit,
+						icon: Icons.PenFilled,
 						title: "edit_action",
 						click: (ev: MouseEvent, receiver: HTMLElement) => {
 							handleEventEditButtonClick(previewModel, ev, receiver, () => {
@@ -642,7 +640,7 @@ export class CalendarView extends BaseTopLevelView implements TopLevelView<Calen
 			if (previewModel.canDelete) {
 				actions.push(
 					m(IconButton, {
-						icon: Icons.Trash,
+						icon: Icons.TrashFilled,
 						title: "delete_action",
 						click: async (ev: MouseEvent, receiver: HTMLElement) => {
 							await handleEventDeleteButtonClick(previewModel, ev, receiver, () => this.exitEventDetails())
@@ -658,10 +656,10 @@ export class CalendarView extends BaseTopLevelView implements TopLevelView<Calen
 	private renderFab(): Children {
 		if (client.isCalendarApp()) {
 			return m(FloatingActionButton, {
-				icon: Icons.Add,
+				icon: Icons.Plus,
 				title: "newEvent_action",
 				colors: ButtonColor.Fab,
-				action: () => this.createNewEventDialog(),
+				click: () => this.createNewEventDialog(),
 			})
 		}
 
@@ -1022,7 +1020,7 @@ export class CalendarView extends BaseTopLevelView implements TopLevelView<Calen
 			actions: [
 				{
 					label: "edit_action",
-					icon: Icons.Edit,
+					icon: Icons.PenFilled,
 					click: () => this.onPressedEditBirthdayCalendar(calendarInfo),
 				},
 			],
@@ -1374,7 +1372,7 @@ export class CalendarView extends BaseTopLevelView implements TopLevelView<Calen
 		const actions: Array<DropdownChildAttrs> = [
 			{
 				label: "edit_action",
-				icon: Icons.Edit,
+				icon: Icons.PenFilled,
 				click: () => this.handleEdit(calendarInfo, existingGroupSettings),
 			},
 		]
@@ -1382,7 +1380,7 @@ export class CalendarView extends BaseTopLevelView implements TopLevelView<Calen
 		if (this.canShare(isExternal)) {
 			actions.push({
 				label: "sharing_label",
-				icon: Icons.ContactImport,
+				icon: Icons.PersonAddFilled,
 				click: () => this.handleShare(userController, groupInfo, hasMultipleMembers),
 			})
 		}
@@ -1390,7 +1388,7 @@ export class CalendarView extends BaseTopLevelView implements TopLevelView<Calen
 		if (this.canImport(group, userController.user, existingGroupSettings)) {
 			actions.push({
 				label: "import_action",
-				icon: Icons.Import,
+				icon: Icons.CloudUploadFilled,
 				click: () => handleCalendarImport(groupRoot, calendarInfo),
 			})
 		}
@@ -1398,7 +1396,7 @@ export class CalendarView extends BaseTopLevelView implements TopLevelView<Calen
 		if (this.canExport(group, userController.user)) {
 			actions.push({
 				label: "export_action",
-				icon: Icons.Export,
+				icon: Icons.CloudDownloadFilled,
 				click: () => this.handleExport(groupInfo, groupRoot, hasMultipleMembers, userController),
 			})
 		}
@@ -1417,7 +1415,7 @@ export class CalendarView extends BaseTopLevelView implements TopLevelView<Calen
 		if (userIsOwner) {
 			actions.push({
 				label: isExternal ? "unsubscribe_action" : "delete_action",
-				icon: Icons.Trash,
+				icon: Icons.TrashFilled,
 				click: () => this.handleDelete(calendarInfo),
 			})
 		}

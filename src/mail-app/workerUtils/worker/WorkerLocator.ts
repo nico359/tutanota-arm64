@@ -349,7 +349,10 @@ export async function initLocator(worker: WorkerImpl, browserData: BrowserData) 
 					ref: MailTypeRef,
 					handler: new CustomMailEventCacheHandler(mailIndexer),
 				},
-				{ ref: UserTypeRef, handler: new CustomUserCacheHandler(locator.cacheStorage, await locator.spamClassifierStorageFacade()) },
+				{
+					ref: UserTypeRef,
+					handler: new CustomUserCacheHandler(locator.cacheStorage, await locator.spamClassifierStorageFacade()),
+				},
 			)
 			return new OfflineStorage(
 				locator.sqlCipherFacade,
@@ -822,7 +825,6 @@ export async function initLocator(worker: WorkerImpl, browserData: BrowserData) 
 	}
 
 	const eventBusCoordinator = new EventBusEventCoordinator(
-		mainInterface.wsConnectivityListener,
 		locator.mail,
 		locator.user,
 		locator.cachingEntityClient,
@@ -844,6 +846,7 @@ export async function initLocator(worker: WorkerImpl, browserData: BrowserData) 
 	)
 	const prefetcher = new EventInstancePrefetcher(locator.cache)
 	locator.eventBusClient = new EventBusClient(
+		mainInterface.wsConnectivityListener,
 		eventBusCoordinator,
 		cache ?? new AdminClientDummyEntityRestCache(),
 		locator.user,

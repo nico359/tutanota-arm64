@@ -1,5 +1,5 @@
 // DO NOT EDIT: automatically generated
-// Please edit translations via Phrase: https://tuta.com/blog/tutanota-translation-project
+// Please edit translations via POEditor: https://tuta.com/blog/tutanota-translation-project
 export default {
 	"code": "hr",
 	"keys": {
@@ -426,6 +426,7 @@ export default {
 		"dark_blue_label": "Tamno plava",
 		"dark_label": "Tamno",
 		"dark_red_label": "Tamno crvena",
+		"dataExpired_label": "Istekli podatci",
 		"dataExpired_msg": "Vaši učitani podatci su istekli i nisu usklađeni s podatcima na Tuta serverima. Molimo odjavite se i ponovno prijavite za osvježavanje podataka.",
 		"dataExpiredOfflineDb_msg": "Vaši lokalni podaci nisu sinkronizirani s podacima na Tuta poslužiteljima. Bit ćete odjavljeni i vaši lokalno pohranjeni podaci bit će izbrisani i ponovno preuzeti prema potrebi.",
 		"dataWillBeStored_msg": "Podaci će biti pohranjeni na vašem uređaju.",
@@ -477,7 +478,6 @@ export default {
 		"deleteSharedCalendarConfirm_msg": "Kalendar \"{calendar}\" dijeli se s drugim korisnicima.",
 		"deleteSingleEventRecurrence_action": "Izbriši samo ovaj događaj",
 		"deleteTemplate_msg": "Jeste li sigurni da želite izbrisati ovaj predložak?",
-		"deleteTemplateGroups_msg": "Još uvijek postoje aktivne liste predložaka koje se moraju izbrisati prije prebacivanja na nižu tarifu. To može uključivati zajedničke liste predložaka ili liste predložaka koje pripadaju vašim korisnicima.",
 		"department_placeholder": "Odjel",
 		"describeProblem_msg": "Unesite svoje pitanje",
 		"description_label": "Opis",
@@ -1147,7 +1147,6 @@ export default {
 		"outOfOfficeTimeRange_msg": "Pošaljite samo u tom vremenskom rasponu:",
 		"outOfOfficeTimeRangeHelp_msg": "Označite za odabir datuma.",
 		"outOfOfficeUnencrypted_msg": "Napominjemo da se automatski odgovori šalju u čistom tekstu.",
-		"outOfSync_label": "Istekli podatci",
 		"owner_label": "Vlasnik",
 		"pageBackward_label": "Stranica unatrag",
 		"pageForward_label": "Stranica naprijed",

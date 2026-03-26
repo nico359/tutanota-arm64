@@ -2,6 +2,9 @@ use crate::importer::importable_mail::ImportableMailWithPath;
 use crate::reduce_to_chunks::{KeyedImportMailData, MailUploadDataWithAttachment};
 use base64::prelude::BASE64_URL_SAFE_NO_PAD;
 use base64::Engine;
+use crypto_primitives::aes;
+use crypto_primitives::aes::Iv;
+use crypto_primitives::key::GenericAesKey;
 use crypto_primitives::randomizer_facade::RandomizerFacade;
 use file_reader::FileImport;
 use std::ffi::OsStr;
@@ -9,15 +12,14 @@ use std::fs;
 use std::fs::DirEntry;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use tutasdk::crypto::aes;
-use tutasdk::crypto::aes::Iv;
-use tutasdk::crypto::key::{GenericAesKey, VersionedAesKey};
+use tutasdk::crypto::key::VersionedAesKey;
 use tutasdk::entities::generated::sys::StringWrapper;
 
 use crate::importer::attachment_importer::PerChunkAttachmentImporter;
 use crate::importer::messages::{
 	ImportErrorKind, ImportOkKind, MailImportErrorMessage, PreparationError,
 };
+use crate::importer::ImportStatus::Canceled;
 use crate::importer_api::TutaCredentials;
 use tutasdk::bindings::native_file_client::NativeFileClient;
 use tutasdk::entities::generated::tutanota::{
@@ -131,7 +133,7 @@ impl ImportEssential {
 	}
 
 	/// updates the remote importMailState, if changes to importMailState are valid
-	/// @params updater: function updating the importMailState internally,
+	/// @params updater: function updating the importMailState internally
 	///                  and returning whether if it should be uploaded or not.
 	pub(super) async fn update_remote_state(
 		&self,
@@ -202,7 +204,6 @@ impl ImportEssential {
 	) -> Result<ImportMailPostOut, MailImportErrorMessage> {
 		let server_to_upload = self.get_server_url_to_upload().await?;
 		let import_mail_post_in = import_mail_data;
-
 		self.logged_in_sdk
 			.get_service_executor()
 			.post::<ImportMailService>(
@@ -384,8 +385,7 @@ impl Importer {
 			})?;
 
 		// Import cannot be resumed if it was already cancelled or finished.
-		let import_is_cancelled_or_finished = remote_import_state.status
-			== ImportStatus::Canceled as i64
+		let import_is_cancelled_or_finished = remote_import_state.status == Canceled as i64
 			|| remote_import_state.status == ImportStatus::Finished as i64;
 		if import_is_cancelled_or_finished {
 			return Err(PreparationError::FinalisedImportCannotBeResumed);
@@ -651,7 +651,7 @@ impl Importer {
 	) -> Result<(), MailImportErrorMessage> {
 		self.update_failed_mails_counter().await;
 		match import_error.kind {
-			// if the import is (temporary) disabled, we should give up and let user try again later
+			// if the import is (temporary) disabled, we should give up and let the user try again later
 			ImportErrorKind::ImportFeatureDisabled => Err(ImportErrorKind::ImportFeatureDisabled)?,
 
 			// If a server does not give any available blob storage client (which we also use to make service call),
@@ -688,6 +688,10 @@ impl Importer {
 			// this kind will not be created by import loop,
 			// exists only to pass over to api
 			ImportErrorKind::SourceExhaustedSomeError => unreachable!(),
+
+			ImportErrorKind::ImportTargetFolderDeleted => {
+				Err(ImportErrorKind::ImportTargetFolderDeleted)?
+			},
 		}
 	}
 
@@ -700,7 +704,7 @@ impl Importer {
 		self.essentials
 				.update_remote_state(|remote_state| {
 					match Importer::get_failed_mails_count(&self.essentials.import_directory) {
-						Ok(failed_mail_count) => {
+						Ok(failed_mail_count) if remote_state.failedMails != failed_mail_count as i64 => {
 							remote_state.failedMails = failed_mail_count as i64;
 							true
 						}
@@ -708,6 +712,7 @@ impl Importer {
 							log::error!("Not incrementing failedMails on import state. Can not count failed emails: {e:?}");
 							false
 						}
+						_ => false,
 					}
 				})
 				.await

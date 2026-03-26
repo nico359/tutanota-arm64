@@ -45,9 +45,10 @@ export type MailViewerMoreActions = {
 	showImagesAction?: () => void
 	unsubscribeAction?: () => void
 	printAction?: () => void
-	reportSpamAction?: () => void
-	reportPhishingAction?: () => void
 	reapplyInboxRulesAction?: (() => void) | null
+	reportSpamAction?: () => void
+	reportNotSpamAction?: () => void
+	reportPhishingAction?: () => void
 }
 
 export async function showHeaderDialog(headersPromise: Promise<string | null>) {
@@ -274,7 +275,7 @@ export function multipleMailViewerMoreActions(exportAction: (() => void) | null,
 		moreButtons.push({
 			label: "export_action",
 			click: exportAction,
-			icon: Icons.Export,
+			icon: Icons.CloudDownloadFilled,
 		})
 	}
 
@@ -291,7 +292,7 @@ export function singleMailViewerMoreActions(viewModel: MailViewerViewModel, more
 		moreButtons.push({
 			label: "export_action",
 			click: () => showProgressDialog("pleaseWait_msg", viewModel.exportMail()),
-			icon: Icons.Export,
+			icon: Icons.CloudDownloadFilled,
 		})
 	}
 
@@ -299,7 +300,7 @@ export function singleMailViewerMoreActions(viewModel: MailViewerViewModel, more
 		moreButtons.push({
 			label: "showHeaders_action",
 			click: () => showHeaderDialog(viewModel.getHeaders()),
-			icon: Icons.ListUnordered,
+			icon: Icons.UnorderedList,
 		})
 	}
 
@@ -319,7 +320,7 @@ export function addToggleLightModeButtonAttrs(viewModel: MailViewerViewModel, to
 		toArray.push({
 			label: willForceLightMode ? "viewInLightMode_action" : "viewInDarkMode_action",
 			click: () => viewModel.setForceLightMode(willForceLightMode),
-			icon: willForceLightMode ? Icons.Bulb : Icons.BulbOutline,
+			icon: willForceLightMode ? Icons.LightbulbFilled : Icons.LightbulbOutline,
 		})
 	}
 }
@@ -330,12 +331,14 @@ export function getMailViewerMoreActions({
 	print,
 	reportPhishing,
 	reapplyInboxRules,
+	reportNotSpam,
 }: {
 	viewModel: MailViewerViewModel
 	print: (() => unknown) | null
-	reportSpam: (() => unknown) | null
-	reportPhishing: (() => unknown) | null
 	reapplyInboxRules: (() => unknown) | null
+	reportSpam: (() => unknown) | null
+	reportNotSpam: (() => unknown) | null
+	reportPhishing: (() => unknown) | null
 }): MailViewerMoreActions {
 	const actions: MailViewerMoreActions = {}
 
@@ -362,8 +365,13 @@ export function getMailViewerMoreActions({
 	if (reportPhishing) {
 		actions.reportPhishingAction = reportPhishing
 	}
+
 	if (reapplyInboxRules) {
 		actions.reapplyInboxRulesAction = reapplyInboxRules
+	}
+
+	if (reportNotSpam) {
+		actions.reportNotSpamAction = reportNotSpam
 	}
 
 	return actions
@@ -374,9 +382,10 @@ function mailViewerMoreActions({
 	showImagesAction,
 	unsubscribeAction,
 	printAction,
-	reportSpamAction,
-	reportPhishingAction,
 	reapplyInboxRulesAction,
+	reportSpamAction,
+	reportNotSpamAction,
+	reportPhishingAction,
 }: MailViewerMoreActions): Array<DropdownButtonAttrs> {
 	const moreButtons: Array<DropdownButtonAttrs> = []
 
@@ -384,7 +393,7 @@ function mailViewerMoreActions({
 		moreButtons.push({
 			label: "disallowExternalContent_action",
 			click: disallowExternalContentAction,
-			icon: Icons.Picture,
+			icon: Icons.PictureFilled,
 		})
 	}
 
@@ -392,7 +401,7 @@ function mailViewerMoreActions({
 		moreButtons.push({
 			label: "showImages_action",
 			click: showImagesAction,
-			icon: Icons.Picture,
+			icon: Icons.PictureFilled,
 		})
 	}
 
@@ -400,7 +409,7 @@ function mailViewerMoreActions({
 		moreButtons.push({
 			label: "unsubscribe_action",
 			click: unsubscribeAction,
-			icon: Icons.Cancel,
+			icon: Icons.X,
 		})
 	}
 
@@ -408,7 +417,7 @@ function mailViewerMoreActions({
 		moreButtons.push({
 			label: "print_action",
 			click: printAction,
-			icon: Icons.Print,
+			icon: Icons.PrinterFilled,
 		})
 	}
 
@@ -416,15 +425,23 @@ function mailViewerMoreActions({
 		moreButtons.push({
 			label: "reapplyInboxRules_action",
 			click: reapplyInboxRulesAction,
-			icon: Icons.Redo,
+			icon: Icons.ArrowCurvedForwardFilled,
 		})
 	}
 
 	if (reportSpamAction != null) {
 		moreButtons.push({
-			label: "spam_move_action",
+			label: "reportSpam_action",
 			click: reportSpamAction,
-			icon: Icons.Spam,
+			icon: Icons.BugFilled,
+		})
+	}
+
+	if (reportNotSpamAction != null) {
+		moreButtons.push({
+			label: "reportNotSpam_action",
+			click: reportNotSpamAction,
+			icon: Icons.BugCrossedFilled,
 		})
 	}
 
@@ -432,7 +449,7 @@ function mailViewerMoreActions({
 		moreButtons.push({
 			label: "reportPhishing_action",
 			click: reportPhishingAction,
-			icon: Icons.Warning,
+			icon: Icons.ExclamationFilled,
 		})
 	}
 	// adding more optional buttons? put them above the report action so the new button

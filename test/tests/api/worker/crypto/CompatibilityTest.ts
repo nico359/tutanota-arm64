@@ -1,9 +1,11 @@
 import o from "@tutao/otest"
 import {
+	AeadFacade,
 	aes256EncryptSearchIndexEntry,
 	aesDecrypt,
 	aesEncrypt,
 	AsymmetricKeyPair,
+	asyncDecryptBytes,
 	bitArrayToUint8Array,
 	bytesToEd25519PrivateKey,
 	bytesToEd25519PublicKey,
@@ -24,13 +26,13 @@ import {
 	hexToRsaPublicKey,
 	hkdf,
 	hmacSha256,
+	hmacSha256Async,
 	IV_BYTE_LENGTH,
 	KeyLength,
 	KeyPairType,
 	keyToUint8Array,
 	kyberPrivateKeyToBytes,
 	kyberPublicKeyToBytes,
-	LibOQSExports,
 	MacTag,
 	PQKeyPairs,
 	PQPublicKeys,
@@ -41,6 +43,7 @@ import {
 	rsaEncrypt,
 	uint8ArrayToKey,
 	verifyHmacSha256,
+	verifyHmacSha256Async,
 	x25519Decapsulate,
 	x25519Encapsulate,
 } from "@tutao/tutanota-crypto"
@@ -66,6 +69,7 @@ import { Ed25519Facade, WASMEd25519Facade } from "../../../../../src/common/api/
 import { PublicKeySignatureFacade } from "../../../../../src/common/api/worker/facades/PublicKeySignatureFacade"
 import { checkKeyVersionConstraints } from "../../../../../src/common/api/worker/facades/KeyLoaderFacade"
 import { CryptoWrapper } from "../../../../../src/common/api/worker/crypto/CryptoWrapper"
+import { blake3Hash, blake3Kdf, blake3Mac, blake3MacVerify } from "../../../../../packages/tutanota-crypto/lib/hashes/Blake3"
 
 const originalRandom = random.generateRandomData
 
@@ -137,6 +141,31 @@ o.spec("CompatibilityTest", function () {
 		}
 	})
 
+	o.test("aes 256 async", async function () {
+		for (const td of testData.aes256Tests) {
+			let key = uint8ArrayToKey(hexToUint8Array(td.hexKey))
+
+			let decryptedBytes = uint8ArrayToBase64(await asyncDecryptBytes(key, base64ToUint8Array(td.cipherTextBase64)))
+			o.check(decryptedBytes).equals(td.plainTextBase64)
+		}
+	})
+	o.test("aes 128 async", async function () {
+		for (const td of testData.aes128Tests) {
+			let key = uint8ArrayToKey(hexToUint8Array(td.hexKey))
+
+			let decryptedBytes = uint8ArrayToBase64(await asyncDecryptBytes(key, base64ToUint8Array(td.cipherTextBase64)))
+			o.check(decryptedBytes).equals(td.plainTextBase64)
+		}
+	})
+	o.test("aes 128 async mac", async function () {
+		for (const td of testData.aes128MacTests) {
+			let key = uint8ArrayToKey(hexToUint8Array(td.hexKey))
+
+			let decryptedBytes = uint8ArrayToBase64(await asyncDecryptBytes(key, base64ToUint8Array(td.cipherTextBase64)))
+			o.check(decryptedBytes).equals(td.plainTextBase64)
+		}
+	})
+
 	o("aes128 128 bit key encryption", function () {
 		for (const td of testData.aes128Tests) {
 			let key = uint8ArrayToKey(hexToUint8Array(td.hexKey))
@@ -179,6 +208,34 @@ o.spec("CompatibilityTest", function () {
 			o(decryptedBytes).equals(td.plainTextBase64)
 		}
 	})
+
+	o("AEAD - CTR-Then-Blake3 with associated data", async function () {
+		for (const td of testData.aeadTests) {
+			random.generateRandomData = (IV_BYTE_LENGTH: number) => hexToUint8Array(td.seed).slice(0, IV_BYTE_LENGTH)
+			const aeadFacade = new AeadFacade()
+			const encryptionKey = uint8ArrayToKey(hexToUint8Array(td.encryptionKey))
+			const authenticationKey = uint8ArrayToKey(hexToUint8Array(td.authenticationKey))
+			const keys = { encryptionKey, authenticationKey }
+			const plainText = base64ToUint8Array(td.plainTextBase64)
+			const associatedData = base64ToUint8Array(td.associatedData)
+			const ciphertext = base64ToUint8Array(td.cipherTextBase64)
+			const plaintextKey = hexToUint8Array(td.plaintextKey)
+			const encryptedKey = base64ToUint8Array(td.encryptedKey)
+
+			// encrypt data
+			const encryptedBytes = aeadFacade.encrypt(keys, plainText, associatedData)
+			o(ciphertext).deepEquals(encryptedBytes)
+			const decryptedBytes = aeadFacade.decrypt(keys, ciphertext, associatedData)
+			o(plainText).deepEquals(decryptedBytes)
+
+			// encrypt key
+			const reEncryptedKey = aeadFacade.encrypt(keys, plaintextKey, associatedData)
+			o(encryptedKey).deepEquals(reEncryptedKey)
+			const decryptedKey = aeadFacade.decrypt(keys, reEncryptedKey, associatedData)
+			o(plaintextKey).deepEquals(decryptedKey)
+		}
+	})
+
 	o("unicodeEncoding", function () {
 		for (const td of testData.encodingTests) {
 			let encoded = stringToUtf8Uint8Array(td.string)
@@ -270,6 +327,16 @@ o.spec("CompatibilityTest", function () {
 			const hmacSha256Tag = hexToUint8Array(td.hmacSha256TagHex) as MacTag
 			o(hmacSha256(key, data)).deepEquals(hmacSha256Tag)
 			verifyHmacSha256(key, data, hmacSha256Tag)
+		}
+	})
+
+	o.test("async-hmac-sha256", async function () {
+		for (const td of testData.hmacSha256Tests) {
+			const key = uint8ArrayToKey(hexToUint8Array(td.keyHex))
+			const data = hexToUint8Array(td.dataHex)
+			const hmacSha256Tag = hexToUint8Array(td.hmacSha256TagHex) as MacTag
+			o.check(await hmacSha256Async(key, data)).deepEquals(hmacSha256Tag)
+			await verifyHmacSha256Async(key, data, hmacSha256Tag)
 		}
 	})
 
@@ -406,6 +473,33 @@ o.spec("CompatibilityTest", function () {
 
 			o(await publicKeySignatureFacade.verifyPublicKeySignature(versionedPublicEncryptionKey, alicePublicKey, reproducedSignature)).equals(true)
 		}
+	})
+
+	o.spec("blake3", function () {
+		o("hash", function () {
+			for (const td of testData.blake3Tests) {
+				const data = hexToUint8Array(td.dataHex)
+				const digest = hexToUint8Array(td.digestHex)
+				o(blake3Hash(data)).deepEquals(digest)
+			}
+		})
+
+		o("mac", function () {
+			for (const td of testData.blake3Tests) {
+				const key = uint8ArrayToKey(hexToUint8Array(td.keyHex))
+				const data = hexToUint8Array(td.dataHex)
+				const tag = hexToUint8Array(td.tagHex) as MacTag
+				o(blake3Mac(key, data)).deepEquals(tag)
+				blake3MacVerify(key, data, tag)
+			}
+		})
+
+		o("kdf", function () {
+			for (const td of testData.blake3Tests) {
+				const inputKeyMaterialHex = hexToUint8Array(td.keyHex)
+				o(uint8ArrayToHex(blake3Kdf(inputKeyMaterialHex, td.context, td.lengthInBytes))).equals(td.kdfOutputHex)
+			}
+		})
 	})
 
 	/**

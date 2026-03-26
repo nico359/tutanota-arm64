@@ -1,5 +1,5 @@
 import m, { Children, Component } from "mithril"
-import { component_size, layout_size, px, size } from "../../gui/size"
+import { component_size, layout_size, px } from "../../gui/size"
 import { Button, ButtonType } from "../../gui/base/Button.js"
 import { createMail, createMailAddress, Mail } from "../../api/entities/tutanota/TypeRefs.js"
 import { MailRow } from "../../../mail-app/mail/view/MailRow"
@@ -60,12 +60,12 @@ export class CustomColorEditorPreview implements Component {
 				m(".pt-16", [
 					m(IconButton, {
 						title: lang.makeTranslation("icon_button", "Icon button"),
-						icon: Icons.Folder,
+						icon: Icons.FolderFilled,
 						click: noOp,
 					}),
 					m(ToggleButton, {
 						title: lang.makeTranslation("toggle_button", "Toggle button"),
-						icon: this.toggleSelected ? Icons.Lock : Icons.Unlock,
+						icon: this.toggleSelected ? Icons.GenericLockFilled : Icons.LockOpenFilled,
 						toggled: this.toggleSelected,
 						onToggled: () => (this.toggleSelected = !this.toggleSelected),
 					}),
@@ -98,6 +98,7 @@ export class CustomColorEditorPreview implements Component {
 			processingState: ProcessingState.INBOX_RULE_NOT_PROCESSED,
 			clientSpamClassifierResult: null,
 			processNeeded: true,
+			serverClassificationData: "0,1",
 		} satisfies Partial<Mail>
 		const mail = createMail({
 			sender: createMailAddress({

@@ -2,11 +2,12 @@ import m, { Component, Vnode } from "mithril"
 import { assertMainOrNode } from "../../../common/api/common/Env"
 import ColumnEmptyMessageBox from "../../../common/gui/base/ColumnEmptyMessageBox"
 import { lang, Translation, MaybeTranslation } from "../../../common/misc/LanguageViewModel"
-import { BootIcons } from "../../../common/gui/base/icons/BootIcons"
 import { theme } from "../../../common/gui/theme"
 import type { Mail } from "../../../common/api/entities/tutanota/TypeRefs.js"
 import { Button, ButtonType } from "../../../common/gui/base/Button.js"
 import { progressIcon } from "../../../common/gui/base/Icon.js"
+import { deviceConfig } from "../../../common/misc/DeviceConfig"
+import { Icons } from "../../../common/gui/base/icons/Icons"
 
 assertMainOrNode()
 
@@ -29,7 +30,7 @@ export class MultiItemViewer<T> implements Component<MultiItemViewerAttrs<T>> {
 					".flex-grow.rel.overflow-hidden",
 					m(ColumnEmptyMessageBox, {
 						message: attrs.getSelectionMessage(selectedEntities),
-						icon: BootIcons.Mail,
+						icon: Icons.MailFilled,
 						color: theme.on_surface_variant,
 						backgroundColor: theme.surface_container,
 						bottomContent: this.renderEmptyMessageButtons(attrs),
@@ -76,14 +77,18 @@ export class MultiItemViewer<T> implements Component<MultiItemViewerAttrs<T>> {
 
 export function getMailSelectionMessage(selectedEntities: ReadonlyArray<Mail>): Translation {
 	let nbrOfSelectedMails = selectedEntities.length
+	let isConversationViewDisabled = deviceConfig.getConversationViewShowOnlySelectedMail()
 
 	if (nbrOfSelectedMails === 0) {
 		return lang.getTranslation("noMail_msg")
-	} else if (nbrOfSelectedMails === 1) {
-		return lang.getTranslation("oneMailSelected_msg")
+	}
+	if (isConversationViewDisabled) {
+		return nbrOfSelectedMails === 1
+			? lang.getTranslation("oneMailSelected_msg")
+			: lang.getTranslation("nbrOfMailsSelected_msg", { "{1}": nbrOfSelectedMails })
 	} else {
-		return lang.getTranslation("nbrOfMailsSelected_msg", {
-			"{1}": nbrOfSelectedMails,
-		})
+		return nbrOfSelectedMails === 1
+			? lang.getTranslation("oneConversationSelected_msg")
+			: lang.getTranslation("nbrOfConversationsSelected_msg", { "{1}": nbrOfSelectedMails })
 	}
 }

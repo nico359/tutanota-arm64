@@ -15,7 +15,7 @@ import { IconButtonAttrs } from "./IconButton.js"
 import { LoginController } from "../../api/main/LoginController.js"
 import { client } from "../../misc/ClientDetector.js"
 import type { Contact } from "../../api/entities/tutanota/TypeRefs.js"
-import { isColorLight } from "./Color.js"
+import { isColorLight, isValidCSSHexColor } from "./Color.js"
 import { DropDownSelectorNew, DropDownSelectorNewAttrs } from "./DropDownSelectorNew"
 import { theme } from "../theme"
 import { size } from "../size"
@@ -40,8 +40,12 @@ export type FolderDropData = {
 	dropType: DropType.Folder
 	folderId: string
 }
+export type DriveDropData = {
+	dropType: DropType.DriveItems
+	data: string
+}
 
-export type DropData = FileDropData | MailDropData | FolderDropData
+export type DropData = FileDropData | MailDropData | FolderDropData | DriveDropData
 
 export type DragStartHandler = (event: DragEvent) => void
 export type DropHandler = (dropData: DropData) => void
@@ -86,7 +90,7 @@ export function renderCountryDropdownNew(params: {
 		selectedValue: params.selectedCountry,
 		selectionChangedHandler: params.onSelectionChanged,
 		icon: {
-			icon: Icons.Pin,
+			icon: Icons.PlaceFilled,
 			color: theme.on_surface_variant,
 		},
 	} satisfies DropDownSelectorNewAttrs<Country | null>)
@@ -298,6 +302,27 @@ export function getContactTitle(contact: Contact) {
  */
 export function colorForBg(bgColor: string): string {
 	return isColorLight(bgColor) ? "black" : "white"
+}
+
+/**
+ * Adds a # to the beginning of a string if there is none.  Returns the string unmodified if it already has a #.
+ *
+ * For use in situations when we are processing color hexes from multiple sources that may or may not
+ * already have a # at the beginning.
+ *
+ * Use this liberally because failure to do so can, in some situations, cause serious bugs.
+ *
+ * @param colorHex
+ */
+export function normalizeColorHex(colorHex: string) {
+	const normalized = colorHex.includes("#") ? colorHex : `#${colorHex}`
+
+	if (isValidCSSHexColor(normalized)) {
+		return normalized
+	}
+
+	console.warn("Trying to normalize a non-hex-color, this could be unintended...")
+	return colorHex
 }
 
 /**

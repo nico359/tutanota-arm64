@@ -208,6 +208,10 @@ export class OfflineStorage implements CacheStorage {
 		this.allTables = Object.freeze(Object.assign({}, additionalTables, TableDefinitions))
 	}
 
+	isInitialized(): boolean {
+		return this.userId != null
+	}
+
 	async getWholeListParsed(typeRef: TypeRef<unknown>, listId: string): Promise<ServerModelParsedInstance[]> {
 		const { query, params } = sql`SELECT entity
                                     FROM list_entities
@@ -731,7 +735,7 @@ export class OfflineStorage implements CacheStorage {
 		}
 	}
 
-	async deleteRange(typeRef: TypeRef<unknown>, listId: string): Promise<void> {
+	async deleteRange<T extends ListElementEntity>(typeRef: TypeRef<T>, listId: string): Promise<void> {
 		const { query, params } = sql`DELETE
                                     FROM ranges
                                     WHERE type = ${getTypeString(typeRef)}

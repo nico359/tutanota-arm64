@@ -1,5 +1,5 @@
 import { SpamClassificationHandler } from "./SpamClassificationHandler"
-import { InboxRuleHandler } from "./InboxRuleHandler"
+import { InboxRuleHandler, InboxRulesApplicationType } from "./InboxRuleHandler"
 import { Mail, MailSet, ProcessInboxDatum } from "../../../common/api/entities/tutanota/TypeRefs"
 import { FeatureType, MailSetKind } from "../../../common/api/common/TutanotaConstants"
 import { assertNotNull, isEmpty, Nullable, throttle } from "@tutao/tutanota-utils"
@@ -15,8 +15,12 @@ import { InstanceSessionKey } from "../../../common/api/entities/sys/TypeRefs"
 
 assertMainOrNode()
 
-export type UnencryptedProcessInboxDatum = Omit<StrippedEntity<ProcessInboxDatum>, "encVector" | "ownerEncVectorSessionKey"> & {
-	vector: Uint8Array
+export type UnencryptedProcessInboxDatum = Omit<
+	StrippedEntity<ProcessInboxDatum>,
+	"encVectorLegacy" | "encVectorWithServerClassifiers" | "ownerEncVectorSessionKey"
+> & {
+	vectorLegacy: Uint8Array
+	vectorWithServerClassifiers: Uint8Array
 }
 
 const DEFAULT_THROTTLE_PROCESS_INBOX_SERVICE_REQUESTS_MS = 500
@@ -102,7 +106,7 @@ export class ProcessInboxHandler {
 
 			// apply regular inbox rules only if the mail is classified as ham by the spam classifier
 			if (moveToFolder.folderType === MailSetKind.INBOX) {
-				const result = await this.inboxRuleHandler()?.findAndApplyRulesNotExcludedFromSpamFilter(mailboxDetail, mail, sourceFolder)
+				const result = await this.inboxRuleHandler()?.findAndApplyRulesNotExcludedFromSpamFilter(mailboxDetail, mail, moveToFolder)
 				if (result) {
 					const { targetFolder, processInboxDatum } = result
 					finalProcessInboxDatum = processInboxDatum
@@ -113,11 +117,13 @@ export class ProcessInboxHandler {
 
 		// set processInboxDatum if the spam classification is disabled and no inbox rule applies to the mail
 		if (finalProcessInboxDatum === null) {
+			const { uploadableVector, uploadableVectorLegacy } = await this.mailFacade.createModelInputAndUploadableVectors(mail, mailDetails, sourceFolder)
 			finalProcessInboxDatum = {
 				mailId: mail._id,
 				targetMoveFolder: moveToFolder._id,
 				classifierType: null,
-				vector: await this.mailFacade.vectorizeAndCompressMails({ mail, mailDetails }),
+				vectorLegacy: uploadableVectorLegacy,
+				vectorWithServerClassifiers: uploadableVector,
 				ownerEncMailSessionKeys: [],
 			}
 		}
@@ -149,19 +155,12 @@ export class ProcessInboxHandler {
 			return sourceFolder
 		}
 		let moveToFolder: MailSet = sourceFolder
+
 		// process excluded rules first and then regular ones.
-		const result = await this.inboxRuleHandler()?.findAndApplyRulesExcludedFromSpamFilter(mailboxDetail, mail, sourceFolder, true)
+		const result = await this.inboxRuleHandler()?.findAndApplyMatchingRule(mailboxDetail, mail, sourceFolder, InboxRulesApplicationType.All, true)
 		if (result) {
-			const { targetFolder, processInboxDatum } = result
+			const { targetFolder, processInboxDatum: _ } = result
 			moveToFolder = targetFolder
-		} else {
-			if (moveToFolder.folderType === MailSetKind.INBOX) {
-				const result = await this.inboxRuleHandler()?.findAndApplyRulesNotExcludedFromSpamFilter(mailboxDetail, mail, sourceFolder, true)
-				if (result) {
-					const { targetFolder, processInboxDatum } = result
-					moveToFolder = targetFolder
-				}
-			}
 		}
 
 		return moveToFolder

@@ -18,7 +18,7 @@ import { createTestEntity } from "../TestUtils"
 import { SpamClassificationHandler } from "../../../src/mail-app/mail/model/SpamClassificationHandler"
 import { FolderSystem } from "../../../src/common/api/common/mail/FolderSystem"
 import { isSameId } from "../../../src/common/api/common/utils/EntityUtils"
-import { InboxRuleHandler } from "../../../src/mail-app/mail/model/InboxRuleHandler"
+import { InboxRuleHandler, InboxRulesApplicationType } from "../../../src/mail-app/mail/model/InboxRuleHandler"
 import { ProcessInboxHandler, UnencryptedProcessInboxDatum } from "../../../src/mail-app/mail/model/ProcessInboxHandler"
 import { MailboxDetail } from "../../../src/common/mailFunctionality/MailboxModel"
 import { LoginController } from "../../../src/common/api/main/LoginController"
@@ -93,7 +93,8 @@ o.spec("ProcessInboxHandlerTest", function () {
 				classifierType: ClientClassifierType.CUSTOMER_INBOX_RULES,
 				mailId: mail._id,
 				targetMoveFolder: trashFolder._id,
-				vector: new Uint8Array(),
+				vectorLegacy: new Uint8Array(),
+				vectorWithServerClassifiers: new Uint8Array(),
 				ownerEncMailSessionKeys: [],
 			}
 			when(spamHandler.predictSpamForNewMail(mail, mailDetails, inboxFolder, folderSystem)).thenResolve({
@@ -137,7 +138,8 @@ o.spec("ProcessInboxHandlerTest", function () {
 				classifierType: ClientClassifierType.CUSTOMER_INBOX_RULES,
 				mailId: mail._id,
 				targetMoveFolder: trashFolder._id,
-				vector: new Uint8Array(),
+				vectorLegacy: new Uint8Array(),
+				vectorWithServerClassifiers: new Uint8Array(),
 				ownerEncMailSessionKeys: [],
 			}
 			when(spamHandler.predictSpamForNewMail(mail, mailDetails, inboxFolder, folderSystem)).thenResolve({
@@ -183,7 +185,8 @@ o.spec("ProcessInboxHandlerTest", function () {
 			classifierType: ClientClassifierType.CUSTOMER_INBOX_RULES,
 			mailId: mail._id,
 			targetMoveFolder: trashFolder._id,
-			vector: new Uint8Array(),
+			vectorLegacy: new Uint8Array(),
+			vectorWithServerClassifiers: new Uint8Array(),
 			ownerEncMailSessionKeys: [],
 		}
 		when(spamHandler.predictSpamForNewMail(mail, mailDetails, inboxFolder, folderSystem)).thenResolve({
@@ -235,7 +238,8 @@ o.spec("ProcessInboxHandlerTest", function () {
 			classifierType: ClientClassifierType.CUSTOMER_INBOX_RULES,
 			mailId: mail._id,
 			targetMoveFolder: trashFolder._id,
-			vector: new Uint8Array(),
+			vectorLegacy: new Uint8Array(),
+			vectorWithServerClassifiers: new Uint8Array(),
 			ownerEncMailSessionKeys: [],
 		}
 		when(spamHandler.predictSpamForNewMail(mail, mailDetails, inboxFolder, folderSystem)).thenResolve({
@@ -270,7 +274,8 @@ o.spec("ProcessInboxHandlerTest", function () {
 			classifierType: ClientClassifierType.CUSTOMER_INBOX_RULES,
 			mailId: mail._id,
 			targetMoveFolder: trashFolder._id,
-			vector: new Uint8Array(),
+			vectorLegacy: new Uint8Array(),
+			vectorWithServerClassifiers: new Uint8Array(),
 			ownerEncMailSessionKeys: [],
 		}
 		when(spamHandler.predictSpamForNewMail(mail, mailDetails, inboxFolder, folderSystem)).thenResolve({
@@ -302,7 +307,8 @@ o.spec("ProcessInboxHandlerTest", function () {
 			classifierType: ClientClassifierType.CUSTOMER_INBOX_RULES,
 			mailId: mail._id,
 			targetMoveFolder: trashFolder._id,
-			vector: new Uint8Array(),
+			vectorLegacy: new Uint8Array(),
+			vectorWithServerClassifiers: new Uint8Array(),
 			ownerEncMailSessionKeys: mailInstanceSessionKeys,
 		}
 
@@ -315,7 +321,8 @@ o.spec("ProcessInboxHandlerTest", function () {
 			classifierType: ClientClassifierType.CUSTOMER_INBOX_RULES,
 			mailId: mail._id,
 			targetMoveFolder: trashFolder._id,
-			vector: new Uint8Array(),
+			vectorLegacy: new Uint8Array(),
+			vectorWithServerClassifiers: new Uint8Array(),
 			ownerEncMailSessionKeys: [],
 		}
 		when(spamHandler.predictSpamForNewMail(mail, mailDetails, inboxFolder, folderSystem)).thenResolve({
@@ -347,7 +354,8 @@ o.spec("ProcessInboxHandlerTest", function () {
 			classifierType: ClientClassifierType.CUSTOMER_INBOX_RULES,
 			mailId: mail._id,
 			targetMoveFolder: trashFolder._id,
-			vector: new Uint8Array(),
+			vectorLegacy: new Uint8Array(),
+			vectorWithServerClassifiers: new Uint8Array(),
 			ownerEncMailSessionKeys: mailInstanceSessionKeys,
 		}
 
@@ -360,7 +368,8 @@ o.spec("ProcessInboxHandlerTest", function () {
 			classifierType: ClientClassifierType.CUSTOMER_INBOX_RULES,
 			mailId: mail._id,
 			targetMoveFolder: trashFolder._id,
-			vector: new Uint8Array(),
+			vectorLegacy: new Uint8Array(),
+			vectorWithServerClassifiers: new Uint8Array(),
 			ownerEncMailSessionKeys: [],
 		}
 		when(spamHandler.predictSpamForNewMail(mail, mailDetails, inboxFolder, folderSystem)).thenResolve({
@@ -391,7 +400,8 @@ o.spec("ProcessInboxHandlerTest", function () {
 			classifierType: ClientClassifierType.CUSTOMER_INBOX_RULES,
 			mailId: mail._id,
 			targetMoveFolder: trashFolder._id,
-			vector: new Uint8Array(),
+			vectorLegacy: new Uint8Array(),
+			vectorWithServerClassifiers: new Uint8Array(),
 			ownerEncMailSessionKeys: mailInstanceSessionKeys,
 		}
 
@@ -414,49 +424,41 @@ o.spec("ProcessInboxHandlerTest", function () {
 	o("processInboxRulesOnly applies only inbox rules, does not interact with classifier", async function () {
 		mail.sets = [inboxFolder._id]
 		mail.processNeeded = false
-		when(inboxRuleHandler.findAndApplyRulesExcludedFromSpamFilter(mailboxDetail, mail, inboxFolder, true)).thenResolve(null)
-		when(inboxRuleHandler.findAndApplyRulesNotExcludedFromSpamFilter(mailboxDetail, mail, inboxFolder, true)).thenResolve({
+		when(inboxRuleHandler.findAndApplyMatchingRule(mailboxDetail, mail, inboxFolder, InboxRulesApplicationType.All, true)).thenResolve({
 			targetFolder: trashFolder,
 		})
 		const targetFolder = await processInboxHandler.processInboxRulesOnly(mail, inboxFolder, mailboxDetail)
 
 		verify(spamHandler.predictSpamForNewMail(anything(), anything(), anything(), anything()), { times: 0 })
-		verify(inboxRuleHandler.findAndApplyRulesNotExcludedFromSpamFilter(mailboxDetail, mail, inboxFolder, true), { times: 1 })
-		verify(inboxRuleHandler.findAndApplyRulesExcludedFromSpamFilter(mailboxDetail, mail, inboxFolder, true), { times: 1 })
-		verify(inboxRuleHandler.findAndApplyRulesNotExcludedFromSpamFilter(mailboxDetail, mail, inboxFolder, false), { times: 0 })
-		verify(inboxRuleHandler.findAndApplyRulesExcludedFromSpamFilter(mailboxDetail, mail, inboxFolder, false), { times: 0 })
+		verify(inboxRuleHandler.findAndApplyMatchingRule(mailboxDetail, mail, inboxFolder, InboxRulesApplicationType.All, true), { times: 1 })
 		o(targetFolder).deepEquals(trashFolder)
 	})
 
 	o("processInboxRulesOnly applies rules excluded from spamFilter, does not interact with classifier", async function () {
 		mail.sets = [inboxFolder._id]
 		mail.processNeeded = false
-		when(inboxRuleHandler.findAndApplyRulesExcludedFromSpamFilter(mailboxDetail, mail, inboxFolder, true)).thenResolve({
+		when(inboxRuleHandler.findAndApplyMatchingRule(mailboxDetail, mail, inboxFolder, InboxRulesApplicationType.All, true)).thenResolve({
 			targetFolder: trashFolder,
 		})
-		when(inboxRuleHandler.findAndApplyRulesNotExcludedFromSpamFilter(mailboxDetail, mail, inboxFolder, true)).thenResolve(null)
 		const targetFolder = await processInboxHandler.processInboxRulesOnly(mail, inboxFolder, mailboxDetail)
 
 		verify(spamHandler.predictSpamForNewMail(anything(), anything(), anything(), anything()), { times: 0 })
-		verify(inboxRuleHandler.findAndApplyRulesNotExcludedFromSpamFilter(mailboxDetail, mail, inboxFolder, true), { times: 0 })
-		verify(inboxRuleHandler.findAndApplyRulesExcludedFromSpamFilter(mailboxDetail, mail, inboxFolder, true), { times: 1 })
-		verify(inboxRuleHandler.findAndApplyRulesNotExcludedFromSpamFilter(mailboxDetail, mail, inboxFolder, false), { times: 0 })
-		verify(inboxRuleHandler.findAndApplyRulesExcludedFromSpamFilter(mailboxDetail, mail, inboxFolder, false), { times: 0 })
+		verify(inboxRuleHandler.findAndApplyMatchingRule(mailboxDetail, mail, inboxFolder, InboxRulesApplicationType.All, true), {
+			times: 1,
+		})
 		o(targetFolder).deepEquals(trashFolder)
 	})
 
 	o("processInboxRulesOnly returns inbox if no rule matches", async function () {
 		mail.sets = [inboxFolder._id]
 		mail.processNeeded = false
-		when(inboxRuleHandler.findAndApplyRulesExcludedFromSpamFilter(mailboxDetail, mail, inboxFolder, true)).thenResolve(null)
-		when(inboxRuleHandler.findAndApplyRulesNotExcludedFromSpamFilter(mailboxDetail, mail, inboxFolder, true)).thenResolve(null)
+		when(inboxRuleHandler.findAndApplyMatchingRule(mailboxDetail, mail, inboxFolder, InboxRulesApplicationType.All, true)).thenResolve(null)
 		const targetFolder = await processInboxHandler.processInboxRulesOnly(mail, inboxFolder, mailboxDetail)
 
 		verify(spamHandler.predictSpamForNewMail(anything(), anything(), anything(), anything()), { times: 0 })
-		verify(inboxRuleHandler.findAndApplyRulesNotExcludedFromSpamFilter(mailboxDetail, mail, inboxFolder, true), { times: 1 })
-		verify(inboxRuleHandler.findAndApplyRulesExcludedFromSpamFilter(mailboxDetail, mail, inboxFolder, true), { times: 1 })
-		verify(inboxRuleHandler.findAndApplyRulesNotExcludedFromSpamFilter(mailboxDetail, mail, inboxFolder, false), { times: 0 })
-		verify(inboxRuleHandler.findAndApplyRulesExcludedFromSpamFilter(mailboxDetail, mail, inboxFolder, false), { times: 0 })
+		verify(inboxRuleHandler.findAndApplyMatchingRule(mailboxDetail, mail, inboxFolder, InboxRulesApplicationType.All, true), {
+			times: 1,
+		})
 
 		o(targetFolder).deepEquals(inboxFolder)
 	})
@@ -469,7 +471,8 @@ o.spec("ProcessInboxHandlerTest", function () {
 			classifierType: ClientClassifierType.CLIENT_CLASSIFICATION,
 			mailId: mail._id,
 			targetMoveFolder: spamFolder._id,
-			vector: new Uint8Array(),
+			vectorLegacy: new Uint8Array(),
+			vectorWithServerClassifiers: new Uint8Array(),
 			ownerEncMailSessionKeys: [],
 		}
 		when(spamHandler.predictSpamForNewMail(mail, mailDetails, inboxFolder, folderSystem)).thenResolve({
@@ -491,7 +494,8 @@ o.spec("ProcessInboxHandlerTest", function () {
 			classifierType: ClientClassifierType.CLIENT_CLASSIFICATION,
 			mailId: mail._id,
 			targetMoveFolder: spamFolder._id,
-			vector: new Uint8Array(),
+			vectorLegacy: new Uint8Array(),
+			vectorWithServerClassifiers: new Uint8Array(),
 			ownerEncMailSessionKeys: mailInstanceSessionKeys,
 		}
 
@@ -506,7 +510,8 @@ o.spec("ProcessInboxHandlerTest", function () {
 			classifierType: null,
 			mailId: mail._id,
 			targetMoveFolder: inboxFolder._id,
-			vector: new Uint8Array(),
+			vectorLegacy: new Uint8Array(),
+			vectorWithServerClassifiers: new Uint8Array(),
 			ownerEncMailSessionKeys: [],
 		}
 
@@ -529,7 +534,8 @@ o.spec("ProcessInboxHandlerTest", function () {
 			classifierType: null,
 			mailId: mail._id,
 			targetMoveFolder: inboxFolder._id,
-			vector: new Uint8Array(),
+			vectorLegacy: new Uint8Array(),
+			vectorWithServerClassifiers: new Uint8Array(),
 			ownerEncMailSessionKeys: mailInstanceSessionKeys,
 		}
 
@@ -544,7 +550,8 @@ o.spec("ProcessInboxHandlerTest", function () {
 			classifierType: ClientClassifierType.CLIENT_CLASSIFICATION,
 			mailId: mail._id,
 			targetMoveFolder: spamFolder._id,
-			vector: new Uint8Array(),
+			vectorLegacy: new Uint8Array(),
+			vectorWithServerClassifiers: new Uint8Array(),
 			ownerEncMailSessionKeys: [],
 		}
 		when(spamHandler.predictSpamForNewMail(mail, mailDetails, inboxFolder, folderSystem)).thenResolve({
@@ -566,7 +573,8 @@ o.spec("ProcessInboxHandlerTest", function () {
 			classifierType: ClientClassifierType.CLIENT_CLASSIFICATION,
 			mailId: mail._id,
 			targetMoveFolder: spamFolder._id,
-			vector: new Uint8Array(),
+			vectorLegacy: new Uint8Array(),
+			vectorWithServerClassifiers: new Uint8Array(),
 			ownerEncMailSessionKeys: mailInstanceSessionKeys,
 		}
 
@@ -581,7 +589,8 @@ o.spec("ProcessInboxHandlerTest", function () {
 			classifierType: ClientClassifierType.CLIENT_CLASSIFICATION,
 			mailId: mail._id,
 			targetMoveFolder: inboxFolder._id,
-			vector: new Uint8Array(),
+			vectorLegacy: new Uint8Array(),
+			vectorWithServerClassifiers: new Uint8Array(),
 			ownerEncMailSessionKeys: [],
 		}
 		when(spamHandler.predictSpamForNewMail(mail, mailDetails, inboxFolder, folderSystem)).thenResolve({
@@ -603,7 +612,8 @@ o.spec("ProcessInboxHandlerTest", function () {
 			classifierType: ClientClassifierType.CLIENT_CLASSIFICATION,
 			mailId: mail._id,
 			targetMoveFolder: inboxFolder._id,
-			vector: new Uint8Array(),
+			vectorLegacy: new Uint8Array(),
+			vectorWithServerClassifiers: new Uint8Array(),
 			ownerEncMailSessionKeys: mailInstanceSessionKeys,
 		}
 
@@ -614,9 +624,11 @@ o.spec("ProcessInboxHandlerTest", function () {
 		when(logins.isEnabled(FeatureType.SpamClientClassification)).thenReturn(false)
 
 		mail.sets = [inboxFolder._id]
-		const compressedVector = new Uint8Array([2, 4, 8, 16])
-
-		when(mailFacade.vectorizeAndCompressMails({ mail, mailDetails })).thenResolve(compressedVector)
+		when(mailFacade.createModelInputAndUploadableVectors(mail, mailDetails, inboxFolder)).thenResolve({
+			modelInput: [],
+			uploadableVectorLegacy: new Uint8Array(),
+			uploadableVector: new Uint8Array(),
+		})
 		processInboxHandler = new ProcessInboxHandler(
 			logins,
 			mailFacade,
@@ -644,7 +656,8 @@ o.spec("ProcessInboxHandlerTest", function () {
 			classifierType: null,
 			mailId: mail._id,
 			targetMoveFolder: inboxFolder._id,
-			vector: compressedVector,
+			vectorLegacy: new Uint8Array(),
+			vectorWithServerClassifiers: new Uint8Array(),
 			ownerEncMailSessionKeys: mailInstanceSessionKeys,
 		}
 
@@ -659,7 +672,8 @@ o.spec("ProcessInboxHandlerTest", function () {
 			classifierType: ClientClassifierType.CLIENT_CLASSIFICATION,
 			mailId: mail._id,
 			targetMoveFolder: inboxFolder._id,
-			vector: new Uint8Array(),
+			vectorLegacy: new Uint8Array(),
+			vectorWithServerClassifiers: new Uint8Array(),
 			ownerEncMailSessionKeys: [],
 		}
 
@@ -692,7 +706,8 @@ o.spec("ProcessInboxHandlerTest", function () {
 			classifierType: ClientClassifierType.CLIENT_CLASSIFICATION,
 			mailId: mail._id,
 			targetMoveFolder: inboxFolder._id,
-			vector: new Uint8Array(),
+			vectorLegacy: new Uint8Array(),
+			vectorWithServerClassifiers: new Uint8Array(),
 			ownerEncMailSessionKeys: mailInstanceSessionKeys,
 		}
 

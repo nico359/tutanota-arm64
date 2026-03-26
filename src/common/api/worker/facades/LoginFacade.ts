@@ -80,7 +80,6 @@ import {
 	sha256Hash,
 	TotpSecret,
 	TotpVerifier,
-	uint8ArrayToBitArray,
 	uint8ArrayToKey,
 } from "@tutao/tutanota-crypto"
 import { CryptoFacade } from "../crypto/CryptoFacade"
@@ -244,10 +243,6 @@ export class LoginFacade {
 		this.eventBusClient.close(CloseEventBusOption.Terminate)
 		await this.deInitCache()
 		this.userFacade.reset()
-	}
-
-	async checkOutOfSyncCache(): Promise<void> {
-		await this.eventBusClient.checkOutOfSync()
 	}
 
 	/**
@@ -702,7 +697,10 @@ export class LoginFacade {
 				await this.loginListener.onLoginFailure(LoginFailReason.SessionExpired)
 			} else {
 				this.asyncLoginState = { state: "failed", credentials, cacheInfo }
-				if (!(e instanceof ConnectionError)) await this.sendError(e)
+				if (!(e instanceof ConnectionError)) {
+					await this.applicationTypesFacade.invalidateApplicationTypes()
+					await this.sendError(e)
+				}
 				await this.loginListener.onLoginFailure(LoginFailReason.Error)
 			}
 		}
@@ -814,7 +812,8 @@ export class LoginFacade {
 			await this.entropyFacade.storeEntropy()
 			return { user, accessToken, userGroupInfo }
 		} catch (e) {
-			this.resetSession()
+			await this.resetSession()
+			await this.applicationTypesFacade.invalidateApplicationTypes()
 			throw e
 		}
 	}
@@ -831,18 +830,24 @@ export class LoginFacade {
 	 */
 	private async initCache({ userId, databaseKey, timeRangeDate, forceNewDatabase }: InitCacheOptions): Promise<CacheInfo> {
 		if (databaseKey != null) {
-			return {
+			const { isPersistent, isNewOfflineDb } = await this.cacheInitializer.initialize({
+				type: "offline",
+				userId,
 				databaseKey,
-				...(await this.cacheInitializer.initialize({
-					type: "offline",
-					userId,
-					databaseKey,
-					timeRangeDate,
-					forceNewDatabase,
-				})),
+				timeRangeDate,
+				forceNewDatabase,
+			})
+			return {
+				isPersistent,
+				isNewOfflineDb,
+				databaseKey,
 			}
 		} else {
-			return { databaseKey: null, ...(await this.cacheInitializer.initialize({ type: "ephemeral", userId })) }
+			const { isPersistent, isNewOfflineDb } = await this.cacheInitializer.initialize({
+				type: "ephemeral",
+				userId,
+			})
+			return { isPersistent, isNewOfflineDb, databaseKey: null }
 		}
 	}
 

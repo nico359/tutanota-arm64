@@ -60,6 +60,8 @@ import { ServerModelsUnavailableError } from "../error/ServerModelsUnavailableEr
 import { AppLockAuthenticationError } from "../error/AppLockAuthenticationError"
 import { InvalidModelError } from "../error/InvalidModelError"
 import { MoveCycleError } from "../error/MoveCycleError"
+import { MoveToTrashError } from "../error/MoveToTrashError"
+import { MoveDestinationIsSourceError } from "../error/MoveDestinationIsSourceError"
 
 function isErrorObjectEmpty(obj: Record<string, unknown>): boolean {
 	return Object.keys(obj).length === 0
@@ -151,6 +153,8 @@ const ErrorNameToType = {
 	MailImportError,
 	KeyVerificationMismatchError,
 	MoveCycleError,
+	MoveToTrashError,
+	MoveDestinationIsSourceError,
 	Error,
 	"java.net.SocketTimeoutException": ConnectionError,
 	"java.net.SocketException": ConnectionError,

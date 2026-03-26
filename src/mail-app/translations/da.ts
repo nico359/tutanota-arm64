@@ -1,5 +1,5 @@
 // DO NOT EDIT: automatically generated
-// Please edit translations via Phrase: https://tuta.com/blog/tutanota-translation-project
+// Please edit translations via POEditor: https://tuta.com/blog/tutanota-translation-project
 export default {
 	"code": "da",
 	"keys": {
@@ -316,6 +316,7 @@ export default {
 		"customNotificationEmailsHelp_msg": "Notifikations-e-mails bliver sendt til modtagere af fortrolige e-mails som har deres mailboks hos en anden e-mail-udbyder. Du kan tilpasse denne besked ved at tilføje kladder for forskellige sprog. Så snart du har tilføjet en kladde, benyttes standardbeskeden ikke længere. Disse kladder vil bliver tilføjet til alle brugere af denne konto.",
 		"cut_action": "Klip",
 		"dark_label": "Mørk",
+		"dataExpired_label": "Data er udløbet",
 		"dataExpired_msg": "Dine indlæste data er udløbet og ude af synkronisering med dataene på Tuta-serverne. Log venligst ud og log ind igen for at opdatere dine data.",
 		"dataWillBeStored_msg": "Data vil blive gemt på din enhed.",
 		"date_label": "Dato",
@@ -360,7 +361,6 @@ export default {
 		"deleteSharedCalendarConfirm_msg": "Kalenderen \"{calendar}\" er delt med andre brugere.",
 		"deleteSingleEventRecurrence_action": "Slet kun denne begivenhed",
 		"deleteTemplate_msg": "Er du sikker på du vil slette denne skabelon?",
-		"deleteTemplateGroups_msg": "Der er stadig aktive skabelonlister, som skal slettes, før du kan nedgradere. Dette kan inkludere delte skabelonlister eller skabelonlister, der tilhører dine brugere.",
 		"describeProblem_msg": "Skriv venligst dit spørgsmål",
 		"description_label": "Beskrivelse",
 		"desktop_label": "Skrivebord",
@@ -866,7 +866,6 @@ export default {
 		"outOfOfficeTimeRange_msg": "Send kun indenfor denne periode:",
 		"outOfOfficeTimeRangeHelp_msg": "Slå periode til.",
 		"outOfOfficeUnencrypted_msg": "Bemærk venligst at automatiske svar er sendt i klartekst til serveren og til fremtidige modtagere.",
-		"outOfSync_label": "Data er udløbet",
 		"owner_label": "Ejer",
 		"pageBackward_label": "Gå en side tilbage",
 		"pageForward_label": "Gå en side frem",

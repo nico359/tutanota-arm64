@@ -148,8 +148,6 @@ export class PdfDocument {
 		} else {
 			ops.push("f")
 		}
-		// ops.push(`0 g`)
-		// ops.push(`0 G`)
 		this.graphicsStream += ops.join(" ") + " "
 		return this
 	}
@@ -164,7 +162,6 @@ export class PdfDocument {
 		this.pdfWriter.createObject(
 			new Map<string, PdfDictValue>([
 				["Type", "/Pages"],
-				["Parent", { refId: "CATALOG" }],
 				["Kids", this.pageList],
 				["Count", `${this.pageCount}`],
 			]),

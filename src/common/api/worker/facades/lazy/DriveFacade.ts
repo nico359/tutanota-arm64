@@ -37,6 +37,8 @@ import { TransferId } from "../../../common/drive/DriveTypes"
 import { ProgrammingError } from "../../../common/error/ProgrammingError"
 import { NotFoundError } from "../../../common/error/RestError"
 import { MoveCycleError } from "../../../common/error/MoveCycleError"
+import { MoveToTrashError } from "../../../common/error/MoveToTrashError"
+import { MoveDestinationIsSourceError } from "../../../common/error/MoveDestinationIsSourceError"
 
 export interface BreadcrumbEntry {
 	folderName: string
@@ -62,13 +64,17 @@ export interface DriveRootFolders {
 	trash: IdTuple
 }
 
+export const enum DriveFolderType {
+	Regular = "0",
+	Root = "1",
+	Trash = "2",
+}
+
 /**
  * Exposes operations on the Drive.
  */
 export class DriveFacade {
 	private readonly abortControllers: Map<TransferId, AbortController> = new Map()
-	// this will not work with having multiple windows in desktop client
-	private latestUploadId: number = 0
 
 	constructor(
 		private readonly keyLoaderFacade: KeyLoaderFacade,
@@ -120,14 +126,15 @@ export class DriveFacade {
 		}
 	}
 
-	public async deleteFromTrash(items: readonly (DriveFile | DriveFolder)[]) {
+	public async deleteFromTrash(items: readonly (DriveFile | DriveFolder)[]): Promise<Id> {
 		const [files, folders] = partition(items, isDriveFile)
 
 		const deleteData = createDriveItemDeleteIn({
 			files: files.map((f) => f._id),
 			folders: folders.map((f) => f._id),
 		})
-		await this.serviceExecutor.delete(DriveItemService, deleteData)
+		const result = await this.serviceExecutor.delete(DriveItemService, deleteData)
+		return result.operationId
 	}
 
 	public async loadRootFolders(): Promise<DriveRootFolders> {
@@ -254,12 +261,13 @@ export class DriveFacade {
 		return this.entityClient.load(DriveFolderTypeRef, response.folder)
 	}
 
-	public async copyItems(
-		files: readonly DriveFile[],
-		folders: readonly DriveFolder[],
-		destination: DriveFolder,
-		renamedFiles: Map<Id, string>,
-	): Promise<void> {
+	/**
+	 * @throws MoveToTrashError
+	 */
+	public async copyItems(files: readonly DriveFile[], folders: readonly DriveFolder[], destination: DriveFolder, renamedFiles: Map<Id, string>): Promise<Id> {
+		if (destination.type === DriveFolderType.Trash) {
+			throw new MoveToTrashError("Cannot copy to trash")
+		}
 		const fileItems = await promiseMap(files, async (file) => {
 			const sk = assertNotNull(await this.cryptoFacade.resolveSessionKey(file))
 
@@ -285,16 +293,27 @@ export class DriveFacade {
 			items: [...fileItems, ...folderItems],
 			destination: destination._id,
 		})
-		await this.serviceExecutor.post(DriveCopyService, copyData)
+		const result = await this.serviceExecutor.post(DriveCopyService, copyData)
+		return result.operationId
 	}
 
 	/**
 	 * @throws MoveCycleError
+	 * @throws MoveToTrashError
+	 * @throws MoveDestinationIsSourceError
 	 */
-	public async move(files: readonly DriveFile[], folders: readonly DriveFolder[], destination: DriveFolder, renamedFiles: Map<Id, string>) {
-		const parents = new Set((await this.getFolderParents(destination)).map(getElementId))
-		if (folders.some((f) => parents.has(getElementId(f)) || isSameId(f._id, destination._id))) {
-			throw new MoveCycleError(`Cannot move folder into its child ${destination._id.join("/")}`)
+	public async move(files: readonly DriveFile[], folders: readonly DriveFolder[], destinationId: IdTuple, renamedFiles: Map<Id, string>) {
+		if (files.some((file) => isSameId(file.folder, destinationId)) || folders.some((folder) => isSameId(folder.parent, destinationId))) {
+			throw new MoveDestinationIsSourceError("Cannot move items to the location they are already in")
+		}
+
+		const destination = await this.entityClient.load(DriveFolderTypeRef, destinationId)
+		if (destination.type === DriveFolderType.Trash) {
+			throw new MoveToTrashError("Cannot move to the trash")
+		}
+		const parents = new Set((await this.getFolderParents(destinationId)).map(getElementId))
+		if (folders.some((f) => parents.has(getElementId(f)) || isSameId(f._id, destinationId))) {
+			throw new MoveCycleError(`Cannot move folder into its child ${destinationId.join("/")}`)
 		}
 
 		for (const { left: filesChunk, right: foldersChunk } of splitListElementsIntoChunksByList(50, getListId, files, folders)) {
@@ -326,17 +345,14 @@ export class DriveFacade {
 
 			const data = createDriveFolderServicePutIn({
 				items,
-				destination: destination._id,
+				destination: destinationId,
 			})
 			await this.serviceExecutor.put(DriveFolderService, data)
 		}
 	}
 
-	async generateUploadId(): Promise<TransferId> {
-		return String(this.latestUploadId++) as TransferId
-	}
-
-	async getFolderParents(folder: DriveFolder): Promise<DriveFolder[]> {
+	async getFolderParents(folderId: IdTuple): Promise<DriveFolder[]> {
+		const folder = await this.entityClient.load(DriveFolderTypeRef, folderId)
 		if (folder.parent == null) return []
 		const result: DriveFolder[] = []
 		let currentParent: DriveFolder = folder

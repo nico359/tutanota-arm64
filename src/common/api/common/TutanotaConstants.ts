@@ -14,8 +14,6 @@ import {
 import { isApp, isElectronClient, isIOSApp } from "./Env"
 import type { Country } from "./CountryList"
 import { ProgrammingError } from "./error/ProgrammingError"
-import { MailModel } from "../../../mail-app/mail/model/MailModel"
-import { FolderInfo } from "../../../mail-app/mail/model/MailUtils"
 
 export const MAX_NBR_OF_MAILS_SYNC_OPERATION = 50
 export const MAX_NBR_OF_CONVERSATIONS = 50
@@ -57,6 +55,10 @@ export function isFolder(folder: MailSet): boolean {
  */
 export function isFolderReadOnly(mailSet: MailSet) {
 	return READ_ONLY_SYSTEM_FOLDERS.includes(mailSet.folderType as MailSetKind)
+}
+
+export function isPermanentDeleteAllowedForFolder(mailSet: MailSet) {
+	return isPermanentDeleteAllowedMailSetKind(mailSet.folderType as MailSetKind)
 }
 
 export function isNestableMailSet(mailSet: MailSet): boolean {
@@ -112,6 +114,25 @@ export function isEditableMailSet(mailSet: MailSet): boolean {
 		case MailSetKind.TRASH:
 		case MailSetKind.ARCHIVE:
 		case MailSetKind.SPAM:
+		case MailSetKind.ALL:
+		case MailSetKind.IMPORTED:
+		case MailSetKind.SCHEDULED:
+		default:
+			return false
+	}
+}
+
+export function isPermanentDeleteAllowedMailSetKind(mailsetKind: MailSetKind) {
+	switch (mailsetKind) {
+		case MailSetKind.TRASH:
+		case MailSetKind.SPAM:
+			return true
+		case MailSetKind.CUSTOM:
+		case MailSetKind.LABEL:
+		case MailSetKind.INBOX:
+		case MailSetKind.DRAFT:
+		case MailSetKind.SENT:
+		case MailSetKind.ARCHIVE:
 		case MailSetKind.ALL:
 		case MailSetKind.IMPORTED:
 		case MailSetKind.SCHEDULED:
@@ -415,7 +436,11 @@ export const LegacyPlans: readonly PlanType[] = Object.freeze([
 export const LegacyPrivatePlans: readonly PlanType[] = Object.freeze([PlanType.Premium, PlanType.Teams])
 export const LegacyBusinessPlans: readonly PlanType[] = Object.freeze([PlanType.Pro, PlanType.TeamsBusiness, PlanType.PremiumBusiness])
 export const HighlightedPlans: readonly AvailablePlanType[] = Object.freeze([PlanType.Revolutionary, PlanType.Advanced])
-export const HighestTierPlans: readonly PlanType[] = Object.freeze([PlanType.Legend, PlanType.Unlimited])
+export const HighestTierPlans: readonly AvailablePlanType[] = Object.freeze([PlanType.Legend, PlanType.Unlimited])
+
+export function isHighestTierPlan(planType: PlanType): boolean {
+	return (HighestTierPlans as readonly PlanType[]).includes(planType)
+}
 
 export const PlanTypeToName: Record<PlanType, PlanName> = Object.freeze(reverse(PlanType))
 
@@ -523,6 +548,7 @@ export const enum ConversationType {
 }
 
 export const enum MailState {
+	/** BEWARE: mails queued to be sent have a state of SENDING _before_ mail details is stored as a blob */
 	DRAFT = "0",
 	SENT = "1",
 	RECEIVED = "2",
@@ -536,9 +562,11 @@ export enum ApprovalStatus {
 	SEND_MAILS_APPROVED = "2",
 	INVOICE_NOT_PAID = "3",
 	SPAM_SENDER = "4",
-	DELAYED = "5",
-	DELAYED_AND_INITIALLY_ACCESSED = "6",
-	REGISTRATION_APPROVAL_NEEDED_AND_INITIALLY_ACCESSED = "7",
+	// this was DELAYED
+	UNUSED_DEPRECATED = "5",
+	DELAYED = "6",
+	// this was REGISTRATION_APPROVAL_NEEDED_AND_INITIALLY_ACCESSED
+	UNUSED2_DEPRECATED = "7",
 	PAID_SUBSCRIPTION_NEEDED = "8",
 	INITIAL_PAYMENT_PENDING = "9",
 	NO_ACTIVITY = "10",
@@ -705,6 +733,7 @@ export enum FeatureType {
 	QuickActions = "20",
 	ReceivesNoTutaNewsletters = "21",
 	DriveInternalBeta = "22", // Enables drive access for internal testing
+	SolutionPartner = "23",
 }
 
 export const FULL_INDEXED_TIMESTAMP: number = 0
@@ -884,6 +913,7 @@ export const enum UnsubscribeFailureReason {
 	ACTIVE_APPSTORE_SUBSCRIPTION = "unsubscribe.active_appstore_subscription",
 	LABEL_LIMIT_EXCEEDED = "unsubscribe.label_limit_exceeded",
 	HAS_SCHEDULED_MAILS = "unsubscribe.has_scheduled_mails",
+	DRIVE_NOT_EMPTY = "unsubscribe.drive_not_empty",
 }
 
 // legacy, should be deleted after clients older than 3.114 have been disabled.
@@ -1375,6 +1405,7 @@ export enum UsageTestState {
 	Live = "1",
 	Paused = "2",
 	Finished = "3",
+	Finalized = "4",
 }
 
 export const UsageTestStateToName = reverse(UsageTestState)
@@ -1550,3 +1581,16 @@ export enum ProcessingState {
 export const PLAN_SELECTOR_SELECTED_BOX_SCALE = "1.03"
 
 export const CANCEL_UPLOAD_EVENT = "CANCEL_UPLOAD_EVENT"
+/**
+ * We pick a max word frequency of 2^5 so that we can compress it together
+ * with the index (which is 2^11 =2048) into two bytes
+ */
+export const MAX_WORD_FREQUENCY = 31
+export const DEFAULT_VECTOR_MAX_LENGTH = 2048
+export const UNDO_SEND_TIMEOUT_SECONDS = 10
+
+export const enum OperationStatus {
+	SUCCESS = "0",
+	PROGRESS = "1",
+	FAILURE = "2",
+}

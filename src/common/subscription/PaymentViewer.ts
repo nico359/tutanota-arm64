@@ -95,7 +95,7 @@ export class PaymentViewer implements UpdatableSettingsViewer {
 	}
 
 	private async loadData() {
-		this.customer = await locator.logins.getUserController().loadCustomer()
+		this.customer = await locator.logins.getUserController().reloadCustomer()
 		const customerInfo = await locator.logins.getUserController().loadCustomerInfo()
 
 		const accountingInfo = await locator.entityClient.load(AccountingInfoTypeRef, customerInfo.accountingInfo)
@@ -127,10 +127,19 @@ export class PaymentViewer implements UpdatableSettingsViewer {
 				m(IconButton, {
 					title: "paymentMethod_label",
 					click: (e, dom) => this.handlePaymentMethodClick(e, dom),
-					icon: Icons.Edit,
+					icon: this.getIconForPaymentMethodSetting(this.accountingInfo),
 					size: ButtonSize.Compact,
 				}),
 		})
+	}
+
+	private getIconForPaymentMethodSetting(accountingInfo: AccountingInfo | null) {
+		if (this.customer?.type === AccountType.PAID && isIOSApp()) {
+			return Icons.InfoOutline
+		} else if (accountingInfo != null && hasRunningAppStoreSubscription(accountingInfo)) {
+			return Icons.InfoOutline
+		}
+		return Icons.PenFilled
 	}
 
 	private async handlePaymentMethodClick(e: MouseEvent, dom: HTMLElement) {
@@ -139,9 +148,12 @@ export class PaymentViewer implements UpdatableSettingsViewer {
 		}
 		const currentPaymentMethod: PaymentMethodType | null = getPaymentMethodType(this.accountingInfo)
 		if (isIOSApp()) {
-			// Paid users trying to change payment method on iOS with an active subscription
-			if (currentPaymentMethod !== PaymentMethodType.AppStore && this.customer?.type === AccountType.PAID) {
+			if (currentPaymentMethod === PaymentMethodType.AppStore) {
+				// Paid users trying to change payment method on iOS with an active subscription
 				return Dialog.message(lang.getTranslation("storePaymentMethodChange_msg", { "{AppStorePaymentChange}": InfoLink.AppStorePaymentChange }))
+			} else if (this.customer?.type === AccountType.PAID) {
+				// Paid users trying to change payment method on iOS without an active subscription.
+				return Dialog.message(lang.getTranslation("settingNotApplicableInIos_msg"))
 			}
 
 			return locator.mobilePaymentsFacade.showSubscriptionConfigView()
@@ -323,7 +335,7 @@ export class PaymentViewer implements UpdatableSettingsViewer {
 				posting.type === PostingType.UsageFee || posting.type === PostingType.Credit || posting.type === PostingType.SalesCommission
 					? {
 							title: "download_action",
-							icon: Icons.Download,
+							icon: Icons.DownloadFilled,
 							size: ButtonSize.Compact,
 							click: (e, dom) => {
 								if (this.customer?.businessUse) {
@@ -436,7 +448,7 @@ export class PaymentViewer implements UpdatableSettingsViewer {
 			const accountingInfo = await locator.entityClient.load(AccountingInfoTypeRef, instanceId)
 			this.updateAccountingInfoData(accountingInfo)
 		} else if (isUpdateForTypeRef(CustomerTypeRef, update)) {
-			this.customer = await locator.logins.getUserController().loadCustomer()
+			this.customer = await locator.logins.getUserController().reloadCustomer()
 			m.redraw()
 		} else if (isUpdateForTypeRef(InvoiceInfoTypeRef, update)) {
 			this.invoiceInfo = await locator.entityClient.load(InvoiceInfoTypeRef, instanceId)
@@ -487,7 +499,7 @@ export class PaymentViewer implements UpdatableSettingsViewer {
 						() => this.changeInvoiceData(),
 						() => locator.logins.getUserController().isPaidAccount(),
 					),
-					icon: Icons.Edit,
+					icon: Icons.PenFilled,
 					size: ButtonSize.Compact,
 				}),
 			]),

@@ -1,24 +1,29 @@
-import { DropdownChildAttrs } from "../../../common/gui/base/Dropdown"
+import { DropdownButtonAttrs, DropdownChildAttrs } from "../../../common/gui/base/Dropdown"
 import { lang, Translation } from "../../../common/misc/LanguageViewModel"
 import { Dialog } from "../../../common/gui/base/Dialog"
 import { showStandardsFileChooser } from "../../../common/file/FileController"
-import { DriveFolderType } from "./DriveViewModel"
 import { DriveFolder } from "../../../common/api/entities/drive/TypeRefs"
-import { FolderItemId } from "./DriveUtils"
+import { DriveFolderType } from "../../../common/api/worker/facades/lazy/DriveFacade"
+import { FileFolderItem, FolderFolderItem, FolderItem, FolderItemId } from "./DriveUtils"
+import { DropType } from "../../../common/gui/base/GuiUtils"
+import { Icons } from "../../../common/gui/base/icons/Icons"
+import { styles } from "../../../common/gui/styles"
 
-export function newItemActions({ onNewFile, onNewFolder }: { onNewFile: () => unknown; onNewFolder: () => unknown }): DropdownChildAttrs[] {
+export function newItemActions({ onNewFile, onNewFolder }: { onNewFile: () => unknown; onNewFolder: () => unknown }): DropdownButtonAttrs[] {
 	return [
-		{
-			click: (event, dom) => {
-				onNewFile()
-			},
-			label: lang.getTranslation("uploadFile_action"),
-		},
 		{
 			click: (event, dom) => {
 				onNewFolder()
 			},
 			label: lang.getTranslation("createFolder_action"),
+			icon: Icons.FolderFilled,
+		},
+		{
+			click: (event, dom) => {
+				onNewFile()
+			},
+			label: lang.getTranslation("uploadFile_action"),
+			icon: Icons.Upload,
 		},
 	]
 }
@@ -71,6 +76,13 @@ export function parseDragItems(str: string): FolderItemId[] | null {
 	return parsed
 }
 
+export function isDraggingDriveItems(dataTransfer: DataTransfer | null): boolean {
+	// https://html.spec.whatwg.org/multipage/dnd.html#dom-datatransfer-getdata-dev
+	// "Returns the specified data. If there is no such data, returns the empty string."
+	const maybeDriveItem = dataTransfer?.getData(DropType.DriveItems)
+	return maybeDriveItem != null && maybeDriveItem !== ""
+}
+
 export function driveFolderName(folder: DriveFolder): Translation {
 	switch (folder.type) {
 		case DriveFolderType.Root:
@@ -80,4 +92,80 @@ export function driveFolderName(folder: DriveFolder): Translation {
 		default:
 			return lang.makeTranslation(`${folder.name}`, folder.name)
 	}
+}
+export function getContextActions(
+	item: FileFolderItem | FolderFolderItem,
+	onRename: (f: FolderItem) => unknown,
+	onCopy: (f: FolderItem) => unknown,
+	onCut: (f: FolderItem) => unknown,
+	onRestore: (f: FolderItem) => unknown,
+	onTrash: (f: FolderItem) => unknown,
+	onStartMove: (f: FolderItem) => unknown,
+	onDelete: (f: FolderItem) => unknown,
+): DropdownChildAttrs[] {
+	const itemInTrash = (item.type === "file" && item.file.originalParent != null) || (item.type === "folder" && item.folder.originalParent != null)
+
+	// Caution: when adding actions, make sure they match the order in the action bar.
+	const actions: DropdownChildAttrs[] = []
+	if (!itemInTrash) {
+		actions.push(
+			{
+				label: "rename_action",
+				icon: Icons.PenFilled,
+				click: () => {
+					onRename(item)
+				},
+			},
+			{
+				label: "copy_action",
+				icon: Icons.CopyFilled,
+				click: () => {
+					onCopy(item)
+				},
+			},
+			{
+				label: "cut_action",
+				icon: Icons.ScissorsFilled,
+				click: () => {
+					onCut(item)
+				},
+			},
+			{
+				label: "move_action",
+				icon: Icons.Move,
+				click: () => {
+					onStartMove(item)
+				},
+			},
+			{
+				label: "trash_action",
+				icon: Icons.TrashFilled,
+				click: () => {
+					onTrash(item)
+				},
+			},
+		)
+	} else {
+		actions.push(
+			{
+				label: "restoreFromTrash_action",
+				icon: Icons.ArrowBackFilled,
+				click: () => {
+					onRestore(item)
+				},
+			},
+			{
+				label: "delete_action",
+				icon: Icons.TrashCrossFilled,
+				click: () => {
+					onDelete(item)
+				},
+			},
+		)
+	}
+	return actions
+}
+
+export function isMobileDriveLayout(): boolean {
+	return styles.isUsingBottomNavigation()
 }

@@ -29,7 +29,6 @@ import InvoiceAndPaymentDataPageNew from "./InvoiceAndPaymentDataPageNew"
 import { SimplifiedCreditCardViewModel } from "../subscription/SimplifiedCreditCardInputModel"
 import { IconMessageBox, InfoMessaggeBoxAttrs } from "../gui/base/ColumnEmptyMessageBox"
 import { theme } from "../gui/theme"
-import { BootIcons } from "../gui/base/icons/BootIcons"
 import { Country } from "../api/common/CountryList"
 import { RecoveryKitPage } from "../subscription/RecoveryKitPage"
 import { UpgradeConfirmSubscriptionPageNew } from "../subscription/UpgradeConfirmSubscriptionPageNew"
@@ -38,6 +37,7 @@ import { completeUpgradeStage } from "../ratings/UserSatisfactionUtils"
 import { windowFacade } from "../misc/WindowFacade"
 import SignupWizardLayout from "./SignupWizardLayout"
 import { noOp } from "@tutao/tutanota-utils"
+import { Icons } from "../gui/base/icons/Icons"
 
 assertMainOrNode()
 
@@ -113,7 +113,7 @@ export class SignupViewModel {
 		}
 		this.price = null
 		this.nextYearPrice = null
-		this.targetPlanType = PlanType.Revolutionary
+		this.targetPlanType = PlanType.Legend
 		this.accountingInfo = null
 		this.customer = null
 		this.newAccountData = null
@@ -248,7 +248,7 @@ export class SignupView extends BaseTopLevelView implements TopLevelView<SignupV
 					? m(
 							".flex-grow.flex.col.justify-center",
 							m(IconMessageBox, {
-								icon: BootIcons.Progress,
+								icon: Icons.Sync,
 								message: "pleaseWait_msg",
 								color: theme.on_surface_variant,
 							} satisfies InfoMessaggeBoxAttrs),
@@ -272,13 +272,21 @@ export class SignupView extends BaseTopLevelView implements TopLevelView<SignupV
 								{
 									title: "Create Account",
 									content: SignupFormPage,
-									onNext: () =>
+									onNext: () => {
 										SignupFlowUsageTestController.completeStage(
 											SignupFlowStage.CREATE_ACCOUNT,
 											this.wizardViewModel.targetPlanType,
 											this.wizardViewModel.options.paymentInterval(),
-										),
-									onPrev: () => SignupFlowUsageTestController.deletePing(SignupFlowStage.SELECT_PLAN),
+										)
+										if (isIOSApp()) {
+											SignupFlowUsageTestController.completeStage(
+												SignupFlowStage.SELECT_PAYMENT_METHOD,
+												this.wizardViewModel.targetPlanType,
+												this.wizardViewModel.options.paymentInterval(),
+												this.wizardViewModel.paymentData.paymentMethod,
+											)
+										}
+									},
 								},
 								{
 									title: "Payment",
@@ -290,9 +298,6 @@ export class SignupView extends BaseTopLevelView implements TopLevelView<SignupV
 											this.wizardViewModel.options.paymentInterval(),
 											this.wizardViewModel.paymentData.paymentMethod,
 										)
-									},
-									onPrev: () => {
-										SignupFlowUsageTestController.deletePing(SignupFlowStage.CREATE_ACCOUNT)
 									},
 									isEnabled: (ctx) => ctx.viewModel.targetPlanType !== PlanType.Free && !isIOSApp(),
 								},
@@ -316,10 +321,6 @@ export class SignupView extends BaseTopLevelView implements TopLevelView<SignupV
 										if (this.wizardViewModel.isCalledBySatisfactionDialog) {
 											completeUpgradeStage(this.wizardViewModel.currentPlan!, this.wizardViewModel.targetPlanType)
 										}
-									},
-									onPrev: (ctx) => {
-										SignupFlowUsageTestController.deletePing(SignupFlowStage.SELECT_PAYMENT_METHOD)
-										ctx.controller.setStepUnreachable(ctx.controller.currentStep)
 									},
 									isEnabled: (ctx) => ctx.viewModel.targetPlanType !== PlanType.Free,
 								},

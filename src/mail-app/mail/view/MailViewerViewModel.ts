@@ -14,6 +14,7 @@ import {
 	EncryptionAuthStatus,
 	ExternalImageRule,
 	FeatureType,
+	isPermanentDeleteAllowedMailSetKind,
 	MailAuthenticationStatus,
 	MailMethod,
 	MailPhishingStatus,
@@ -49,7 +50,7 @@ import { LoginController } from "../../../common/api/main/LoginController"
 import m from "mithril"
 import { LockedError, NotAuthorizedError, NotFoundError } from "../../../common/api/common/error/RestError"
 import { haveSameId, isSameId } from "../../../common/api/common/utils/EntityUtils"
-import { getReferencedAttachments, loadInlineImages, moveMails, showDownloadProgressDialog } from "./MailGuiUtils"
+import { getReferencedAttachments, loadInlineImages, moveMails, moveMailsToSystemFolder, showDownloadProgressDialog } from "./MailGuiUtils"
 import { SanitizedFragment } from "../../../common/misc/HtmlSanitizer"
 import { CALENDAR_MIME_TYPE, FileController } from "../../../common/file/FileController"
 import { exportMails } from "../export/Exporter.js"
@@ -68,7 +69,12 @@ import { WorkerFacade } from "../../../common/api/worker/facades/WorkerFacade.js
 import { SearchModel } from "../../search/model/SearchModel.js"
 import { ParsedIcalFileContent } from "../../../calendar-app/calendar/view/CalendarInvites.js"
 import { MailFacade } from "../../../common/api/worker/facades/lazy/MailFacade.js"
-import { EntityUpdateData, isUpdateForTypeRef } from "../../../common/api/common/utils/EntityUpdateUtils.js"
+import {
+	EntityEventsListener,
+	EntityUpdateData,
+	isUpdateForTypeRef,
+	OnEntityUpdateReceivedPriority,
+} from "../../../common/api/common/utils/EntityUpdateUtils.js"
 import { isOfflineError } from "../../../common/api/common/utils/ErrorUtils.js"
 import { CryptoFacade } from "../../../common/api/worker/crypto/CryptoFacade.js"
 import { AttachmentType, getAttachmentType } from "../../../common/gui/AttachmentBubble.js"
@@ -79,7 +85,7 @@ import { getDisplayedSender, getMailBodyText, MailAddressAndName } from "../../.
 import { MailModel, MoveMode } from "../model/MailModel.js"
 import { isNoReplyTeamAddress, isSystemNotification, loadMailDetails } from "./MailViewerUtils.js"
 import { assertSystemFolderOfType, getFolderName, getPathToFolderString, loadMailHeaders } from "../model/MailUtils.js"
-import { isDraft, isEditableDraft, isMailMovable, isMailScheduled } from "../model/MailChecks"
+import { isDraft, isEditableDraft, isMailDeletable, isMailMovable, isMailScheduled } from "../model/MailChecks"
 import type { SearchToken } from "../../../common/api/common/utils/QueryTokenUtils"
 import { CalendarEventsRepository } from "../../../common/calendar/date/CalendarEventsRepository.js"
 import { mailLocator } from "../../mailLocator.js"
@@ -87,6 +93,7 @@ import { UndoModel } from "../../UndoModel"
 import { isBrowser } from "../../../common/api/common/Env"
 import { CommonSystemFacade } from "../../../common/native/common/generatedipc/CommonSystemFacade"
 import { TransferProgressDispatcher } from "../../../common/api/main/TransferProgressDispatcher"
+import { locator } from "../../../common/api/main/CommonLocator"
 
 export const enum ContentBlockingStatus {
 	Block = "0",
@@ -188,24 +195,27 @@ export class MailViewerViewModel {
 		this.eventController.addEntityListener(this.entityListener)
 	}
 
-	private readonly entityListener = async (events: EntityUpdateData[]) => {
-		for (const update of events) {
-			if (isUpdateForTypeRef(MailTypeRef, update)) {
-				const { instanceListId, instanceId, operation } = update
-				if (operation === OperationType.UPDATE && isSameId(this.mail._id, [instanceListId, instanceId])) {
-					try {
-						const updatedMail = await this.entityClient.load(MailTypeRef, this.mail._id)
-						this.updateMail({ mail: updatedMail })
-					} catch (e) {
-						if (e instanceof NotFoundError) {
-							console.log(`could not find updated mail ${JSON.stringify([instanceListId, instanceId])}`)
-						} else {
-							throw e
+	private readonly entityListener: EntityEventsListener = {
+		onEntityUpdatesReceived: async (events: EntityUpdateData[]) => {
+			for (const update of events) {
+				if (isUpdateForTypeRef(MailTypeRef, update)) {
+					const { instanceListId, instanceId, operation } = update
+					if (operation === OperationType.UPDATE && isSameId(this.mail._id, [instanceListId, instanceId])) {
+						try {
+							const updatedMail = await this.entityClient.load(MailTypeRef, this.mail._id)
+							this.updateMail({ mail: updatedMail })
+						} catch (e) {
+							if (e instanceof NotFoundError) {
+								console.log(`could not find updated mail ${JSON.stringify([instanceListId, instanceId])}`)
+							} else {
+								throw e
+							}
 						}
 					}
 				}
 			}
-		}
+		},
+		priority: OnEntityUpdateReceivedPriority.NORMAL,
 	}
 
 	private async determineRelevantRecipient() {
@@ -340,9 +350,9 @@ export class MailViewerViewModel {
 		return isMailMovable(this.mail, this.mailModel)
 	}
 
-	isDeletableMail() {
+	isDeletingMailAllowed() {
 		const folderType = this.getFolderInfo()?.folderType
-		return folderType === MailSetKind.TRASH || folderType === MailSetKind.SPAM
+		return folderType != null && isPermanentDeleteAllowedMailSetKind(folderType) && isMailDeletable(this.mail)
 	}
 
 	isReceivedMail() {
@@ -579,15 +589,15 @@ export class MailViewerViewModel {
 		await this.entityClient.update(this.mail).catch(() => this.setPhishingStatus(oldStatus))
 	}
 
-	async markAsNotPhishing(): Promise<void> {
-		await this.updateMailPhishingStatus(MailPhishingStatus.WHITELISTED)
-	}
-
 	async markAsPhishing(): Promise<void> {
 		await this.updateMailPhishingStatus(MailPhishingStatus.SUSPICIOUS)
 	}
 
-	async reportMail(reportType: MailReportType): Promise<void> {
+	async markAsNotPhishing(): Promise<void> {
+		await this.updateMailPhishingStatus(MailPhishingStatus.WHITELISTED)
+	}
+
+	async reportSpamForMail(reportType: MailReportType): Promise<void> {
 		try {
 			const mailboxDetail = await this.mailModel.getMailboxDetailsForMail(this.mail)
 			// We should always have a mailbox, the check above throws due AssertNotNull in response.
@@ -611,6 +621,7 @@ export class MailViewerViewModel {
 					targetFolder: spamFolder,
 					moveMode: MoveMode.Mails,
 					undoModel: this.undoModel,
+					contactModel: mailLocator.contactModel,
 				})
 			}
 		} catch (e) {
@@ -620,6 +631,60 @@ export class MailViewerViewModel {
 				throw e
 			}
 		}
+	}
+
+	async reportNotSpamForMail() {
+		const hasMailMoved = await this.reapplyInboxRuleForMail()
+		if (!hasMailMoved) {
+			const mailFolderForMail = this.mailModel.getMailFolderForMail(this.mail)
+			if (!mailFolderForMail) {
+				return
+			}
+
+			await moveMailsToSystemFolder({
+				mailboxModel: this.mailboxModel,
+				mailModel: this.mailModel,
+				currentFolder: mailFolderForMail,
+				mailIds: [this.mail._id],
+				targetFolderType: MailSetKind.INBOX,
+				moveMode: MoveMode.Mails,
+				undoModel: this.undoModel,
+				contactModel: mailLocator.contactModel,
+			})
+		}
+	}
+
+	async reapplyInboxRuleForMail() {
+		const inboxRuleHandler = mailLocator.processInboxHandler()
+
+		const mail = this.mail
+		if (!mail._ownerGroup) {
+			return false
+		}
+		const mailboxDetail = await this.mailboxModel.getMailboxDetailsForMailGroup(mail._ownerGroup)
+
+		const currentFolder = this.mailModel.getMailFolderForMail(mail)
+		if (!currentFolder) {
+			return false
+		}
+
+		const targetFolder = await inboxRuleHandler.processInboxRulesOnly(mail, currentFolder, mailboxDetail)
+
+		if (isSameId(currentFolder._id, targetFolder._id)) {
+			return false
+		}
+
+		await moveMails({
+			targetFolder,
+			mailboxModel: locator.mailboxModel,
+			mailModel: mailLocator.mailModel,
+			mailIds: [mail._id],
+			moveMode: MoveMode.Mails,
+			undoModel: this.undoModel,
+			contactModel: mailLocator.contactModel,
+		})
+
+		return true
 	}
 
 	canExport(): boolean {
@@ -638,6 +703,14 @@ export class MailViewerViewModel {
 		return (
 			this.logins.isInternalUserLoggedIn() && !this.isDraftMail() && this.getPhishingStatus() === MailPhishingStatus.UNKNOWN && !this.isTutanotaTeamMail()
 		)
+	}
+
+	canReportNotSpam(): boolean {
+		return this.logins.isInternalUserLoggedIn() && this.getFolderInfo()?.folderType === MailSetKind.SPAM
+	}
+
+	canReapplyInboxRules(): boolean {
+		return this.logins.isInternalUserLoggedIn() && this.getFolderInfo()?.folderType === MailSetKind.INBOX
 	}
 
 	canShowHeaders(): boolean {
@@ -700,6 +773,10 @@ export class MailViewerViewModel {
 			.split("\n") // split headers
 			.filter((headerLine) => headerLine.toLowerCase().startsWith("list-unsubscribe:"))
 		return !isEmpty(listUnsubscribeHeaders)
+	}
+
+	isImportedMail(): boolean {
+		return this.mailModel.getImportedMailSets().some((mailSet) => this._mail.sets.find((mailSetId) => isSameId(mailSetId, mailSet._id)))
 	}
 
 	private decodeMimeHeader(value: string): string {
@@ -938,9 +1015,7 @@ export class MailViewerViewModel {
 
 		if (calendarFile && (mail.method === MailMethod.ICAL_REQUEST || mail.method === MailMethod.ICAL_REPLY) && mail.state === MailState.RECEIVED) {
 			Promise.all([
-				import("../../../calendar-app/calendar/view/CalendarInvites.js").then(({ getEventsFromFile }) =>
-					getEventsFromFile(calendarFile, mail.confidential),
-				),
+				import("../../../calendar-app/calendar/view/CalendarInvites.js").then(({ getEventsFromFile }) => getEventsFromFile(calendarFile)),
 				this.getSenderOfResponseMail(),
 			]).then(([contents, recipient]) => {
 				this.calendarEventAttachment =
@@ -1194,7 +1269,7 @@ export class MailViewerViewModel {
 			await showDownloadProgressDialog(
 				this.transferProgressDispatcher,
 				nonInlineAttachments,
-				this.fileController.downloadAll(nonInlineAttachments, ArchiveDataType.Attachments),
+				await this.fileController.downloadAll(nonInlineAttachments, ArchiveDataType.Attachments),
 			)
 		} catch (e) {
 			if (e instanceof FileOpenError) {
@@ -1211,9 +1286,9 @@ export class MailViewerViewModel {
 		file = (await this.cryptoFacade.enforceSessionKeyUpdateIfNeeded(this._mail, [file]))[0]
 		try {
 			if (open) {
-				await showDownloadProgressDialog(this.transferProgressDispatcher, [file], this.fileController.open(file))
+				await showDownloadProgressDialog(this.transferProgressDispatcher, [file], await this.fileController.open(file))
 			} else {
-				await showDownloadProgressDialog(this.transferProgressDispatcher, [file], this.fileController.download(file))
+				await showDownloadProgressDialog(this.transferProgressDispatcher, [file], await this.fileController.download(file))
 			}
 		} catch (e) {
 			if (e instanceof FileOpenError) {

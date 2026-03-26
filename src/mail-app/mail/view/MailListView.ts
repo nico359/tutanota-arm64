@@ -1,7 +1,7 @@
 import m, { Children, Component, Vnode } from "mithril"
 import { lang } from "../../../common/misc/LanguageViewModel"
 
-import { Keys, MailSetKind, MailState, SystemFolderType } from "../../../common/api/common/TutanotaConstants"
+import { Keys, MailSetKind, SystemFolderType } from "../../../common/api/common/TutanotaConstants"
 import type { Mail } from "../../../common/api/entities/tutanota/TypeRefs.js"
 import { component_size } from "../../../common/gui/size"
 import { styles } from "../../../common/gui/styles"
@@ -24,13 +24,12 @@ import { assertMainOrNode } from "../../../common/api/common/Env"
 import { MailViewModel } from "./MailViewModel.js"
 import { List, ListAttrs, ListSwipeDecision, MultiselectMode, RenderConfig, SwipeConfiguration } from "../../../common/gui/base/List.js"
 import ColumnEmptyMessageBox from "../../../common/gui/base/ColumnEmptyMessageBox.js"
-import { BootIcons } from "../../../common/gui/base/icons/BootIcons.js"
 import { theme } from "../../../common/gui/theme.js"
 import { VirtualRow } from "../../../common/gui/base/ListUtils.js"
 import { isKeyPressed } from "../../../common/misc/KeyManager.js"
 import { mailLocator } from "../../mailLocator.js"
 import { canDoDragAndDropExport } from "./MailViewerUtils.js"
-import { isMailMovable, isOfTypeOrSubfolderOf } from "../model/MailChecks.js"
+import { isDraft, isMailMovable, isOfTypeOrSubfolderOf } from "../model/MailChecks.js"
 import { DropType } from "../../../common/gui/base/GuiUtils"
 import { ListElementListModel } from "../../../common/misc/ListElementListModel"
 import { generateExportFileName } from "../export/emlUtils.js"
@@ -360,7 +359,7 @@ export class MailListView implements Component<MailListViewAttrs> {
 				},
 				listModel == null || listModel.isEmptyAndDone()
 					? m(ColumnEmptyMessageBox, {
-							icon: BootIcons.Mail,
+							icon: Icons.MailFilled,
 							message: "noMails_msg",
 							color: theme.on_surface_variant,
 						})
@@ -439,7 +438,7 @@ export class MailListView implements Component<MailListViewAttrs> {
 				//Check if the user is in the trash/spam folder or if it's in Inbox or Archive
 				//to determinate the target folder
 				const targetMailFolderType = this.showingSpamOrTrash
-					? listElement.state === MailState.DRAFT
+					? isDraft(listElement)
 						? MailSetKind.DRAFT
 						: MailSetKind.INBOX
 					: this.showingArchive
@@ -457,13 +456,13 @@ export class MailListView implements Component<MailListViewAttrs> {
 		return this.showingDraft
 			? [
 					m(Icon, {
-						icon: Icons.Cancel,
+						icon: Icons.X,
 					}),
 					m(".pl-4", lang.get("cancel_action")), // if this is the drafts folder, we can only cancel the selection as we have nowhere else to put the mail
 				]
 			: [
 					m(Icon, {
-						icon: Icons.Folder,
+						icon: Icons.FolderFilled,
 					}),
 					m(
 						".pl-4",
@@ -479,7 +478,7 @@ export class MailListView implements Component<MailListViewAttrs> {
 	private renderRightSpacer(): Children {
 		return [
 			m(Icon, {
-				icon: Icons.Trash,
+				icon: Icons.TrashFilled,
 			}),
 			m(".pl-4", lang.get("delete_action")),
 		]

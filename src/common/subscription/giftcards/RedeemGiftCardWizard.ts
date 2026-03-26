@@ -37,6 +37,7 @@ import { SecondFactorHandler } from "../../misc/2fa/SecondFactorHandler.js"
 import { LoginButton } from "../../gui/base/buttons/LoginButton.js"
 import { CredentialsInfo } from "../../native/common/generatedipc/CredentialsInfo.js"
 import { signup } from "../utils/PaymentUtils"
+import { MessageBanner } from "../../gui/base/MessageBanner"
 
 const enum GetCredentialsMethod {
 	Login,
@@ -58,6 +59,7 @@ class RedeemGiftCardModel {
 			premiumPrice: number
 			storedCredentials: ReadonlyArray<CredentialsInfo>
 			hashFromUrl: string
+			hasActiveCampaign: boolean
 		},
 		private readonly giftCardFacade: GiftCardFacade,
 		private readonly credentialsProvider: CredentialsProvider,
@@ -96,6 +98,9 @@ class RedeemGiftCardModel {
 
 	get storedCredentials(): ReadonlyArray<CredentialsInfo> {
 		return this.config.storedCredentials
+	}
+	get hasActivecampaign(): boolean {
+		return this.config.hasActiveCampaign
 	}
 
 	async loginWithStoredCredentials(encryptedCredentials: CredentialsInfo) {
@@ -164,7 +169,7 @@ class RedeemGiftCardModel {
 		}
 
 		await this.secondFactorHandler.closeWaitingForSecondFactorDialog()
-		const customer = await this.logins.getUserController().loadCustomer()
+		const customer = await this.logins.getUserController().reloadCustomer()
 		const customerInfo = await this.entityClient.load(CustomerInfoTypeRef, customer.customerInfo)
 		this.accountingInfo = await this.entityClient.load(AccountingInfoTypeRef, customerInfo.accountingInfo)
 
@@ -193,7 +198,7 @@ class GiftCardWelcomePage implements WizardPageN<RedeemGiftCardModel> {
 
 	view(vnode: Vnode<GiftCardRedeemAttrs>): Children {
 		const a = vnode.attrs
-
+		const hasActiveCampaign = a.data.hasActivecampaign
 		const nextPage = (method: GetCredentialsMethod) => {
 			locator.logins.logout(false).then(() => {
 				a.data.credentialsMethod = method
@@ -203,6 +208,7 @@ class GiftCardWelcomePage implements WizardPageN<RedeemGiftCardModel> {
 		}
 
 		return [
+			hasActiveCampaign ? m(MessageBanner, { type: "warning", translation: lang.getTranslation("buyGiftcardWhileCampaignActive_msg") }) : null,
 			m(
 				".flex-center.full-width.pt-32",
 				m(
@@ -574,7 +580,7 @@ async function loadModel(hashFromUrl: string): Promise<RedeemGiftCardModel> {
 
 	const storedCredentials = await locator.credentialsProvider.getInternalCredentialsInfos()
 	const pricesDataProvider = await PriceAndConfigProvider.getInitializedInstance(null, locator.serviceExecutor, null)
-
+	const hasActiveCampaign = pricesDataProvider.getRawPricingData().hasGlobalFirstYearDiscount
 	return new RedeemGiftCardModel(
 		{
 			giftCardInfo,
@@ -582,6 +588,7 @@ async function loadModel(hashFromUrl: string): Promise<RedeemGiftCardModel> {
 			premiumPrice: pricesDataProvider.getSubscriptionPrice(PaymentInterval.Yearly, PlanType.Revolutionary, UpgradePriceType.PlanActualPrice),
 			storedCredentials,
 			hashFromUrl,
+			hasActiveCampaign,
 		},
 		locator.giftCardFacade,
 		locator.credentialsProvider,

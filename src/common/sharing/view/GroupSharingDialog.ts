@@ -98,7 +98,7 @@ class GroupSharingDialogContent implements Component<GroupSharingDialogAttrs> {
 					? {
 							title: "addParticipant_action",
 							click: () => showAddParticipantDialog(model, texts),
-							icon: Icons.Add,
+							icon: Icons.Plus,
 						}
 					: null,
 			}),
@@ -117,7 +117,7 @@ class GroupSharingDialogContent implements Component<GroupSharingDialogAttrs> {
 						m.redraw()
 					})
 				},
-				icon: Icons.Cancel,
+				icon: Icons.X,
 			}
 			return {
 				cells: () => [
@@ -148,7 +148,7 @@ class GroupSharingDialogContent implements Component<GroupSharingDialogAttrs> {
 				actionButtonAttrs: model.canRemoveGroupMember(memberInfo.member)
 					? {
 							title: "delete_action",
-							icon: Icons.Cancel,
+							icon: Icons.X,
 							click: () => {
 								getConfirmation(
 									lang.makeTranslation("confirmation_msg", texts.removeMemberMessage(groupName, downcast(memberInfo.info.mailAddress))),
@@ -265,7 +265,7 @@ async function showAddParticipantDialog(model: GroupSharingModel, texts: GroupSh
 						model.sendGroupInvitation(model.info, recipients, capability()),
 					)
 					dialog.close()
-					await sendShareNotificationEmail(model.info, invitedMailAddresses, texts)
+					sendShareNotificationEmail(model.info, invitedMailAddresses, texts)
 				} catch (e) {
 					if (e instanceof KeyVerificationMismatchError) {
 						const failedRecipients: ResolvableRecipient[] = []
@@ -281,7 +281,7 @@ async function showAddParticipantDialog(model: GroupSharingModel, texts: GroupSh
 						await import("../../settings/keymanagement/KeyVerificationRecoveryDialog.js").then(
 							({ showMultiRecipientsKeyVerificationRecoveryDialog }) => showMultiRecipientsKeyVerificationRecoveryDialog(failedRecipients),
 						)
-					} else if (e instanceof PreconditionFailedError) {
+					} else if (e instanceof PreconditionFailedError && e.data !== "keys.absent") {
 						if (locator.logins.getUserController().isGlobalAdmin()) {
 							const { getAvailablePlansWithSharing } = await import("../../subscription/utils/SubscriptionUtils.js")
 							const plans = await getAvailablePlansWithSharing()

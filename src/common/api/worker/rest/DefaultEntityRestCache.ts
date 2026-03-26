@@ -45,7 +45,7 @@ import {
 	listIdPart,
 } from "../../common/utils/EntityUtils"
 import { ProgrammingError } from "../../common/error/ProgrammingError"
-import { assertWorkerOrNode } from "../../common/Env"
+import { assertWorkerOrNode, isTest } from "../../common/Env"
 import type { Entity, ListElementEntity, ServerModelParsedInstance, SomeEntity, TypeModel } from "../../common/EntityTypes"
 import { ENTITY_EVENT_BATCH_EXPIRE_MS } from "../EventBusClient"
 import { CustomCacheHandlerMap } from "./cacheHandler/CustomCacheHandler.js"
@@ -190,6 +190,19 @@ export interface ExposedCacheStorage {
 	 * we must maintain the integrity of our list ranges.
 	 * */
 	deleteIfExists<T extends SomeEntity>(typeRef: TypeRef<T>, listId: Id | null, id: Id): Promise<void>
+
+	/**
+	 * remove a complete range for a ListElementEntity from the cache by typeRef and listId.
+	 * deleting an entire range is helpful, when the instances should be explicitly reloaded the
+	 * next time a loadRange call is executed, but keeps already downloaded instances in cache,
+	 * when e.g. querying them explicitly with loadMultiple.
+	 *
+	 * This interface is exposed mainly to allow deleting the range of MailSetEntries for a
+	 * respective targetFolder when importing mails. This makes sure, that we keep already downloaded
+	 * MailSetEntries in cache, but still show all mails inside the targetFolder correctly.
+	 *
+	 */
+	deleteRange<T extends ListElementEntity>(typeRef: TypeRef<T>, listId: string): Promise<void>
 }
 
 export interface CacheStorage extends ExposedCacheStorage {
@@ -260,11 +273,25 @@ export interface CacheStorage extends ExposedCacheStorage {
 
 	deleteIfExists<T extends SomeEntity>(typeRef: TypeRef<T>, listId: Id | null, id: Id): Promise<void>
 
+	/**
+	 * remove a complete range for a ListElementEntity from the cache by typeRef and listId.
+	 * deleting an entire range is helpful, when the instances should be explicitly reloaded the
+	 * next time a loadRange call is executed, but keeps already downloaded instances in cache,
+	 * when e.g. querying them explicitly with loadMultiple.
+	 *
+	 * This interface is exposed mainly to allow deleting the range of MailSetEntries for a
+	 * respective targetFolder when importing mails. This makes sure, that we keep already downloaded
+	 * MailSetEntries in cache, but still show all mails inside the targetFolder correctly.
+	 */
+	deleteRange<T extends ListElementEntity>(typeRef: TypeRef<T>, listId: string): Promise<void>
+
 	putLastUpdateTime(value: number): Promise<void>
 
 	getUserId(): Id
 
 	deleteAllOwnedBy(owner: Id): Promise<void>
+
+	isInitialized(): boolean
 }
 
 /**
@@ -859,22 +886,23 @@ export class DefaultEntityRestCache implements EntityRestCache {
 	private async processCreateEvent(typeRef: TypeRef<any>, update: EntityUpdateData): Promise<EntityUpdateData | null> {
 		// if entityUpdate has been Prefetched or is NotAvailable, we do not need to do anything
 		if (update.prefetchStatus === PrefetchStatus.NotPrefetched) {
+			// if there is a custom handler we follow its decision
+			let shouldUpdateDb = this.storage.getCustomCacheHandlerMap().get(typeRef)?.shouldLoadOnCreateEvent?.(update)
+			// otherwise, we do a range check to see if we need to keep the range up-to-date. No need to load anything out of range
 			// we put new instances into cache only when it's a new instance in the cached range which is only for the list instances
 			if (update.instanceListId != null) {
-				// if there is a custom handler we follow its decision
-				let shouldUpdateDb = this.storage.getCustomCacheHandlerMap().get(typeRef)?.shouldLoadOnCreateEvent?.(update)
-				// otherwise, we do a range check to see if we need to keep the range up-to-date. No need to load anything out of range
 				shouldUpdateDb = shouldUpdateDb ?? (await this.storage.isElementIdInCacheRange(typeRef, update.instanceListId, update.instanceId))
-
-				if (shouldUpdateDb) {
-					try {
-						return await this.loadAndStoreInstanceFromUpdate(update)
-					} catch (e) {
-						if (isExpectedErrorForSynchronization(e)) {
-							return null
-						} else {
-							throw e
-						}
+			} else {
+				shouldUpdateDb = shouldUpdateDb ?? true
+			}
+			if (shouldUpdateDb) {
+				try {
+					return await this.loadAndStoreInstanceFromUpdate(update)
+				} catch (e) {
+					if (isExpectedErrorForSynchronization(e)) {
+						return null
+					} else {
+						throw e
 					}
 				}
 			}
@@ -888,31 +916,34 @@ export class DefaultEntityRestCache implements EntityRestCache {
 			console.log("DefaultEntityRestCache - processUpdateEvent of type Group:" + update.instanceId)
 		}
 
-		try {
-			if (update.prefetchStatus === PrefetchStatus.NotPrefetched) {
-				if (update.patches) {
-					const patchAppliedInstance = await this.patchMerger.patchAndStoreInstance(update)
-					if (patchAppliedInstance == null) {
-						return await this.loadAndStoreInstanceFromUpdate(update)
-					}
-				} else {
-					const cached = await this.storage.getParsed(update.typeRef, update.instanceListId, update.instanceId)
-					if (cached != null) {
+		const cached = await this.storage.getParsed(update.typeRef, update.instanceListId, update.instanceId)
+		// if the entity is not in cache we don't want to patch or re-download it
+		if (cached) {
+			try {
+				if (update.prefetchStatus === PrefetchStatus.NotPrefetched) {
+					if (update.patches) {
+						const patchAppliedInstance = await this.patchMerger.patchAndStoreInstance(update)
+						if (patchAppliedInstance == null) {
+							return await this.loadAndStoreInstanceFromUpdate(update)
+						}
+					} else {
 						return await this.loadAndStoreInstanceFromUpdate(update)
 					}
 				}
+			} catch (e) {
+				// If the entity is not there anymore we should evict it from the cache and not keep the outdated/nonexistent instance around.
+				// Even for list elements this should be safe as the instance is not there anymore.
+				if (isExpectedErrorForSynchronization(e)) {
+					console.log(`instance not found when processing update for ${JSON.stringify(update)}, deleting from the cache`)
+					await this.storage.deleteIfExists(update.typeRef, update.instanceListId, update.instanceId)
+					return null
+				} else {
+					throw e
+				}
 			}
 			return update
-		} catch (e) {
-			// If the entity is not there anymore we should evict it from the cache and not keep the outdated/nonexistent instance around.
-			// Even for list elements this should be safe as the instance is not there anymore.
-			if (isExpectedErrorForSynchronization(e)) {
-				console.log(`instance not found when processing update for ${JSON.stringify(update)}, deleting from the cache`)
-				await this.storage.deleteIfExists(update.typeRef, update.instanceListId, update.instanceId)
-				return null
-			} else {
-				throw e
-			}
+		} else {
+			return null
 		}
 	}
 
@@ -946,6 +977,12 @@ export class DefaultEntityRestCache implements EntityRestCache {
 	 * @return true if the cache can be used, false if a direct network request should be performed
 	 */
 	private shouldUseCache(typeRef: TypeRef<any>, opts?: EntityRestClientLoadOptions): boolean {
+		// if the cacheStorage for some reason is not (yet) initialized we can not use the cache,
+		// but still want to be able to use the client and do a login, etc.
+		if (!isTest() && !this.storage.isInitialized()) {
+			return false
+		}
+
 		// some types won't be cached
 		if (isIgnoredType(typeRef)) {
 			return false

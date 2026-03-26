@@ -25,8 +25,8 @@ import {
 } from "../../../common/api/common/utils/EntityUtils"
 import { BulkMailLoader, MailWithMailDetails } from "../index/BulkMailLoader"
 import { hasError } from "../../../common/api/common/utils/ErrorUtils"
-import { getSpamConfidence } from "../../../common/api/common/utils/spamClassificationUtils/SpamMailProcessor"
 import { MailFacade } from "../../../common/api/worker/facades/lazy/MailFacade"
+import { getSpamConfidence } from "../../../common/api/common/utils/spamClassificationUtils/SpamMailProcessor"
 import { isAppleDevice, isDesktop } from "../../../common/api/common/Env"
 
 // visible for testing
@@ -41,8 +41,12 @@ export type TrainingDataset = {
 	spamCount: number
 }
 
-export type UnencryptedPopulateClientSpamTrainingDatum = Omit<StrippedEntity<PopulateClientSpamTrainingDatum>, "encVector" | "ownerEncVectorSessionKey"> & {
+export type UnencryptedPopulateClientSpamTrainingDatum = Omit<
+	StrippedEntity<PopulateClientSpamTrainingDatum>,
+	"encVectorLegacy" | "encVectorWithServerClassifiers" | "ownerEncVectorSessionKey"
+> & {
 	vector: Uint8Array
+	vectorNewFormat: Uint8Array
 }
 
 export class SpamClassifierDataDealer {
@@ -55,8 +59,8 @@ export class SpamClassifierDataDealer {
 	private getMaxMailsCapForDevice() {
 		const MAX_MAILS_CAP_DESKTOP = 8000
 		const MAX_MAILS_CAP_DESKTOP_APPLE = 4000
-		const MAX_MAILS_CAP_APPLE = 1000
-		const MAX_MAILS_CAP = 2000
+		const MAX_MAILS_CAP_APPLE = 500
+		const MAX_MAILS_CAP = 1000
 
 		if (isAppleDevice()) {
 			if (isDesktop()) {
@@ -258,19 +262,22 @@ export class SpamClassifierDataDealer {
 	}
 
 	private async uploadTrainingDataForMails(mails: MailWithMailDetails[], mailBox: MailBox, mailSets: MailSet[]): Promise<void> {
+		const mailFacade = await this.mailFacade()
 		const unencryptedPopulateClientSpamTrainingData: UnencryptedPopulateClientSpamTrainingDatum[] = await promiseMap(
 			mails,
 			async (mailWithDetail) => {
 				const { mail, mailDetails } = mailWithDetail
 				const allMailFolders = mailSets.filter((mailSet) => isFolder(mailSet)).map((mailFolder) => mailFolder._id)
-				const sourceMailFolderId = assertNotNull(mail.sets.find((setId) => allMailFolders.find((folderId) => isSameId(setId, folderId))))
-				const sourceMailFolder = assertNotNull(mailSets.find((set) => isSameId(set._id, sourceMailFolderId)))
-				const isSpam = getMailSetKind(sourceMailFolder) === MailSetKind.SPAM
+				const mailFolderId = assertNotNull(mail.sets.find((setId) => allMailFolders.find((folderId) => isSameId(setId, folderId))))
+				const mailFolder = assertNotNull(mailSets.find((set) => isSameId(set._id, mailFolderId)))
+				const isSpam = getMailSetKind(mailFolder) === MailSetKind.SPAM
+				const { uploadableVectorLegacy, uploadableVector } = await mailFacade.createModelInputAndUploadableVectors(mail, mailDetails, mailFolder)
 				const unencryptedPopulateClientSpamTrainingData: UnencryptedPopulateClientSpamTrainingDatum = {
 					mailId: mail._id,
 					isSpam,
+					vector: uploadableVectorLegacy,
+					vectorNewFormat: uploadableVector,
 					confidence: getSpamConfidence(mail),
-					vector: await (await this.mailFacade()).vectorizeAndCompressMails({ mail, mailDetails }),
 				}
 				return unencryptedPopulateClientSpamTrainingData
 			},

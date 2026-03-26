@@ -45,7 +45,7 @@ export class ContactListRecipientView implements Component<ContactListViewAttrs>
 				? m(ColumnEmptyMessageBox, {
 						color: theme.on_surface_variant,
 						message: "noEntries_msg",
-						icon: Icons.People,
+						icon: Icons.PeopleFilled,
 					})
 				: m(List, {
 						renderConfig: this.renderConfig,
@@ -135,6 +135,7 @@ export class RecipientRow implements VirtualRow<ContactListEntry> {
 		return m(
 			SelectableRowContainer,
 			{
+				class: "pt-12 pb-12 pl-12 pr-12",
 				oncreate: (vnode) => {
 					Promise.resolve().then(() => this.showCheckbox(shouldAlwaysShowMultiselectCheckbox()))
 				},

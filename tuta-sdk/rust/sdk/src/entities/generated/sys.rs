@@ -651,6 +651,8 @@ pub struct AccountingInfo {
 	pub _modified: DateTime,
 	#[serde(rename = "2223")]
 	pub _ownerKeyVersion: Option<i64>,
+	#[serde(rename = "2690")]
+	pub lastUsedOffer: Option<String>,
 	#[serde(rename = "771")]
 	pub invoiceInfo: Option<GeneratedId>,
 	#[serde(rename = "2424")]
@@ -716,6 +718,10 @@ pub struct CustomerInfo {
 	pub perUserAliasCount: i64,
 	#[serde(rename = "2098")]
 	pub plan: i64,
+	#[serde(rename = "2682")]
+	pub promotionId: Option<String>,
+	#[serde(rename = "2691")]
+	pub confirmedHuman: bool,
 	#[serde(rename = "158")]
 	pub customer: GeneratedId,
 	#[serde(rename = "159")]
@@ -736,6 +742,10 @@ pub struct CustomerInfo {
 	pub customPlan: Option<PlanConfiguration>,
 	#[serde(rename = "2197")]
 	pub supportInfo: Option<GeneratedId>,
+	#[serde(rename = "2681")]
+	pub managedByPartner: Option<GeneratedId>,
+	#[serde(rename = "2683")]
+	pub partnerManagedCustomers: Option<GeneratedId>,
 }
 
 impl Entity for CustomerInfo {
@@ -3405,6 +3415,8 @@ pub struct RegistrationCaptchaServiceGetData {
 	pub language: String,
 	#[serde(rename = "2640")]
 	pub isAutomatedBrowser: bool,
+	#[serde(rename = "2689")]
+	pub adAttribution: Option<AdAttribution>,
 }
 
 impl Entity for RegistrationCaptchaServiceGetData {
@@ -4935,6 +4947,8 @@ pub struct PlanConfiguration {
 	pub maxLabels: i64,
 	#[serde(rename = "2662")]
 	pub scheduledMails: bool,
+	#[serde(rename = "2700")]
+	pub drive: bool,
 }
 
 impl Entity for PlanConfiguration {
@@ -6226,6 +6240,86 @@ impl Entity for AbuseInfo {
 		TypeRef {
 			app: AppName::Sys,
 			type_id: TypeId::from(2650),
+		}
+	}
+}
+
+#[derive(uniffi::Record, Clone, Serialize, Deserialize)]
+#[cfg_attr(any(test, feature = "testing"), derive(PartialEq, Debug))]
+pub struct PartnerManagedCustomer {
+	#[serde(rename = "2674")]
+	pub _id: Option<IdTupleGenerated>,
+	#[serde(rename = "2675")]
+	pub _permissions: GeneratedId,
+	#[serde(rename = "2676")]
+	pub _format: i64,
+	#[serde(rename = "2677")]
+	pub _ownerGroup: Option<GeneratedId>,
+	#[serde(rename = "2678")]
+	#[serde(with = "serde_bytes")]
+	pub _ownerEncSessionKey: Option<Vec<u8>>,
+	#[serde(rename = "2679")]
+	pub _ownerKeyVersion: Option<i64>,
+	#[serde(rename = "2680")]
+	pub customerInfo: IdTupleGenerated,
+
+	#[serde(default)]
+	pub _errors: Errors,
+}
+
+impl Entity for PartnerManagedCustomer {
+	fn type_ref() -> TypeRef {
+		TypeRef {
+			app: AppName::Sys,
+			type_id: TypeId::from(2672),
+		}
+	}
+}
+
+#[derive(uniffi::Record, Clone, Serialize, Deserialize)]
+#[cfg_attr(any(test, feature = "testing"), derive(PartialEq, Debug))]
+pub struct AdAttribution {
+	#[serde(rename = "2685")]
+	pub _id: Option<CustomId>,
+	#[serde(rename = "2686")]
+	pub attributionId: String,
+	#[serde(rename = "2687")]
+	pub attributionType: i64,
+}
+
+impl Entity for AdAttribution {
+	fn type_ref() -> TypeRef {
+		TypeRef {
+			app: AppName::Sys,
+			type_id: TypeId::from(2684),
+		}
+	}
+}
+
+#[derive(uniffi::Record, Clone, Serialize, Deserialize)]
+#[cfg_attr(any(test, feature = "testing"), derive(PartialEq, Debug))]
+pub struct OperationStatusUpdate {
+	#[serde(rename = "2693")]
+	pub _format: i64,
+	#[serde(rename = "2694")]
+	pub applicationVersionSum: i64,
+	#[serde(rename = "2695")]
+	pub applicationTypesHash: String,
+	#[serde(rename = "2696")]
+	pub operationId: GeneratedId,
+	#[serde(rename = "2697")]
+	pub status: i64,
+	#[serde(rename = "2698")]
+	pub statusCode: Option<i64>,
+	#[serde(rename = "2699")]
+	pub reason: Option<String>,
+}
+
+impl Entity for OperationStatusUpdate {
+	fn type_ref() -> TypeRef {
+		TypeRef {
+			app: AppName::Sys,
+			type_id: TypeId::from(2692),
 		}
 	}
 }

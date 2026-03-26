@@ -101,7 +101,6 @@ import { CalendarSearchModel } from "./calendar/search/model/CalendarSearchModel
 import { SearchIndexStateInfo } from "../common/api/worker/search/SearchTypes.js"
 import { CALENDAR_PREFIX } from "../common/misc/RouteChange.js"
 import { AppType } from "../common/misc/ClientConstants.js"
-import type { ParsedEvent } from "../common/calendar/gui/CalendarImporter.js"
 import { ExternalCalendarFacade } from "../common/native/common/generatedipc/ExternalCalendarFacade.js"
 import { WorkerRandomizer } from "../common/api/worker/workerInterfaces.js"
 import type { CalendarContactPreviewViewModel } from "./calendar/gui/eventpopup/CalendarContactPreviewViewModel.js"
@@ -121,6 +120,8 @@ import type { AutosaveFacade, LocalAutosavedDraftData } from "../common/api/work
 import { lang } from "../common/misc/LanguageViewModel.js"
 import { DriveFacade } from "../common/api/worker/facades/lazy/DriveFacade"
 import { TransferProgressDispatcher } from "../common/api/main/TransferProgressDispatcher"
+import { CalendarEventUpdateCoordinator } from "./calendar/model/CalendarEventUpdateCoordinator"
+import { ParsedEvent } from "../common/calendar/gui/ImportExportUtils"
 
 assertMainOrNode()
 
@@ -339,6 +340,7 @@ class CalendarLocator implements CommonLocator {
 					return false
 				},
 				this.syncTracker,
+				null,
 			)
 	}
 
@@ -369,8 +371,8 @@ class CalendarLocator implements CommonLocator {
 			calendarNotificationSender,
 			this.entityClient,
 			responseTo,
+			await this.calendarInviteHandler(),
 			getTimeZone(),
-			showProgress,
 		)
 	}
 
@@ -847,6 +849,7 @@ class CalendarLocator implements CommonLocator {
 			this.mailboxModel,
 			this.calendarFacade,
 			this.fileController,
+			this.contactModel,
 			timeZone,
 			!isBrowser() ? this.externalCalendarFacade : null,
 			deviceConfig,
@@ -864,6 +867,20 @@ class CalendarLocator implements CommonLocator {
 		const { calendarNotificationSender } = await import("./calendar/view/CalendarNotificationSender.js")
 		return new CalendarInviteHandler(this.mailboxModel, await this.calendarModel(), this.logins, calendarNotificationSender, (...arg) =>
 			this.sendMailModel(...arg),
+		)
+	})
+
+	readonly calendarEventUpdateCoordinator: () => Promise<CalendarEventUpdateCoordinator> = lazyMemoized(async () => {
+		const { CalendarEventUpdateCoordinator } = await import("./calendar/model/CalendarEventUpdateCoordinator")
+		const calendarModel = await this.calendarModel()
+		const connectivityModel: WebsocketConnectivityModel = this.connectivityModel
+		return new CalendarEventUpdateCoordinator(
+			connectivityModel,
+			calendarModel,
+			this.eventController,
+			this.entityClient,
+			this.mailboxModel,
+			this.syncTracker,
 		)
 	})
 
@@ -893,7 +910,7 @@ class CalendarLocator implements CommonLocator {
 		const mailboxProperties = await this.mailboxModel.getMailboxProperties(mailboxDetails.mailboxGroupRoot)
 
 		const userController = this.logins.getUserController()
-		const customer = await userController.loadCustomer()
+		const customer = await userController.reloadCustomer()
 		const ownMailAddresses = getEnabledMailAddressesWithUser(mailboxDetails, userController.userGroupInfo)
 		const ownAttendee: CalendarEventAttendee | null = findAttendeeInAddresses(selectedEvent.attendees, ownMailAddresses)
 		const eventType = getEventType(selectedEvent, calendars, ownMailAddresses, userController)
@@ -907,6 +924,7 @@ class CalendarLocator implements CommonLocator {
 			ownAttendee,
 			lazyIndexEntry,
 			async (mode: CalendarOperation, event: CalendarEvent) => this.calendarEventModel(mode, event, mailboxDetails, mailboxProperties, null),
+			this.calendarInviteHandler,
 			highlightedTokens,
 		)
 

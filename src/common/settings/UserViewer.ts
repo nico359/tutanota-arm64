@@ -43,12 +43,14 @@ export class UserViewer implements UpdatableSettingsDetailsViewer {
 	private usedStorage: number | null = null
 	private mailAddressTableModel: MailAddressTableModel | null = null
 	private mailAddressTableExpanded: boolean
+	private isPurchasingNewSharedMailboxGroup: boolean
 
 	constructor(
 		public userGroupInfo: GroupInfo,
 		private isAdmin: boolean,
 	) {
 		this.userGroupInfo = userGroupInfo
+		this.isPurchasingNewSharedMailboxGroup = false
 
 		this.mailAddressTableExpanded = false
 
@@ -68,7 +70,7 @@ export class UserViewer implements UpdatableSettingsDetailsViewer {
 					showActionButtonColumn: true,
 					addButtonAttrs: {
 						title: "addGroup_label",
-						icon: Icons.Add,
+						icon: Icons.Plus,
 						click: () => this.showAddUserToGroupDialog(),
 					},
 					lines: [],
@@ -102,7 +104,7 @@ export class UserViewer implements UpdatableSettingsDetailsViewer {
 		const changePasswordButtonAttrs: IconButtonAttrs = {
 			title: "changePassword_label",
 			click: () => this.changePassword(),
-			icon: Icons.Edit,
+			icon: Icons.PenFilled,
 			size: ButtonSize.Compact,
 		} as const
 		const passwordFieldAttrs = {
@@ -159,7 +161,7 @@ export class UserViewer implements UpdatableSettingsDetailsViewer {
 				m(IconButton, {
 					title: "edit_action",
 					click: () => this.onChangeName(name),
-					icon: Icons.Edit,
+					icon: Icons.PenFilled,
 					size: ButtonSize.Compact,
 				}),
 		})
@@ -283,7 +285,7 @@ export class UserViewer implements UpdatableSettingsDetailsViewer {
 									}),
 								)
 							},
-							icon: Icons.Cancel,
+							icon: Icons.X,
 						} as const,
 					}
 				},
@@ -338,6 +340,10 @@ export class UserViewer implements UpdatableSettingsDetailsViewer {
 						showProgressDialog("pleaseWait_msg", locator.groupManagementFacade.addUserToGroup(user, selectedGroupInfo.group))
 						dialog.close()
 					},
+				})
+			} else {
+				showAddGroupDialog(() => {
+					this.isPurchasingNewSharedMailboxGroup = true
 				})
 			}
 		}
@@ -411,6 +417,14 @@ export class UserViewer implements UpdatableSettingsDetailsViewer {
 				this.userGroupInfo = await locator.entityClient.load(GroupInfoTypeRef, this.userGroupInfo._id)
 				await this.updateUsedStorageAndAdminFlag()
 				m.redraw()
+			} else if (isUpdateForTypeRef(GroupInfoTypeRef, update) && operation === OperationType.CREATE) {
+				await this.teamGroupInfos.reload()
+				// When getting a create event, if user has just bought a new shared mailbox, add it to the selected user
+				if (this.isPurchasingNewSharedMailboxGroup) {
+					this.isPurchasingNewSharedMailboxGroup = false
+					await this.showAddUserToGroupDialog()
+				}
+				m.redraw()
 			} else if (
 				isUpdateForTypeRef(UserTypeRef, update) &&
 				operation === OperationType.UPDATE &&
@@ -433,7 +447,7 @@ export class UserViewer implements UpdatableSettingsDetailsViewer {
 	}
 
 	private loadCustomer(): Promise<Customer> {
-		return locator.logins.getUserController().loadCustomer()
+		return locator.logins.getUserController().reloadCustomer()
 	}
 
 	private loadTeamGroupInfos(): Promise<Array<GroupInfo>> {
@@ -461,4 +475,19 @@ export function showUserImportDialog(customDomains: string[]) {
 			}
 		},
 	})
+}
+
+export async function showAddGroupDialog(userConfirmedAddingGroup: () => void) {
+	const isCreateNewGroupSelected = await Dialog.choice("userAlreadyAssignedToAllAvailableGroups_msg", [
+		{ text: "close_alt", value: false },
+		{
+			text: "addGroup_label",
+			value: true,
+		},
+	])
+	if (isCreateNewGroupSelected) {
+		const { show } = await import("./../../mail-app/settings/groups/AddGroupDialog.js")
+		show()
+		userConfirmedAddingGroup()
+	}
 }

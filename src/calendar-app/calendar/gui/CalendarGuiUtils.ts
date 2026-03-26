@@ -62,7 +62,6 @@ import {
 	Keys,
 	RepeatPeriod,
 	ShareCapability,
-	TimeFormat,
 	Weekday,
 	WeekStart,
 } from "../../../common/api/common/TutanotaConstants.js"
@@ -70,7 +69,7 @@ import { AllIcons } from "../../../common/gui/base/Icon.js"
 import { SelectorItemList } from "../../../common/gui/base/DropDownSelector.js"
 import { DateTime, Duration } from "luxon"
 import { CalendarEventTimes, CalendarViewType, cleanMailAddress, isAllDayEvent } from "../../../common/api/common/utils/CommonCalendarUtils.js"
-import { AdvancedRepeatRule, CalendarEvent, UserSettingsGroupRoot } from "../../../common/api/entities/tutanota/TypeRefs.js"
+import { AdvancedRepeatRule, CalendarEvent } from "../../../common/api/entities/tutanota/TypeRefs.js"
 import { ProgrammingError } from "../../../common/api/common/error/ProgrammingError.js"
 import { layout_size } from "../../../common/gui/size.js"
 import { hslToHex, MAX_HUE_ANGLE } from "../../../common/gui/base/Color.js"
@@ -92,6 +91,7 @@ import { getStartOfTheWeekOffset } from "../../../common/misc/weekOffset"
 import { EventInviteEmailType } from "../view/CalendarNotificationSender.js"
 import { Key } from "../../../common/misc/KeyManager.js"
 import { isAppleDevice } from "../../../common/api/common/Env.js"
+import { IcsCalendarEvent } from "../../../common/calendar/gui/ImportExportUtils.js"
 
 export interface IntervalOption {
 	value: number
@@ -102,7 +102,7 @@ export interface IntervalOption {
 export function renderCalendarSwitchLeftButton(label: TranslationKey, click: () => unknown): Child {
 	return m(IconButton, {
 		title: label,
-		icon: Icons.ArrowBackward,
+		icon: Icons.ChevronLeft,
 		click,
 	})
 }
@@ -110,7 +110,7 @@ export function renderCalendarSwitchLeftButton(label: TranslationKey, click: () 
 export function renderCalendarSwitchRightButton(label: TranslationKey, click: () => unknown): Child {
 	return m(IconButton, {
 		title: label,
-		icon: Icons.ArrowForward,
+		icon: Icons.ChevronRight,
 		click,
 	})
 }
@@ -299,11 +299,11 @@ export const SELECTED_DATE_INDICATOR_THICKNESS = 4
 
 export function getIconForViewType(viewType: CalendarViewType): AllIcons {
 	const lookupTable: Record<CalendarViewType, AllIcons> = {
-		[CalendarViewType.DAY]: Icons.TableSingle,
-		[CalendarViewType.THREE_DAY]: Icons.TableColumns,
+		[CalendarViewType.DAY]: Icons.OneDay,
+		[CalendarViewType.THREE_DAY]: Icons.ThreeDays,
 		[CalendarViewType.WEEK]: Icons.Week,
-		[CalendarViewType.MONTH]: Icons.Table,
-		[CalendarViewType.AGENDA]: Icons.ListUnordered,
+		[CalendarViewType.MONTH]: Icons.Month,
+		[CalendarViewType.AGENDA]: Icons.UnorderedList,
 	}
 	return lookupTable[viewType]
 }
@@ -715,7 +715,7 @@ export const createCustomRepeatRuleUnitValues = (): SelectorItemList<AlarmInterv
 		},
 	]
 }
-export const CALENDAR_EVENT_HEIGHT: number = layout_size.calendar_line_height + 2
+export const CALENDAR_EVENT_HEIGHT: number = layout_size.calendar_line_height + 2 // height + border
 export const TEMPORARY_EVENT_OPACITY = 0.7
 
 export const enum EventLayoutMode {
@@ -851,7 +851,7 @@ function getCalculationEvent(event: CalendarEvent, zone: string, eventLayoutMode
  * There could be a case where they are flipped vertically, but we don't have them because earlier events will be always first. so the "left" top edge will
  * always be "above" the "right" top edge.
  */
-export function collidesWith(a: CalendarEvent, b: CalendarEvent): boolean {
+export function collidesWith(a: CalendarEvent | IcsCalendarEvent, b: CalendarEvent | IcsCalendarEvent): boolean {
 	return a.endTime.getTime() > b.startTime.getTime() && a.startTime.getTime() < b.endTime.getTime()
 }
 
@@ -868,26 +868,6 @@ function visuallyOverlaps(firstEventStart: Date, firstEventEnd: Date, secondEven
 	const eventDurationHours = eventDurationMs / (1000 * 60 * 60)
 	const height = eventDurationHours * layout_size.calendar_hour_height - layout_size.calendar_event_border
 	return firstEventEnd.getTime() === secondEventStart.getTime() && height < layout_size.calendar_line_height
-}
-
-export function expandEvent(ev: CalendarEvent, columnIndex: number, columns: Array<Array<EventWrapper>>): number {
-	let colSpan = 1
-
-	for (let i = columnIndex + 1; i < columns.length; i++) {
-		let col = columns[i]
-
-		for (let j = 0; j < col.length; j++) {
-			let ev1 = col[j]
-
-			if (collidesWith(ev, ev1.event) || visuallyOverlaps(ev.startTime, ev.endTime, ev1.event.startTime)) {
-				return colSpan
-			}
-		}
-
-		colSpan++
-	}
-
-	return colSpan
 }
 
 export function getEventColor(event: CalendarEvent, groupColors: GroupColors, isGhost: boolean = false): string {
@@ -935,11 +915,11 @@ export const eventInviteEmailTypeToCalendarAttendeeStatus = Object.freeze({
 })
 
 export const iconForAttendeeStatus: Record<CalendarAttendeeStatus, AllIcons> = Object.freeze({
-	[CalendarAttendeeStatus.ACCEPTED]: Icons.CircleCheckmark,
-	[CalendarAttendeeStatus.TENTATIVE]: Icons.CircleHelp,
-	[CalendarAttendeeStatus.DECLINED]: Icons.CircleReject,
-	[CalendarAttendeeStatus.NEEDS_ACTION]: Icons.CircleHelp,
-	[CalendarAttendeeStatus.ADDED]: Icons.CircleHelp,
+	[CalendarAttendeeStatus.ACCEPTED]: Icons.SuccessOutline,
+	[CalendarAttendeeStatus.TENTATIVE]: Icons.QuestionmarkOutline,
+	[CalendarAttendeeStatus.DECLINED]: Icons.FailureOutline,
+	[CalendarAttendeeStatus.NEEDS_ACTION]: Icons.QuestionmarkOutline,
+	[CalendarAttendeeStatus.ADDED]: Icons.QuestionmarkOutline,
 })
 
 /**

@@ -37,7 +37,7 @@ import {
 	SystemFolderType,
 } from "../../../common/api/common/TutanotaConstants.js"
 import { CUSTOM_MIN_ID, elementIdPart, getElementId, listIdPart } from "../../../common/api/common/utils/EntityUtils.js"
-import { EntityUpdateData, isUpdateForTypeRef } from "../../../common/api/common/utils/EntityUpdateUtils.js"
+import { EntityUpdateData, isUpdateForTypeRef, OnEntityUpdateReceivedPriority } from "../../../common/api/common/utils/EntityUpdateUtils.js"
 import m from "mithril"
 import { WebsocketCounterData } from "../../../common/api/entities/sys/TypeRefs.js"
 import { Notifications, NotificationType } from "../../../common/gui/Notifications.js"
@@ -57,6 +57,8 @@ import { ProcessInboxHandler } from "./ProcessInboxHandler"
 import { isWebClient } from "../../../common/api/common/Env"
 import { ProgressMonitorId } from "../../../common/api/common/utils/ProgressMonitor"
 import { ProgressTracker } from "../../../common/api/main/ProgressTracker"
+import { BulkMailLoader, MailWithMailDetails } from "../../workerUtils/index/BulkMailLoader"
+import { EntityRestClientLoadOptions } from "../../../common/api/worker/rest/EntityRestClient"
 
 interface MailboxSets {
 	folders: FolderSystem
@@ -95,12 +97,16 @@ export class MailModel {
 		private readonly mailFacade: MailFacade,
 		private readonly connectivityModel: WebsocketConnectivityModel | null,
 		private readonly processInboxHandler: () => ProcessInboxHandler,
-		private readonly progessTracker: ProgressTracker,
+		private readonly progressTracker: ProgressTracker,
+		private readonly bulkMailLoader: BulkMailLoader,
 	) {}
 
 	// only init listeners once
 	private readonly initListeners = lazyMemoized(() => {
-		this.eventController.addEntityListener((updates, _, eventQueueProgressMonitorId) => this.entityEventsReceived(updates, eventQueueProgressMonitorId))
+		this.eventController.addEntityListener({
+			onEntityUpdatesReceived: (updates, _, eventQueueProgressMonitorId) => this.entityEventsReceived(updates, eventQueueProgressMonitorId),
+			priority: OnEntityUpdateReceivedPriority.LOW,
+		})
 
 		this.eventController.getCountersStream().map((update) => {
 			this._mailboxCountersUpdates(update)
@@ -230,7 +236,7 @@ export class MailModel {
 
 					// complete work when the mail is processed or deleted
 					if (mail == null || !mail.processNeeded) {
-						this.progessTracker.workDoneForMonitor(eventQueueProgressMonitorId, 1)
+						this.progressTracker.workDoneForMonitor(eventQueueProgressMonitorId, 1)
 					}
 				}
 			}
@@ -637,5 +643,14 @@ export class MailModel {
 
 	async unscheduleMail(mail: Mail): Promise<void> {
 		return await this.mailFacade.unscheduleMail(mail._id)
+	}
+
+	async loadMailDetails(mails: readonly Mail[], options: EntityRestClientLoadOptions = {}): Promise<MailWithMailDetails[]> {
+		return this.bulkMailLoader.loadMailDetails(mails, options)
+	}
+
+	async loadAllMailsWithDetails(mailIds: readonly IdTuple[]): Promise<MailWithMailDetails[]> {
+		const mails = await this.loadAllMails(mailIds)
+		return this.loadMailDetails(mails)
 	}
 }

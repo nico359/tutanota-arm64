@@ -1,5 +1,5 @@
 // DO NOT EDIT: automatically generated
-// Please edit translations via Phrase: https://tuta.com/blog/tutanota-translation-project
+// Please edit translations via POEditor: https://tuta.com/blog/tutanota-translation-project
 export default {
 	"code": "uk",
 	"keys": {
@@ -434,6 +434,7 @@ export default {
 		"dark_blue_label": "Темно-синій",
 		"dark_label": "Темна",
 		"dark_red_label": "Темно-червоний",
+		"dataExpired_label": "Термін дії даних закінчився",
 		"dataExpired_msg": "Дані на комп’ютері застаріли і не синхронизуються з серверами. Просимо вийти та увійти до скриньки ще раз, щоб обновити дані.",
 		"dataExpiredOfflineDb_msg": "Ваші локальні дані не синхронізовані з даними на серверах Tuta. За потреби, при виході з системи ваші локально збережені дані будуть очищені та повторно завантажені.",
 		"dataWillBeStored_msg": "Дані зберігатимуться на вашому пристрої.",
@@ -486,7 +487,6 @@ export default {
 		"deleteSharedCalendarConfirm_msg": "Календар \"{calendar}\" є спільним з іншими користувачами.",
 		"deleteSingleEventRecurrence_action": "Видалити лише цю подію",
 		"deleteTemplate_msg": "Ви дійсно бажаєте видалити цей шаблон?",
-		"deleteTemplateGroups_msg": "Досі існують активні списки шаблонів, які необхідно видалити, перш ніж ви зможете перейти на нижчий рівень. Сюди можуть входити спільні списки шаблонів або списки шаблонів, що належать вашим користувачам.",
 		"department_placeholder": "Відділ",
 		"deprecatedKeyWarning_msg": "Це повідомлення було зашифровано старим ключем. Хоча такий процес шифрування може бути правомірним, він менш безпечний.",
 		"describeProblem_msg": "Будь ласка, введіть своє запитання",
@@ -1230,7 +1230,6 @@ export default {
 		"outOfOfficeTimeRange_msg": "Надсилати лише протягом цього проміжку часу:",
 		"outOfOfficeTimeRangeHelp_msg": "Перевірити, щоб вибрати дати.",
 		"outOfOfficeUnencrypted_msg": "Зверніть увагу, що автоматичні відповіді (автовідповідь) надсилаються відкритим текстом.",
-		"outOfSync_label": "Термін дії даних закінчився",
 		"owner_label": "Власник",
 		"pageBackward_label": "Сторінка назад",
 		"pageForward_label": "Сторінка вперед",
@@ -1742,7 +1741,6 @@ export default {
 		"someRepetitionsDeleted_msg": "Видалено деякі повтори",
 		"sortBy_label": "Критерій сортування",
 		"spam_action": "Спам",
-		"spam_move_action": "Перемістити до спаму",
 		"spamReports_label": "Повідомити про спам",
 		"spamRuleEnterValue_msg": "Введіть значення, будь ласка.",
 		"spelling_label": "Орфографія",

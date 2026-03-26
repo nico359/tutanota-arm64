@@ -90,6 +90,7 @@ import {
 	ProcessInboxDatum,
 	ReportedMailFieldMarker,
 	SendDraftParameters,
+	SendDraftReturn,
 	SymEncInternalRecipientKeyData,
 	SymEncInternalRecipientKeyDataTypeRef,
 	TutanotaPropertiesTypeRef,
@@ -131,7 +132,17 @@ import { BlobFacade } from "./BlobFacade.js"
 import { assertWorkerOrNode, isApp, isDesktop } from "../../../common/Env.js"
 import { EntityClient } from "../../../common/EntityClient.js"
 import { getEnabledMailAddressesForGroupInfo, getUserGroupMemberships, isAliasEnabledForGroupInfo } from "../../../common/utils/GroupUtils.js"
-import { containsId, elementIdPart, getElementId, getLetId, isSameId, listIdPart, stringToCustomId, StrippedEntity } from "../../../common/utils/EntityUtils.js"
+import {
+	containsId,
+	elementIdPart,
+	getElementId,
+	getLetId,
+	getListId,
+	isSameId,
+	listIdPart,
+	stringToCustomId,
+	StrippedEntity,
+} from "../../../common/utils/EntityUtils.js"
 import { htmlToText } from "../../../common/utils/IndexUtils.js"
 import { MailBodyTooLargeError } from "../../../common/error/MailBodyTooLargeError.js"
 import { UNCOMPRESSED_MAX_SIZE } from "../../Compression.js"
@@ -169,7 +180,6 @@ import { KeyVerificationMismatchError } from "../../../common/error/KeyVerificat
 import { VerifiedPublicEncryptionKey } from "./KeyVerificationFacade"
 import { UnencryptedProcessInboxDatum } from "../../../../../mail-app/mail/model/ProcessInboxHandler"
 import { UnencryptedPopulateClientSpamTrainingDatum } from "../../../../../mail-app/workerUtils/spamClassification/SpamClassifierDataDealer"
-import { MailWithMailDetails } from "../../../../../mail-app/workerUtils/index/BulkMailLoader"
 import { createSpamMailDatum, SpamMailProcessor } from "../../../common/utils/spamClassificationUtils/SpamMailProcessor"
 
 assertWorkerOrNode()
@@ -524,11 +534,19 @@ export class MailFacade {
 				// user added attachment
 				const fileSessionKey = aes256RandomKey()
 				let referenceTokens: Array<BlobReferenceTokenWrapper>
+				const transferId = await this.blobFacade.generateTransferId()
 				if (isApp() || isDesktop()) {
 					const { location } = await this.fileApp.writeDataFile(providedFile)
+					// there is no upload progress in native yet
 					referenceTokens = await this.blobFacade.encryptAndUploadNative(ArchiveDataType.Attachments, location, senderMailGroupId, fileSessionKey)
 				} else {
-					referenceTokens = await this.blobFacade.encryptAndUpload(ArchiveDataType.Attachments, providedFile.data, senderMailGroupId, fileSessionKey)
+					referenceTokens = await this.blobFacade.encryptAndUpload(
+						ArchiveDataType.Attachments,
+						providedFile.data,
+						senderMailGroupId,
+						fileSessionKey,
+						transferId,
+					)
 				}
 				return this.createAndEncryptDraftAttachment(referenceTokens, fileSessionKey, providedFile, mailGroupKey)
 			} else if (isFileReference(providedFile)) {
@@ -588,7 +606,7 @@ export class MailFacade {
 		})
 	}
 
-	async sendDraft(draft: Mail, recipients: Array<Recipient>, language: string, sendAt: Date | null): Promise<void> {
+	async sendDraft(draft: Mail, recipients: Array<Recipient>, language: string, sendAt: Date | null, allowUndo: boolean = false): Promise<SendDraftReturn> {
 		const senderMailGroupId = await this._getMailGroupIdForMailAddress(this.userFacade.getLoggedInUser(), draft.sender.address)
 		const bucketKey = aes256RandomKey()
 		const parameters: StrippedEntity<SendDraftParameters> = {
@@ -655,12 +673,18 @@ export class MailFacade {
 			...parameters,
 			parameters: createSendDraftParameters(parameters),
 			sendAt,
+			allowUndo,
 		})
-		await this.serviceExecutor.post(SendDraftService, sendDraftData)
+
+		return await this.serviceExecutor.post(SendDraftService, sendDraftData)
 	}
 
 	async unscheduleMail(mail: IdTuple) {
-		await this.serviceExecutor.delete(SendDraftService, createSendDraftDeleteIn({ mail }))
+		await this.serviceExecutor.delete(SendDraftService, createSendDraftDeleteIn({ mail, sendJob: null }))
+	}
+
+	async undoSendMail(mail: IdTuple, sendJob: IdTuple) {
+		await this.serviceExecutor.delete(SendDraftService, createSendDraftDeleteIn({ mail, sendJob }))
 	}
 
 	async getAttachmentIds(draft: Mail): Promise<IdTuple[]> {
@@ -1081,6 +1105,7 @@ export class MailFacade {
 
 		return mailAddressesForUserGroup.concat(allMailAddressesForMailGroups)
 	}
+
 	async clearFolder(folderId: IdTuple) {
 		const deleteMailData = createDeleteMailData({
 			folder: folderId,
@@ -1116,7 +1141,7 @@ export class MailFacade {
 		if (mail.mailDetailsDraft != null) {
 			throw new ProgrammingError("not supported, must be mail details blob")
 		} else {
-			const mailDetailsBlobId = assertNotNull(mail.mailDetails)
+			const mailDetailsBlobId = assertNotNull(mail.mailDetails, `null mailDetails on non-draft mail with id: ${getListId(mail)}/${getElementId(mail)}`)
 
 			const mailDetailsBlobs = await this.entityClient.loadMultiple(
 				MailDetailsBlobTypeRef,
@@ -1248,15 +1273,16 @@ export class MailFacade {
 	): Promise<ProcessInboxDatum[]> {
 		const processInboxData: ProcessInboxDatum[] = []
 		for (const unencryptedProcessInboxDatum of unencryptedProcessInboxData) {
+			const { targetMoveFolder, classifierType, mailId, vectorLegacy, vectorWithServerClassifiers } = unencryptedProcessInboxDatum
 			const mailGroupKey = await this.keyLoaderFacade.getCurrentSymGroupKey(mailGroupId)
 			const sk = aes256RandomKey()
 			const ownerEncSessionKey = this.cryptoWrapper.encryptKeyWithVersionedKey(mailGroupKey, sk)
-			const { targetMoveFolder, classifierType, mailId } = unencryptedProcessInboxDatum
 			processInboxData.push(
 				createProcessInboxDatum({
 					ownerEncVectorSessionKey: ownerEncSessionKey.key,
 					ownerKeyVersion: ownerEncSessionKey.encryptingKeyVersion.toString(),
-					encVector: aesEncrypt(sk, unencryptedProcessInboxDatum.vector),
+					encVectorLegacy: aesEncrypt(sk, vectorLegacy),
+					encVectorWithServerClassifiers: aesEncrypt(sk, vectorWithServerClassifiers),
 					classifierType,
 					mailId,
 					targetMoveFolder,
@@ -1292,12 +1318,13 @@ export class MailFacade {
 			const mailGroupKey = await this.keyLoaderFacade.getCurrentSymGroupKey(mailGroupId)
 			const sk = aes256RandomKey()
 			const ownerEncSessionKey = this.cryptoWrapper.encryptKeyWithVersionedKey(mailGroupKey, sk)
-			const { isSpam, confidence, mailId } = unencryptedProcessInboxDatum
+			const { isSpam, confidence, mailId, vector, vectorNewFormat } = unencryptedProcessInboxDatum
 			populateClientSpamTrainingData.push(
 				createPopulateClientSpamTrainingDatum({
 					ownerEncVectorSessionKey: ownerEncSessionKey.key,
 					ownerKeyVersion: ownerEncSessionKey.encryptingKeyVersion.toString(),
-					encVector: aesEncrypt(sk, unencryptedProcessInboxDatum.vector),
+					encVectorLegacy: aesEncrypt(sk, vector),
+					encVectorWithServerClassifiers: aesEncrypt(sk, vectorNewFormat),
 					isSpam,
 					mailId,
 					confidence,
@@ -1329,8 +1356,11 @@ export class MailFacade {
 		)
 	}
 
-	async vectorizeAndCompressMails(mailWithDetails: MailWithMailDetails) {
-		return this.spamMailProcessor.vectorizeAndCompress(createSpamMailDatum(mailWithDetails.mail, mailWithDetails.mailDetails))
+	async createModelInputAndUploadableVectors(mail: Mail, mailDetails: MailDetails, sourceFolder: MailSet) {
+		const datum = createSpamMailDatum(mail, mailDetails)
+		const modelInput = await this.spamMailProcessor.processSpamMailDatum(datum)
+		const { uploadableVectorLegacy, uploadableVector } = await this.spamMailProcessor.makeUploadableVectors(datum)
+		return { modelInput, uploadableVectorLegacy, uploadableVector }
 	}
 
 	/** Resolve conversation list ids to the IDs of mails in those conversations. */

@@ -1,12 +1,12 @@
 import o from "@tutao/otest"
 import { EntityClient } from "../../../src/common/api/common/EntityClient"
-import { DriveFacade, DriveRootFolders } from "../../../src/common/api/worker/facades/lazy/DriveFacade"
+import { DriveFacade, DriveFolderType, DriveRootFolders } from "../../../src/common/api/worker/facades/lazy/DriveFacade"
 import { Router } from "../../../src/common/gui/ScopedRouter"
 import { TransferProgressDispatcher } from "../../../src/common/api/main/TransferProgressDispatcher"
 import { EventController } from "../../../src/common/api/main/EventController"
 import { LoginController } from "../../../src/common/api/main/LoginController"
 import { UserManagementFacade } from "../../../src/common/api/worker/facades/lazy/UserManagementFacade"
-import { DriveFolderType, DriveViewModel } from "../../../src/drive-app/drive/view/DriveViewModel"
+import { DriveViewModel } from "../../../src/drive-app/drive/view/DriveViewModel"
 import { matchers, object, when } from "testdouble"
 import { EntityRestClientMock } from "../api/worker/rest/EntityRestClientMock"
 import { clientInitializedTypeModelResolver, createTestEntity } from "../TestUtils"
@@ -14,10 +14,10 @@ import { verify } from "@tutao/tutanota-test-utils"
 import { createDriveFolder, DriveFile, DriveFileTypeRef, DriveFolder, DriveFolderTypeRef } from "../../../src/common/api/entities/drive/TypeRefs"
 import { UserController } from "../../../src/common/api/main/UserController"
 import { TutanotaPropertiesTypeRef } from "../../../src/common/api/entities/tutanota/TypeRefs"
-import { GroupInfoTypeRef } from "../../../src/common/api/entities/sys/TypeRefs"
+import { GroupInfoTypeRef, PlanConfigurationTypeRef } from "../../../src/common/api/entities/sys/TypeRefs"
 import { elementIdPart, getElementId } from "../../../src/common/api/common/utils/EntityUtils"
-import { FileController } from "../../../src/common/file/FileController"
 import { FolderItemId } from "../../../src/drive-app/drive/view/DriveUtils"
+import { DriveTransferController } from "../../../src/drive-app/drive/view/DriveTransferController"
 
 o.spec("DriveViewModel", function () {
 	let driveViewModel: DriveViewModel
@@ -31,7 +31,7 @@ o.spec("DriveViewModel", function () {
 	let loginController: LoginController
 	let userController: UserController
 	let userManagementFacade: UserManagementFacade
-	let fileController: FileController
+	let transferController: DriveTransferController
 
 	const rootIds: Readonly<DriveRootFolders> = {
 		root: ["RootListID", "RootElementID"],
@@ -69,7 +69,6 @@ o.spec("DriveViewModel", function () {
 		uploadProgressController = object()
 		eventController = object()
 		loginController = object()
-		fileController = object()
 
 		const props = createTestEntity(TutanotaPropertiesTypeRef, {
 			defaultSender: "user@tuta.com",
@@ -80,6 +79,7 @@ o.spec("DriveViewModel", function () {
 		userController = {
 			props,
 			userGroupInfo: userGroupInfo,
+			getPlanConfig: async () => createTestEntity(PlanConfigurationTypeRef, { drive: true }),
 		} satisfies Partial<UserController> as UserController
 		userManagementFacade = object()
 
@@ -87,6 +87,7 @@ o.spec("DriveViewModel", function () {
 		when(driveFacade.loadRootFolders()).thenResolve(rootIds)
 		entityRestClientMock.addListInstances(rootFolders.root)
 
+		transferController = object()
 		driveViewModel = new DriveViewModel(
 			entityClient,
 			driveFacade,
@@ -95,8 +96,7 @@ o.spec("DriveViewModel", function () {
 			eventController,
 			loginController,
 			userManagementFacade,
-			fileController,
-			object(),
+			transferController,
 			() => {},
 		)
 		await driveViewModel.init()
@@ -260,28 +260,20 @@ o.spec("DriveViewModel", function () {
 		o.test("when uploading a single file it succeeds", async function () {
 			const webFiles: File[] = [{ name: "meow", size: 10 } as File]
 
-			when(driveFacade.uploadFile(matchers.anything(), matchers.anything(), matchers.anything(), matchers.anything())).thenResolve(
-				createTestEntity(DriveFileTypeRef),
-			)
-
 			await driveViewModel.displayFolder(rootIds.root)
 			await driveViewModel.uploadFiles(webFiles)
 
-			verify(driveFacade.uploadFile(webFiles[0], matchers.anything(), "meow", rootIds.root))
+			verify(transferController.upload(webFiles[0], "meow", rootIds.root))
 		})
 
 		o.test("when uploading two files with the same name, the second one gets renamed", async function () {
 			const webFiles: File[] = [{ name: "meow", size: 10 } as File, { name: "meow", size: 20 } as File]
 
-			when(driveFacade.uploadFile(matchers.anything(), matchers.anything(), matchers.anything(), matchers.anything())).thenResolve(
-				createTestEntity(DriveFileTypeRef),
-			)
-
 			await driveViewModel.displayFolder(rootIds.root)
 			await driveViewModel.uploadFiles(webFiles)
 
-			verify(driveFacade.uploadFile(webFiles[0], matchers.anything(), "meow", rootIds.root))
-			verify(driveFacade.uploadFile(webFiles[1], matchers.anything(), "meow (copy)", rootIds.root))
+			verify(transferController.upload(webFiles[0], "meow", rootIds.root))
+			verify(transferController.upload(webFiles[1], "meow (copy)", rootIds.root))
 		})
 
 		o.test(
@@ -292,15 +284,11 @@ o.spec("DriveViewModel", function () {
 				const existingFolders: DriveFolder[] = [createTestEntity(DriveFolderTypeRef, { _id: ["lid1", "eid0"], name: `meow (copy)` })]
 				when(driveFacade.getFolderContents(rootFolders.root._id)).thenResolve({ files: [], folders: existingFolders })
 
-				when(driveFacade.uploadFile(matchers.anything(), matchers.anything(), matchers.anything(), matchers.anything())).thenResolve(
-					createTestEntity(DriveFileTypeRef),
-				)
-
 				await driveViewModel.displayFolder(rootIds.root)
 				await driveViewModel.uploadFiles(webFiles)
 
-				verify(driveFacade.uploadFile(webFiles[0], matchers.anything(), "meow", rootIds.root))
-				verify(driveFacade.uploadFile(webFiles[1], matchers.anything(), "meow (copy) (copy)", rootIds.root))
+				verify(transferController.upload(webFiles[0], "meow", rootIds.root))
+				verify(transferController.upload(webFiles[1], "meow (copy) (copy)", rootIds.root))
 			},
 		)
 	})
@@ -314,8 +302,8 @@ o.spec("DriveViewModel", function () {
 			const driveFiles: DriveFile[] = files.map((f) => createTestEntity(DriveFileTypeRef, { _id: f.id, name: `same name` }))
 			entityRestClientMock.addListInstances(...driveFiles)
 
-			await driveViewModel.moveItems(files, rootFolders.root)
-			verify(driveFacade.move([driveFiles[0]], [], rootFolders.root, new Map([[getElementId(driveFiles[0]), `same name (copy)`]])))
+			await driveViewModel.moveItems(files, rootFolders.root._id)
+			verify(driveFacade.move([driveFiles[0]], [], rootFolders.root._id, new Map([[getElementId(driveFiles[0]), `same name (copy)`]])))
 		})
 
 		o.test("when moving items and the picked name conflicts with existing one it gets renamed", async function () {
@@ -329,9 +317,9 @@ o.spec("DriveViewModel", function () {
 			const driveFiles: DriveFile[] = files.map((f) => createTestEntity(DriveFileTypeRef, { _id: f.id, name: `same name` }))
 			entityRestClientMock.addListInstances(...driveFiles)
 
-			await driveViewModel.moveItems(files, rootFolders.root)
+			await driveViewModel.moveItems(files, rootFolders.root._id)
 			const mapCaptor = matchers.captor()
-			verify(driveFacade.move([driveFiles[0], driveFiles[1]], [], rootFolders.root, mapCaptor.capture()))
+			verify(driveFacade.move([driveFiles[0], driveFiles[1]], [], rootFolders.root._id, mapCaptor.capture()))
 			o.check(mapCaptor.value).deepEquals(new Map([[elementIdPart(files[1].id), `same name (copy) (copy)`]]))
 		})
 	})
