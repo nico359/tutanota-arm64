@@ -2,7 +2,7 @@ import m, { Children, Vnode } from "mithril"
 import { ViewSlider } from "../../../common/gui/nav/ViewSlider.js"
 import { ColumnType, ViewColumn } from "../../../common/gui/base/ViewColumn"
 import { InfoLink, lang, TranslationKey } from "../../../common/misc/LanguageViewModel"
-import { FeatureType, Keys, MailReportType, MailSetKind, SimpleMoveMailTarget } from "../../../common/api/common/TutanotaConstants"
+import { FeatureType, Keys, MailReportType, MailSetKind, SimpleMoveMailTarget, UpgradePromptType } from "../../../common/api/common/TutanotaConstants"
 import { assertMainOrNode, isApp, isBrowser } from "../../../common/api/common/Env"
 import { keyManager, Shortcut } from "../../../common/misc/KeyManager"
 import { CalendarEvent, CalendarEventTypeRef, Contact, ContactTypeRef, Mail, MailTypeRef } from "../../../common/api/entities/tutanota/TypeRefs.js"
@@ -27,6 +27,7 @@ import {
 	ofClass,
 	setDifference,
 	TypeRef,
+	YEAR_IN_MILLIS,
 } from "@tutao/tutanota-utils"
 import { Icons } from "../../../common/gui/base/icons/Icons"
 import { AppHeaderAttrs, Header } from "../../../common/gui/Header.js"
@@ -261,6 +262,14 @@ export class SearchView extends BaseTopLevelView implements TopLevelView<SearchV
 					getLabelsForMail: (mail) => this.searchViewModel.getLabelsForMail(mail),
 					highlightedStrings: this.searchViewModel.getHighlightedStrings(),
 					availableCalendars: this.searchViewModel.getAvailableCalendars(true),
+					indexStateStream: this.searchViewModel.getSearchIndexStateStream(),
+					extendIndex: () => {
+						//this.searchViewModel.
+						const currentStart = this.searchViewModel.startDate
+						if (currentStart) {
+							this.searchViewModel.selectStartDate(new Date(currentStart.getTime() - YEAR_IN_MILLIS / 2))
+						}
+					},
 				} satisfies SearchListViewAttrs),
 			),
 		])
@@ -424,7 +433,7 @@ export class SearchView extends BaseTopLevelView implements TopLevelView<SearchV
 
 	private async onMailDateRangeSelect() {
 		if (!this.searchViewModel.canSelectTimePeriod()) {
-			showNotAvailableForFreeDialog()
+			showNotAvailableForFreeDialog(UpgradePromptType.EXTEND_MAIL_SEARCH_RANGE)
 		} else {
 			const { start, end } = await showDateRangeSelectionDialog({
 				start: this.searchViewModel.startDate,
@@ -433,10 +442,11 @@ export class SearchView extends BaseTopLevelView implements TopLevelView<SearchV
 				optionalStartDate: true,
 				dateValidator: (startDate, endDate) => {
 					switch (this.searchViewModel.checkDates(startDate, endDate)) {
-						case "long":
-							return lang.getTranslationText("longSearchRange_msg")
+						case "extendIndex":
+							return lang.getTranslationText("continueSearchMailbox_msg")
 						case "startafterend":
 							return lang.getTranslationText("startAfterEnd_label")
+						case "long":
 						case null:
 							return null
 						default:
@@ -451,7 +461,7 @@ export class SearchView extends BaseTopLevelView implements TopLevelView<SearchV
 
 	private async onCalendarDateRangeSelect() {
 		if (!this.searchViewModel.canSelectTimePeriod()) {
-			showNotAvailableForFreeDialog()
+			showNotAvailableForFreeDialog(UpgradePromptType.CALENDAR_SEARCH)
 		} else {
 			const { start, end } = await showDateRangeSelectionDialog({
 				start: this.searchViewModel.startDate,
@@ -464,6 +474,7 @@ export class SearchView extends BaseTopLevelView implements TopLevelView<SearchV
 							return lang.getTranslationText("longSearchRange_msg")
 						case "startafterend":
 							return lang.getTranslationText("startAfterEnd_label")
+						case "extendIndex":
 						case null:
 							return null
 						default:
@@ -485,7 +496,7 @@ export class SearchView extends BaseTopLevelView implements TopLevelView<SearchV
 	}
 
 	oncreate(): void {
-		this.searchViewModel.init(() => this.confirmMailSearch())
+		this.searchViewModel.init()
 
 		keyManager.registerShortcuts(this.shortcuts())
 	}
@@ -654,8 +665,8 @@ export class SearchView extends BaseTopLevelView implements TopLevelView<SearchV
 						loadingAll:
 							this.searchViewModel.loadingAllForSearchResult != null
 								? "loading"
-								: this.searchViewModel.listModel.isLoadedCompletely()
-									? "loaded"
+								: this.searchViewModel.listModel.isLoadedCompletely() || this.searchViewModel.isIndexingMails()
+									? "none"
 									: "can_load",
 						getSelectionMessage: (selected: ReadonlyArray<Mail>) => getMailSelectionMessage(selected),
 					}),
@@ -1139,14 +1150,12 @@ export class SearchView extends BaseTopLevelView implements TopLevelView<SearchV
 			const mailboxIndex = mailboxes.indexOf(mailbox)
 			const mailFolders = mailLocator.mailModel.getFolderSystemByGroupId(mailbox.mailGroup._id)?.getIndentedList() ?? []
 			for (const folderInfo of mailFolders) {
-				if (folderInfo.folder.folderType !== MailSetKind.SPAM) {
-					const mailboxLabel = mailboxIndex === 0 ? "" : ` (${getGroupInfoDisplayName(mailbox.mailGroupInfo)})`
-					const folderId = getElementId(folderInfo.folder)
-					availableMailFolders.push({
-						name: getIndentedFolderNameForDropdown(folderInfo) + mailboxLabel,
-						value: folderId,
-					})
-				}
+				const mailboxLabel = mailboxIndex === 0 ? "" : ` (${getGroupInfoDisplayName(mailbox.mailGroupInfo)})`
+				const folderId = getElementId(folderInfo.folder)
+				availableMailFolders.push({
+					name: getIndentedFolderNameForDropdown(folderInfo) + mailboxLabel,
+					value: folderId,
+				})
 			}
 		}
 		return availableMailFolders
@@ -1154,10 +1163,6 @@ export class SearchView extends BaseTopLevelView implements TopLevelView<SearchV
 
 	getViewSlider(): ViewSlider | null {
 		return this.viewSlider
-	}
-
-	private confirmMailSearch(): Promise<boolean> {
-		return Dialog.confirm("continueSearchMailbox_msg", "search_label")
 	}
 
 	private readonly shortcuts = lazyMemoized<ReadonlyArray<Shortcut>>(() => {
@@ -1254,7 +1259,7 @@ export class SearchView extends BaseTopLevelView implements TopLevelView<SearchV
 	async onNewUrl(args: Record<string, any>, requestedPath: string) {
 		// calling init here too because this is called very early in the lifecycle and onNewUrl won't work properly if init is called
 		// afterwords
-		await this.searchViewModel.init(() => this.confirmMailSearch())
+		await this.searchViewModel.init()
 		this.searchViewModel.onNewUrl(args, requestedPath)
 		if (
 			isSameTypeRef(this.searchViewModel.searchedType, MailTypeRef) &&

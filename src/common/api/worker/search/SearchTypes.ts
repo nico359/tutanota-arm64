@@ -29,7 +29,7 @@ export type EncryptedSearchIndexEntryWithHash = {
 	idHash: number
 }
 export type GroupData = {
-	lastBatchIds: Id[]
+	lastBatchId: Id
 	indexTimestamp: number
 	groupType: GroupType
 }
@@ -152,7 +152,7 @@ export const enum IndexingErrorReason {
 }
 
 /**
- * Current state of the Mailindexer
+ * Current state of the MailIndexer
  * aimedMailIndexTimestamp is the timestamp we are currently indexing for (or same as currentMailIndexTimestamp if we are not indexing)
  */
 export type SearchIndexStateInfo = {

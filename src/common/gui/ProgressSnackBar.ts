@@ -1,5 +1,5 @@
 import m, { Children, Component, Vnode } from "mithril"
-import { theme } from "./theme"
+import { Theme, theme } from "./theme"
 import { boxShadowHigh } from "./main-styles"
 import { component_size, px, size } from "./size"
 import { IconButton } from "./base/IconButton"
@@ -62,14 +62,45 @@ export class ProgressSnackBar implements Component<ProgressSnackBarAttrs> {
 	}
 
 	private renderProgress(state: ProgressState, percentage: number): Children {
-		let indicatorColor = theme.on_surface_variant
-		if (state === ProgressState.error) {
-			indicatorColor = theme.error
-			percentage = 100
-		} else if (state === ProgressState.done) {
-			indicatorColor = theme.success
-			percentage = 100
+		return m(CircleLoadingBar, this.getCircleLoadingBarAttrs(state, percentage))
+	}
+
+	private getCircleLoadingBarAttrs(state: ProgressState, percentage: number): CircleLoadingBarAttrs {
+		switch (state) {
+			case ProgressState.done:
+				return {
+					backgroundColor: theme.surface,
+					color: theme.success,
+					icon: Icons.Checkmark,
+				}
+			case ProgressState.error:
+				return {
+					backgroundColor: theme.surface,
+					color: theme.error,
+					icon: Icons.X,
+				}
+			case ProgressState.running:
+				return {
+					backgroundColor: theme.surface,
+					percentage,
+				}
 		}
+	}
+}
+
+// If icon is passed in, it will be displayed instead of percentage number
+export interface CircleLoadingBarAttrs {
+	backgroundColor: string
+	percentage?: number
+	color?: string
+	icon?: Icons
+}
+
+export class CircleLoadingBar implements Component<CircleLoadingBarAttrs> {
+	view({ attrs }: Vnode<CircleLoadingBarAttrs>): Children {
+		// if no percentage is given, 100 is used to get a full circle
+		const percentage = attrs.percentage ?? 100
+		const progressCircleColor = attrs.color ?? theme.on_surface
 
 		return m(
 			".flex.justify-center.items-center.no-shrink",
@@ -84,23 +115,19 @@ export class ProgressSnackBar implements Component<ProgressSnackBarAttrs> {
 					height: px(component_size.button_height),
 					borderRadius: "50%",
 					// drawing a circle on the inside and a colored circle on the outside (with the rest filled with transparent)
-					background: `radial-gradient(closest-side, ${theme.surface} 79%, transparent 80% 100%), conic-gradient(${indicatorColor} calc(var(--progress-value) * 1%), transparent 0)`,
+					background: `radial-gradient(closest-side, ${attrs.backgroundColor} 79%, transparent 80% 100%), conic-gradient(${progressCircleColor} calc(var(--progress-value) * 1%), transparent 0)`,
 					transition: "--progress-value 200ms",
 				},
 			},
-			state === ProgressState.running ? m(".small.font-weight-500", `${percentage}%`) : this.renderTerminateStateIcon(state),
+			attrs.icon
+				? m(Icon, {
+						icon: attrs.icon,
+						size: IconSize.PX32,
+						style: {
+							fill: attrs.color,
+						},
+					})
+				: m(".small.font-weight-500", `${percentage}%`),
 		)
-	}
-
-	private renderTerminateStateIcon(state: ProgressState): Children {
-		const [color, icon] = state === ProgressState.done ? [theme.success, Icons.Checkmark] : [theme.error, Icons.X]
-
-		return m(Icon, {
-			icon,
-			size: IconSize.PX32,
-			style: {
-				fill: color,
-			},
-		})
 	}
 }

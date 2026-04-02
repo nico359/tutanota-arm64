@@ -555,7 +555,7 @@ export class MailView extends BaseTopLevelView implements TopLevelView<MailViewA
 				loadingAll: this.mailViewModel.listModel?.isLoadingAll()
 					? "loading"
 					: this.mailViewModel.listModel?.loadingStatus === ListLoadingState.Done
-						? "loaded"
+						? "none"
 						: "can_load",
 				getSelectionMessage: (selected: ReadonlyArray<Mail>) => getMailSelectionMessage(selected),
 			}),
@@ -914,7 +914,7 @@ export class MailView extends BaseTopLevelView implements TopLevelView<MailViewA
 				help: "switchArchive_action",
 			},
 			{
-				key: Keys.S,
+				key: Keys.SEVEN,
 				exec: () => {
 					this.mailViewModel.switchToFolder(MailSetKind.SPAM)
 					return true

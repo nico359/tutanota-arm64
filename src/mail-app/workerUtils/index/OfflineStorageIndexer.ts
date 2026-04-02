@@ -9,6 +9,7 @@ import { Indexer } from "./Indexer"
 import { InfoMessageHandler } from "../../../common/gui/InfoMessageHandler"
 import { ContactIndexer } from "./ContactIndexer"
 import { ProgrammingError } from "../../../common/api/common/error/ProgrammingError"
+import { User } from "../../../common/api/entities/sys/TypeRefs"
 
 export class OfflineStorageIndexer implements Indexer {
 	constructor(
@@ -81,5 +82,9 @@ export class OfflineStorageIndexer implements Indexer {
 
 	cancelMailIndexing() {
 		this.mailIndexer.cancelMailIndexing()
+	}
+
+	async rebuildMailIndex() {
+		await this.mailIndexer.rebuildIndex(assertNotNull(this.userFacade.getUser()))
 	}
 }

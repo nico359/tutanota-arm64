@@ -1,7 +1,7 @@
 import m from "mithril"
 import { Dialog } from "../../common/gui/base/Dialog"
 import { lang, TranslationKey } from "../../common/misc/LanguageViewModel"
-import { InboxRuleType, MailSetKind } from "../../common/api/common/TutanotaConstants"
+import { InboxRuleType, MailSetKind, UpgradePromptType } from "../../common/api/common/TutanotaConstants"
 import { isDomainName, isMailAddress, isRegularExpression } from "../../common/misc/FormatValidator"
 import { getInboxRuleTypeNameMapping } from "../mail/model/InboxRuleHandler"
 import type { InboxRule } from "../../common/api/entities/tutanota/TypeRefs.js"
@@ -38,7 +38,7 @@ export type InboxRuleTemplate = Pick<InboxRule, "type" | "value"> & {
 
 export async function show(mailBoxDetail: MailboxDetail, ruleOrTemplate: InboxRuleTemplate) {
 	if (locator.logins.getUserController().isFreeAccount()) {
-		showNotAvailableForFreeDialog()
+		showNotAvailableForFreeDialog(UpgradePromptType.INBOX_RULES)
 	} else if (mailBoxDetail) {
 		const folders = await mailLocator.mailModel.getMailboxFoldersForId(mailBoxDetail.mailbox.mailSets._id)
 		let targetFolders = folders.getIndentedList().map((folderInfo: IndentedFolder) => {
@@ -79,14 +79,16 @@ export async function show(mailBoxDetail: MailboxDetail, ruleOrTemplate: InboxRu
 					selectionChangedHandler: inboxRuleTarget,
 					helpLabel: () => getPathToFolderString(folders, inboxRuleTarget(), true),
 				}),
-				m(
-					".pt-16",
-					m(Checkbox, {
-						label: () => lang.get("inboxRuleExcludedFromSpamFilter_msg"),
-						checked: isRuleExcludedFromSpamFilter(),
-						onChecked: (checked) => isRuleExcludedFromSpamFilter(checked),
-					}),
-				),
+				inboxRuleTarget().folderType === MailSetKind.SPAM
+					? null
+					: m(
+							".pt-16",
+							m(Checkbox, {
+								label: () => lang.get("inboxRuleExcludedFromSpamFilter_msg"),
+								checked: isRuleExcludedFromSpamFilter(),
+								onChecked: (checked) => isRuleExcludedFromSpamFilter(checked),
+							}),
+						),
 			]
 		}
 
@@ -102,6 +104,11 @@ export async function show(mailBoxDetail: MailboxDetail, ruleOrTemplate: InboxRu
 			const ruleId = ruleOrTemplate._id
 			if (ruleId) {
 				rule._id = ruleId
+			}
+
+			// When saving a rule that goes to spam, always set it to be excluded from the filter, so it always goes to spam
+			if (inboxRuleTarget().folderType === MailSetKind.SPAM) {
+				rule.excludeFromSpamFilter = true
 			}
 			props.inboxRules = ruleId == null ? [...inboxRules, rule] : inboxRules.map((inboxRule) => (isSameId(inboxRule._id, ruleId) ? rule : inboxRule))
 

@@ -25,9 +25,9 @@ import {
 	findAllAndRemove,
 	first,
 	isEmpty,
+	isNotEmpty,
 	isNotNull,
 	newPromise,
-	ofClass,
 	promiseMap,
 } from "@tutao/tutanota-utils"
 import { deconstructMailSetEntryId, elementIdPart, getElementId, isSameId, listIdPart } from "../../../common/api/common/utils/EntityUtils.js"
@@ -68,14 +68,15 @@ export class MailIndexer {
 		return this._currentIndexTimestamp
 	}
 
-	private _mailIndexingEnabled: boolean
+	/** @private visibleForTesting */
+	_mailIndexingEnabled: boolean
 	private initialized: DeferredObject<void> = defer()
 
 	get mailIndexingEnabled(): boolean {
 		return this._mailIndexingEnabled
 	}
 
-	mailboxIndexingPromise: Promise<void>
+	mailboxIndexingPromise: DeferredObject<void>
 	/** @private visibleForTesting */
 	_isIndexing: boolean = false
 	_dateProvider: DateProvider
@@ -84,7 +85,7 @@ export class MailIndexer {
 
 	constructor(
 		private readonly infoMessageHandler: InfoMessageHandler,
-		private readonly bulkLoaderFactory: () => BulkMailLoader,
+		private readonly bulkLoaderFactory: () => Promise<BulkMailLoader>,
 		private readonly entityClient: EntityClient,
 		dateProvider: DateProvider,
 		private readonly mailFacade: MailFacade,
@@ -92,7 +93,8 @@ export class MailIndexer {
 	) {
 		this._currentIndexTimestamp = NOTHING_INDEXED_TIMESTAMP
 		this._mailIndexingEnabled = false
-		this.mailboxIndexingPromise = Promise.resolve()
+		this.mailboxIndexingPromise = defer()
+		this.mailboxIndexingPromise.resolve()
 		this._dateProvider = dateProvider
 	}
 
@@ -159,6 +161,41 @@ export class MailIndexer {
 		}
 	}
 
+	private async getMailboxIndexDatasForGroups(mailGroups: readonly Id[], oldestTimestamp: number): Promise<MboxIndexData[]> {
+		const mailBoxes: Array<{ mbox: MailBox; newestTimestamp: number }> = []
+		const timestamps = await this.backend.getCurrentIndexTimestamps(mailGroups)
+
+		for (const mailGroupId of mailGroups) {
+			// group data is not available if group has been added. group will be indexed after login.
+			const groupTimestamp = timestamps.get(mailGroupId)
+			if (groupTimestamp) {
+				const mailboxGroupRoot = await this.entityClient.load(MailboxGroupRootTypeRef, mailGroupId)
+				const mailbox = await this.entityClient.load(MailBoxTypeRef, mailboxGroupRoot.mailbox)
+				// if nothing was indexed set highest (read: later) end to be the beginning of tomorrow so that
+				// the entirety of today is included.
+				const newestTimestamp = groupTimestamp === NOTHING_INDEXED_TIMESTAMP ? this._dateProvider.getStartOfDayShiftedBy(1).getTime() : groupTimestamp
+
+				if (newestTimestamp > oldestTimestamp) {
+					mailBoxes.push({
+						mbox: mailbox,
+						newestTimestamp,
+					})
+				}
+			}
+		}
+
+		return await promiseMap(mailBoxes, async (mailboxData) => {
+			const mailSetListIds = await this.loadMailFolderListIds(mailboxData.mbox)
+			return {
+				mailSetListDatas: mailSetListIds.map((listId) => {
+					return { loadedCompletely: false, lastLoadedId: null, loadedButUnusedEntries: [], listId }
+				}),
+				newestTimestamp: mailboxData.newestTimestamp,
+				ownerGroup: assertNotNull(mailboxData.mbox._ownerGroup),
+			}
+		})
+	}
+
 	/**
 	 * Record the information that mail indexing is enabled now.
 	 * @return whether mail indexing was enabled in this operation. would be false if it was enabled before.
@@ -204,78 +241,55 @@ export class MailIndexer {
 			return
 		}
 
-		const searchIndexStageInfo = this.createSearchIndexStageInfo(oldestTimestamp)
+		if (this._isIndexing) {
+			this.cancelMailIndexing()
+			await this.mailboxIndexingPromise.promise
+		}
 
 		this.abortController = new AbortController()
+		this.mailboxIndexingPromise = defer()
 		this._isIndexing = true
 
+		const searchIndexStageInfo = this.createSearchIndexStageInfo(oldestTimestamp)
 		await this.infoMessageHandler.onSearchIndexStateUpdate(searchIndexStageInfo())
-		await this.infoMessageHandler.onSearchIndexStateUpdate({
-			initializing: false,
-			mailIndexEnabled: this._mailIndexingEnabled,
-			progress: 1,
-			currentMailIndexTimestamp: this._currentIndexTimestamp,
-			aimedMailIndexTimestamp: oldestTimestamp,
-			indexedMailCount: 0,
-			failedIndexingUpTo: null,
-		})
 
-		const memberships = filterMailMemberships(user)
+		const mailGroups = filterMailMemberships(user).map((membership) => membership.group)
 
 		try {
-			const mailBoxes: Array<{ mbox: MailBox; newestTimestamp: number }> = []
-			const timestamps = await this.backend.getCurrentIndexTimestamps(memberships.map((ship) => ship.group))
+			const mailboxIndexDatas: Array<MboxIndexData> = await this.getMailboxIndexDatasForGroups(mailGroups, oldestTimestamp)
 
-			for (let mailGroupMembership of memberships) {
-				const mailGroupId = mailGroupMembership.group
+			if (isNotEmpty(mailboxIndexDatas)) {
+				const indexLoader = await this.bulkLoaderFactory()
+				const newestTimestamp = mailboxIndexDatas.reduce((acc, data) => Math.max(acc, data.newestTimestamp), 0)
+				const progress = new ProgressMonitor(newestTimestamp - oldestTimestamp, (progress) => {
+					this.infoMessageHandler.onSearchIndexStateUpdate(searchIndexStageInfo({ progress }))
+				})
 
-				// group data is not available if group has been added. group will be indexed after login.
-				const groupTimestamp = timestamps.get(mailGroupId)
-				if (groupTimestamp) {
-					const mailboxGroupRoot = await this.entityClient.load(MailboxGroupRootTypeRef, mailGroupId)
-					const mailbox = await this.entityClient.load(MailBoxTypeRef, mailboxGroupRoot.mailbox)
-					// if nothing was indexed set highest (read: later) end to be the beginning of tomorrow so that
-					// the entirety of today is included.
-					const newestTimestamp =
-						groupTimestamp === NOTHING_INDEXED_TIMESTAMP ? this._dateProvider.getStartOfDayShiftedBy(1).getTime() : groupTimestamp
-
-					if (newestTimestamp > oldestTimestamp) {
-						mailBoxes.push({
-							mbox: mailbox,
-							newestTimestamp,
-						})
-					}
-				}
+				await this._indexMailLists(mailboxIndexDatas, [newestTimestamp, oldestTimestamp], progress, indexLoader, searchIndexStageInfo, user)
 			}
 
-			if (mailBoxes.length > 0) {
-				await this._indexMailLists(mailBoxes, oldestTimestamp, searchIndexStageInfo)
-			}
-
-			await this.updateCurrentIndexTimestamp(user)
 			await this.infoMessageHandler.onSearchIndexStateUpdate(searchIndexStageInfo({ progress: 0 }))
 		} catch (e) {
 			console.warn("Mail indexing failed: ", e)
-			// avoid that a rejected promise is stored
-			this.mailboxIndexingPromise = Promise.resolve()
 			await this.updateCurrentIndexTimestamp(user)
 
 			// do not treat cancellation as an error during indexing
 			const success = e instanceof CancelledError
+			const updatedIndexState: Partial<SearchIndexStateInfo> = {
+				progress: 0,
+				failedIndexingUpTo: success ? null : oldestTimestamp,
+				error: success ? null : e instanceof ConnectionError ? IndexingErrorReason.ConnectionLost : IndexingErrorReason.Unknown,
+			}
 
-			const failedIndexingUpTo = success ? null : oldestTimestamp
+			if (success) {
+				// only update aimedMailIndexTimestamp when indexing is cancelled but not when it fails, since user can retry indexing on failure
+				updatedIndexState.aimedMailIndexTimestamp = this.currentIndexTimestamp
+			}
 
-			const error = success ? null : e instanceof ConnectionError ? IndexingErrorReason.ConnectionLost : IndexingErrorReason.Unknown
-
-			await this.infoMessageHandler.onSearchIndexStateUpdate(
-				searchIndexStageInfo({
-					progress: 0,
-					failedIndexingUpTo,
-					error,
-				}),
-			)
+			await this.infoMessageHandler.onSearchIndexStateUpdate(searchIndexStageInfo(updatedIndexState))
 		} finally {
 			this._isIndexing = false
+			this.mailboxIndexingPromise.resolve()
 		}
 	}
 
@@ -285,14 +299,7 @@ export class MailIndexer {
 	 */
 	async extendIndexIfNeeded(user: User, newOldestTimestamp: number): Promise<void> {
 		if (this.currentIndexTimestamp > FULL_INDEXED_TIMESTAMP && this.currentIndexTimestamp > newOldestTimestamp) {
-			const uncaughtPromise = this.mailboxIndexingPromise.then(() => this.indexMailboxes(user, newOldestTimestamp))
-
-			this.mailboxIndexingPromise = uncaughtPromise.catch(
-				ofClass(CancelledError, (e) => {
-					console.log("extend mail index has been cancelled", e)
-				}),
-			)
-			return uncaughtPromise
+			await this.mailboxIndexingPromise.promise.then(() => this.indexMailboxes(user, newOldestTimestamp))
 		}
 	}
 
@@ -351,46 +358,41 @@ export class MailIndexer {
 		}
 	}
 
-	/** @private visibleForTesting */
-	async _indexMailLists(
-		mailBoxes: Array<{
-			mbox: MailBox
-			newestTimestamp: number
-		}>,
-		oldestTimestamp: number,
-		update: (info?: Partial<SearchIndexStateInfo>) => SearchIndexStateInfo,
-	): Promise<void> {
-		const newestTimestamp = mailBoxes.reduce((acc, data) => Math.max(acc, data.newestTimestamp), 0)
-		const progress = new ProgressMonitor(newestTimestamp - oldestTimestamp, (progress) => {
-			this.infoMessageHandler.onSearchIndexStateUpdate(update({ progress }))
-		})
-
-		const indexLoader = this.bulkLoaderFactory()
-
-		const mailboxIndexDatas: Array<MboxIndexData> = await promiseMap(mailBoxes, async (mailboxData) => {
-			const mailSetListIds = await this.loadMailFolderListIds(mailboxData.mbox)
-			return {
-				mailSetListDatas: mailSetListIds.map((listId) => {
-					return { loadedCompletely: false, lastLoadedId: null, loadedButUnusedEntries: [], listId }
-				}),
-				newestTimestamp: mailboxData.newestTimestamp,
-				ownerGroup: assertNotNull(mailboxData.mbox._ownerGroup),
-			}
-		})
-		return this._indexMailListsInTimeBatches(mailboxIndexDatas, [newestTimestamp, oldestTimestamp], progress, indexLoader, update)
-	}
-
-	// @VisibleForTesting
-	async _indexMailListsInTimeBatches(
+	private async _indexMailLists(
 		mailboxIndexDatas: readonly MboxIndexData[],
 		[rangeStart, rangeEnd]: TimeRange,
 		progress: ProgressMonitor,
 		indexLoader: BulkMailLoader,
 		update: (info?: Partial<SearchIndexStateInfo>) => SearchIndexStateInfo,
+		user: User,
 	): Promise<void> {
 		const mailboxesToWrite = mailboxIndexDatas.filter((mboxData) => rangeEnd < mboxData.newestTimestamp)
+		if (isEmpty(mailboxesToWrite)) {
+			return
+		}
 
-		let mailSetEntriesToProcess: MailSetEntry[] = []
+		let done = false
+		let batchStart = rangeStart
+		while (!done) {
+			const result = await this._indexMailListsInTimeBatches(mailboxesToWrite, [batchStart, rangeEnd], progress, indexLoader, update, user)
+			// If there aren't any more mails in a mailbox that we can retrieve, we're done with those.
+			findAllAndRemove(mailboxesToWrite, (data) => this.isMailboxLoadedCompletely(data))
+
+			done = result.done
+			batchStart = result.batchEnd
+		}
+	}
+
+	// @VisibleForTesting
+	async _indexMailListsInTimeBatches(
+		mailboxesToWrite: readonly MboxIndexData[],
+		[rangeStart, rangeEnd]: TimeRange,
+		progress: ProgressMonitor,
+		indexLoader: BulkMailLoader,
+		update: (info?: Partial<SearchIndexStateInfo>) => SearchIndexStateInfo,
+		user: User,
+	): Promise<{ batchEnd: number; done: boolean }> {
+		const mailSetEntriesToProcess: MailSetEntry[] = []
 		let batchStart = rangeStart
 
 		while (batchStart > rangeEnd && !isEmpty(mailboxesToWrite)) {
@@ -432,20 +434,22 @@ export class MailIndexer {
 					mailboxesToWrite.map((data) => [data.ownerGroup, this.isMailboxLoadedCompletely(data) ? FULL_INDEXED_TIMESTAMP : batchEnd]),
 				)
 				await this.backend.indexMails(indexTimestampPerGroup, mailData)
+				await this.updateCurrentIndexTimestamp(user)
+
 				update().indexedMailCount += mailData.length
+				progress.workDone(batchStart - batchEnd)
 
-				mailSetEntriesToProcess = []
-
-				// If there aren't any more mails in a mailbox that we can retrieve, we're done with those.
-				findAllAndRemove(mailboxesToWrite, (data) => this.isMailboxLoadedCompletely(data))
+				return { batchEnd, done: finalIteration }
 			} else {
+				progress.workDone(batchStart - batchEnd)
+
 				// We don't want to keep going if we've cancelled before reaching our threshold
 				this.assertNotCancelled("indexMailListsInTimeBatches")
+				batchStart = batchEnd
 			}
-
-			progress.workDone(batchStart - batchEnd)
-			batchStart = batchEnd
 		}
+
+		return { batchEnd: rangeEnd, done: true }
 	}
 
 	/** A helper to cancel an async operation with {@link CancelledError} as soon as possible. */
@@ -534,7 +538,7 @@ export class MailIndexer {
 	 * after importing lots of mails...
 	 */
 	private async preloadMails(mailIds: IdTuple[]): Promise<MailWithDetailsAndAttachments[]> {
-		const indexLoader = this.bulkLoaderFactory()
+		const indexLoader = await this.bulkLoaderFactory()
 		const mails = await indexLoader.loadMailsFromMultipleLists(mailIds)
 		const mailsWithDetails = await indexLoader.loadMailDetails(mails)
 		const attachments = await indexLoader.loadAttachments(mails)
@@ -646,6 +650,19 @@ export class MailIndexer {
 
 	private get backend(): MailIndexerBackend {
 		return assertNotNull(this._backend)
+	}
+
+	async rebuildIndex(user: User) {
+		if (!this._mailIndexingEnabled) {
+			return
+		}
+		if (this._isIndexing) {
+			this.cancelMailIndexing()
+		}
+		const currentIndexTimestamp = this._currentIndexTimestamp
+		await this.backend.resetIndex()
+		await this.updateCurrentIndexTimestamp(user)
+		await this.indexMailboxes(user, currentIndexTimestamp)
 	}
 }
 
