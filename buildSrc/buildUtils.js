@@ -108,6 +108,7 @@ export function checkArchitectureIsSupported(platformName, architecture) {
 		case "x64":
 			return true
 		case "arm64":
+			return platformName === "linux"
 		case "universal":
 			return platformName === "darwin"
 		default:
