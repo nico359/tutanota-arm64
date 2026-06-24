@@ -6,13 +6,13 @@ import {
 	pipelineEncryptAndUpload,
 } from "../../../../../src/applications/common/api/worker/facades/lazy/BlobFacade.js"
 import { MAX_BLOB_SIZE_BYTES, RestClient, restSuspension } from "../../../../../src/platform-kit/rest-client"
-import { HttpMethod, RestClientOptions } from "../../../../../src/platform-kit/rest-client/types"
+import { HttpMethod, RestBinaryBody, RestClientOptions, RestTextBody } from "../../../../../src/platform-kit/rest-client/types"
 import { NativeFileApp } from "../../../../../src/app-kit/native-bridge/common/FileApp.js"
 import { AesApp } from "../../../../../src/app-kit/native-bridge/worker/AesApp.js"
 import { Mode, ProgrammingError } from "../../../../../src/platform-kit/app-env"
 import { elementIdPart, getElementId, listIdPart } from "../../../../../src/platform-kit/meta"
 import { func, instance, matchers, object, verify, when } from "testdouble"
-import { aes256RandomKey, aesDecrypt, aesEncrypt } from "../../../../../src/platform-kit/crypto"
+import { aes256RandomKey } from "../../../../../src/platform-kit/crypto"
 import {
 	arrayEquals,
 	base64ExtToBase64,
@@ -23,7 +23,7 @@ import {
 	neverNull,
 	stringToUtf8Uint8Array,
 } from "../../../../../src/platform-kit/utils"
-import { CryptoFacade } from "../../../../../src/platform-kit/base/crypto/CryptoFacade.js"
+import { CryptoFacade } from "../../../../../src/platform-kit/base/base-crypto/CryptoFacade.js"
 import { BlobAccessTokenFacade } from "../../../../../src/platform-kit/network/BlobAccessTokenFacade.js"
 import { clientInitializedTypeModelResolver, createTestEntity, instancePipelineFromTypeModelResolver, withOverriddenEnv } from "../../../TestUtils.js"
 import { InstancePipeline } from "../../../../../src/platform-kit/instance-pipeline"
@@ -44,6 +44,7 @@ import { ArchiveDataType } from "../../../../../src/entities/sys/Utils"
 import { File, FileTypeRef } from "@tutao/entities/tutanota"
 import { FileReference } from "../../../../../src/entities/tutanota/Utils"
 import { BlobReferencingInstance } from "../../../../../src/entities/storage/BlobUtils"
+import { aesDecrypt, aesEncrypt } from "../../../../../src/platform-kit/crypto/instance-pipeline-crypto/Aes"
 
 const { anything, captor } = matchers
 
@@ -152,7 +153,7 @@ o.spec("BlobFacade", function () {
 
 			const optionsCaptor = captor()
 			verify(restClientMock.request(BLOB_SERVICE_REST_PATH, HttpMethod.POST, optionsCaptor.capture()))
-			const encryptedData = optionsCaptor.value.body
+			const encryptedData = (optionsCaptor.value.body as RestBinaryBody).payload
 			const decryptedData = aesDecrypt(sessionKey, encryptedData)
 			o(arrayEquals(decryptedData, blobData)).equals(true)
 			o(optionsCaptor.value.baseUrl).equals("w1")
@@ -238,7 +239,7 @@ o.spec("BlobFacade", function () {
 			when(cryptoFacadeMock.resolveSessionKey(file)).thenResolve(sessionKey)
 			const requestBody = { "request-body": "1" }
 			when(instancePipelineMock.mapAndEncrypt(anything(), anything(), anything())).thenResolve(requestBody)
-			// data size is 65 (16 data block, 16 iv, 32 hmac, 1 byte for mac marking)
+			// data size is 65 (16 data block, 16 initialization vector, 32 hmac, 1 byte for mac marking)
 			const blobSizeBinary = new Uint8Array([0, 0, 0, 65])
 			const blobResponse = concat(
 				// number of blobs
@@ -261,7 +262,7 @@ o.spec("BlobFacade", function () {
 			verify(restClientMock.request(BLOB_SERVICE_REST_PATH, HttpMethod.GET, optionsCaptor.capture()))
 			o(optionsCaptor.value.baseUrl).equals("someBaseUrl")
 			o(optionsCaptor.value.queryParams.blobAccessToken).deepEquals(blobAccessInfo.blobAccessToken)
-			o(optionsCaptor.value.body).deepEquals(JSON.stringify(requestBody))
+			o((optionsCaptor.value.body as RestTextBody).payload).deepEquals(JSON.stringify(requestBody))
 		})
 
 		o("downloadAndDecrypt multiple", async function () {
@@ -290,7 +291,7 @@ o.spec("BlobFacade", function () {
 			when(cryptoFacadeMock.resolveSessionKey(file)).thenResolve(sessionKey)
 			const requestBody = { "request-body": "1" }
 			when(instancePipelineMock.mapAndEncrypt(anything(), anything(), anything())).thenResolve(requestBody)
-			// data size is 65 (16 data block, 16 iv, 32 hmac, 1 byte for mac marking)
+			// data size is 65 (16 data block, 16 initialization vector, 32 hmac, 1 byte for mac marking)
 			const blobSizeBinary = new Uint8Array([0, 0, 0, 65])
 			const blobResponse = concat(
 				// number of blobs
@@ -353,7 +354,7 @@ o.spec("BlobFacade", function () {
 			when(cryptoFacadeMock.resolveSessionKey(file)).thenResolve(sessionKey)
 			const requestBody = { "request-body": "1" }
 			when(instancePipelineMock.mapAndEncrypt(anything(), anything(), anything())).thenResolve(requestBody)
-			// data size is 65 (16 data block, 16 iv, 32 hmac, 1 byte for mac marking)
+			// data size is 65 (16 data block, 16 initialization vector, 32 hmac, 1 byte for mac marking)
 			const blobSizeBinary = new Uint8Array([0, 0, 0, 65])
 			const blobResponse = concat(
 				// number of blobs
@@ -605,7 +606,7 @@ o.spec("BlobFacade", function () {
 			when(cryptoFacadeMock.resolveSessionKey(anotherFile)).thenResolve(anothersessionKey)
 			const requestBody = { "request-body": "1" }
 			when(instancePipelineMock.mapAndEncrypt(anything(), anything(), anything())).thenResolve(requestBody)
-			// data size is 65 (16 data block, 16 iv, 32 hmac, 1 byte for mac marking)
+			// data size is 65 (16 data block, 16 initialization vector, 32 hmac, 1 byte for mac marking)
 			const blobSizeBinary = new Uint8Array([0, 0, 0, 65])
 			const blobResponse = concat(
 				// number of blobs
@@ -715,7 +716,7 @@ o.spec("BlobFacade", function () {
 					anything(),
 				),
 			).thenResolve(requestBody2)
-			// data size is 65 (16 data block, 16 iv, 32 hmac, 1 byte for mac marking)
+			// data size is 65 (16 data block, 16 initialization vector, 32 hmac, 1 byte for mac marking)
 			const blobSizeBinary = new Uint8Array([0, 0, 0, 65])
 			const blobResponse1 = concat(
 				// number of blobs
@@ -754,14 +755,14 @@ o.spec("BlobFacade", function () {
 				restClientMock.request(
 					BLOB_SERVICE_REST_PATH,
 					HttpMethod.GET,
-					matchers.argThat((options: RestClientOptions) => options.body && JSON.parse(options.body as string).body === "1"),
+					matchers.argThat((options: RestClientOptions) => options.body && JSON.parse((options.body as RestTextBody).payload).body === "1"),
 				),
 			).thenResolve(blobResponse1)
 			when(
 				restClientMock.request(
 					BLOB_SERVICE_REST_PATH,
 					HttpMethod.GET,
-					matchers.argThat((options: RestClientOptions) => options.body && JSON.parse(options.body as string).body === "2"),
+					matchers.argThat((options: RestClientOptions) => options.body && JSON.parse((options.body as RestTextBody).payload).body === "2"),
 				),
 			).thenResolve(blobResponse2)
 
@@ -810,7 +811,7 @@ o.spec("BlobFacade", function () {
 			when(cryptoFacadeMock.resolveSessionKey(anotherFile)).thenResolve(anothersessionKey)
 			const requestBody = { "request-body": "1" }
 			when(instancePipelineMock.mapAndEncrypt(anything(), anything(), anything())).thenResolve(requestBody)
-			// data size is 65 (16 data block, 16 iv, 32 hmac, 1 byte for mac marking)
+			// data size is 65 (16 data block, 16 initialization vector, 32 hmac, 1 byte for mac marking)
 			const blobSizeBinary = new Uint8Array([0, 0, 0, 65])
 			const blobResponse = concat(
 				// number of blobs
@@ -882,7 +883,7 @@ o.spec("BlobFacade", function () {
 			when(cryptoFacadeMock.resolveSessionKey(anotherFile)).thenResolve(anothersessionKey)
 			const requestBody = { "request-body": "1" }
 			when(instancePipelineMock.mapAndEncrypt(anything(), anything(), anything())).thenResolve(requestBody)
-			// data size is 65 (16 data block, 16 iv, 32 hmac, 1 byte for mac marking)
+			// data size is 65 (16 data block, 16 initialization vector, 32 hmac, 1 byte for mac marking)
 			const blobSizeBinary = new Uint8Array([0, 0, 0, 65])
 			const blobResponse = concat(
 				// number of blobs

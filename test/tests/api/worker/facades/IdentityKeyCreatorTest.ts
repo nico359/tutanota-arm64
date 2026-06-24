@@ -2,32 +2,33 @@ import o, { assertThrows } from "@tutao/otest"
 import { UserFacade } from "../../../../../src/platform-kit/base/facades/UserFacade.js"
 import { EntityClient } from "../../../../../src/platform-kit/network/EntityClient.js"
 import { IServiceExecutor } from "../../../../../src/platform-kit/network/ServiceRequest.js"
-import { KeyLoaderFacade } from "../../../../../src/platform-kit/base/crypto/KeyLoaderFacade.js"
+import { KeyLoaderFacade } from "../../../../../src/platform-kit/base/base-crypto/KeyLoaderFacade.js"
 import {
 	AsymmetricKeyPair,
 	cryptoUtils,
-	CryptoWrapper,
 	Ed25519KeyPair,
 	KeyPairType,
 	MacTag,
+	RsaKeyPair,
 	VersionedEncryptedKey,
 	VersionedKey,
 } from "../../../../../src/platform-kit/crypto"
 import { CacheManagementFacade } from "../../../../../src/applications/common/api/worker/facades/lazy/CacheManagementFacade.js"
-import { AsymmetricCryptoFacade } from "../../../../../src/platform-kit/base/crypto/AsymmetricCryptoFacade.js"
-import { matchers, object, verify, when } from "testdouble"
+import { AsymmetricCryptoFacade } from "../../../../../src/platform-kit/base/base-crypto/AsymmetricCryptoFacade.js"
+import { instance, matchers, object, verify, when } from "testdouble"
 import { createTestEntity } from "../../../TestUtils.js"
 
-import { Ed25519Facade } from "../../../../../src/platform-kit/base/crypto/Ed25519Facade"
-import { PublicKeySignatureFacade } from "../../../../../src/platform-kit/base/crypto/PublicKeySignatureFacade"
-import { IdentityKeyCreator } from "../../../../../src/platform-kit/base/crypto/IdentityKeyCreator"
-import { AdminKeyLoaderFacade } from "../../../../../src/platform-kit/base/crypto/AdminKeyLoaderFacade"
+import { Ed25519Facade } from "../../../../../src/platform-kit/base/base-crypto/Ed25519Facade"
+import { PublicKeySignatureFacade } from "../../../../../src/platform-kit/base/base-crypto/PublicKeySignatureFacade"
+import { IdentityKeyCreator } from "../../../../../src/platform-kit/base/base-crypto/IdentityKeyCreator"
+import { AdminKeyLoaderFacade } from "../../../../../src/platform-kit/base/base-crypto/AdminKeyLoaderFacade"
 import { Versioned } from "../../../../../src/platform-kit/utils"
 import { ProgrammingError } from "../../../../../src/platform-kit/app-env"
 
 import { Group, GroupMembershipTypeRef, GroupTypeRef, IdentityKeyPostIn, IdentityKeyService, PublicKeySignature, User, UserTypeRef } from "@tutao/entities/sys"
 import { KeyAuthenticationFacade } from "../../../../../src/platform-kit/network/KeyAuthenticationFacade"
 import { GroupType } from "../../../../../src/entities/sys/Utils"
+import { CryptoWrapper } from "../../../../../src/platform-kit/crypto/instance-pipeline-crypto/CryptoWrapper"
 
 const { anything, argThat, captor } = matchers
 
@@ -84,7 +85,7 @@ o.spec("IdentityKeyCreatorTest", function () {
 			encryptingKeyVersion: userGroupKey.version,
 			key: object(),
 		}
-		let userGroupKeyPair: Versioned<AsymmetricKeyPair>
+		let userGroupKeyPair: Versioned<RsaKeyPair>
 		const identityKeyVersion = 0
 		const tag: MacTag = object()
 
@@ -100,7 +101,7 @@ o.spec("IdentityKeyCreatorTest", function () {
 		const publicKeySignature: PublicKeySignature = object()
 
 		o.beforeEach(function () {
-			userGroupKeyPair = object()
+			userGroupKeyPair = { object: instance(RsaKeyPair), version: 0 }
 			userGroup = createTestEntity(GroupTypeRef, {
 				_id: userGroupId,
 				currentKeys: object(),
@@ -162,19 +163,20 @@ o.spec("IdentityKeyCreatorTest", function () {
 
 						return true
 					}),
+					null,
 				),
 			)
 		})
 
 		o("current group key RSA fails", async function () {
-			userGroupKeyPair.object.keyPairType = KeyPairType.RSA
+			;(userGroupKeyPair.object as any).keyPairType = KeyPairType.RSA
 			await assertThrows(ProgrammingError, async () => identityKeyCreator.createIdentityKeyPair(userGroupId, userGroupKeyPair, []))
 		})
 
 		o("no service invocation if the identity key pair exists", async function () {
 			userGroup.identityKeyPair = object()
 			await identityKeyCreator.createIdentityKeyPair(userGroupId, userGroupKeyPair, [])
-			verify(serviceExecutor.post(IdentityKeyService, anything()), { times: 0 })
+			verify(serviceExecutor.post(IdentityKeyService, anything(), null), { times: 0 })
 		})
 
 		o("success admin creates new user", async function () {
@@ -201,6 +203,7 @@ o.spec("IdentityKeyCreatorTest", function () {
 
 						return true
 					}),
+					null,
 				),
 			)
 		})
@@ -230,6 +233,7 @@ o.spec("IdentityKeyCreatorTest", function () {
 						o(signaturesFromRequest[0]).equals(publicKeySignature)
 						return true
 					}),
+					null,
 				),
 			)
 		})
@@ -273,6 +277,7 @@ o.spec("IdentityKeyCreatorTest", function () {
 							o(data.signatures[1]).equals(formerGroupKeyPairSignature)
 							return true
 						}),
+						null,
 					),
 				)
 			})
@@ -337,7 +342,7 @@ o.spec("IdentityKeyCreatorTest", function () {
 				await identityKeyCreator.createIdentityKeyPairForExistingTeamGroups(groupIds)
 
 				const captor = matchers.captor()
-				verify(serviceExecutor.post(IdentityKeyService, captor.capture()))
+				verify(serviceExecutor.post(IdentityKeyService, captor.capture(), anything()))
 				for (const { group, signature, encPrivIdentityKey } of teamGroupData) {
 					verify(asymmetricCryptoFacade.getOrMakeSenderX25519KeyPair(anything(), group._id))
 					o(captor.values?.length).equals(teamGroupData.length)
@@ -363,7 +368,7 @@ o.spec("IdentityKeyCreatorTest", function () {
 
 				await identityKeyCreator.createIdentityKeyPairForExistingTeamGroups([group1._id])
 
-				verify(serviceExecutor.post(IdentityKeyService, anything()), { times: 0 })
+				verify(serviceExecutor.post(IdentityKeyService, anything(), anything()), { times: 0 })
 			})
 
 			o("errors bubble up", async function () {

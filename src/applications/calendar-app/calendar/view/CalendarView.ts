@@ -35,6 +35,7 @@ import {
 import { locator } from "../../../common/api/main/CommonLocator"
 import {
 	CalendarType,
+	DefaultDateProvider,
 	extractContactIdFromEvent,
 	findFirstPrivateCalendar,
 	getTimeZone,
@@ -55,7 +56,6 @@ import { Dialog } from "../../../../ui/base/Dialog"
 import { component_size, layout_size } from "../../../../ui/size"
 import { FolderColumnView } from "../../../common/gui/FolderColumnView.js"
 import { deviceConfig } from "../../../common/misc/DeviceConfig"
-import { exportCalendar, handleCalendarImport } from "../../../common/calendar/gui/CalendarImporterDialog.js"
 import { showNotAvailableForFreeDialog, showPlanUpgradeRequiredDialog } from "../../../common/misc/SubscriptionDialogs"
 import { getSharedGroupName, loadGroupMembers } from "../../../common/sharing/GroupUtils"
 import { GroupInvitationFolderRow } from "../../../common/sharing/view/GroupInvitationFolderRow"
@@ -84,7 +84,6 @@ import { DaySelectorPopup } from "../gui/day-selector/DaySelectorPopup.js"
 import { CalendarEventPreviewViewModel } from "../gui/eventpopup/CalendarEventPreviewViewModel.js"
 import { FloatingActionButton } from "../../../../ui/base/FloatingActionButton.js"
 import { progressIcon } from "../../../../ui/base/Icon.js"
-import { getExternalCalendarName, parseCalendarStringData, ParsedEvent } from "../../../common/calendar/gui/ImportExportUtils.js"
 import { showSnackBar } from "../../../../ui/base/SnackBar.js"
 import { ContactEventPopup } from "../gui/eventpopup/CalendarContactPopup.js"
 import { CalendarContactPreviewViewModel } from "../gui/eventpopup/CalendarContactPreviewViewModel.js"
@@ -120,6 +119,13 @@ import { windowFacade } from "../../../common/misc/WindowFacade"
 import { client } from "../../../../platform-kit/app-env/boot/ClientDetector"
 import { renderHeaderButtons } from "../../gui/HeaderButtons"
 
+import { parseCalendarStringData, ParsedEventAlarmTuple } from "../export/CalendarParser"
+import { getExternalCalendarName } from "../../../common/calendar/import/ImportExportUtils"
+import { exportCalendar } from "../../../common/calendar/gui/CalendarImporterDialog"
+import { CalendarImporter } from "../../../common/calendar/import/CalendarImporter"
+import { ImportInteractionHandler } from "../../../common/calendar/gui/ImportInteractionHandler"
+import { EventSeriesResolver } from "../../../common/calendar/import/EventSeriesResolver"
+
 export type GroupColors = Map<Id, string>
 
 export interface CalendarViewAttrs extends TopLevelAttrs {
@@ -151,7 +157,7 @@ export class CalendarView extends BaseTopLevelView implements TopLevelView<Calen
 		const userId = locator.logins.getUserController().user._id
 
 		this.viewModel = attrs.calendarViewModel
-		this.currentViewType = deviceConfig.getDefaultCalendarView(userId) || CalendarViewType.MONTH
+		this.currentViewType = deviceConfig.getDefaultCalendarView(userId)
 		this.htmlSanitizer = import("../../../common/misc/HtmlSanitizer").then((m) => m.getHtmlSanitizer())
 		this.sidebarColumn = new ViewColumn(
 			{
@@ -691,7 +697,7 @@ export class CalendarView extends BaseTopLevelView implements TopLevelView<Calen
 				this.setUrl(m.route.param("view"), new Date())
 				this.viewModel.triggerForceAnimateScroll()
 			},
-			onViewTypeSelected: (viewType) => this.setUrl(viewType, this.viewModel.selectedDate(), false, true),
+			onViewTypeSelected: (viewType) => this.selectView(viewType),
 		})
 	}
 
@@ -715,7 +721,7 @@ export class CalendarView extends BaseTopLevelView implements TopLevelView<Calen
 				this.setUrl(m.route.param("view"), new Date())
 				this.viewModel.triggerForceAnimateScroll()
 			},
-			onViewTypeSelected: (viewType) => this.setUrl(viewType, this.viewModel.selectedDate(), false, true),
+			onViewTypeSelected: (viewType) => this.selectView(viewType),
 			onTap: (_event, dom) => {
 				if (this.currentViewType !== CalendarViewType.MONTH && this.currentViewType !== CalendarViewType.THREE_DAY && styles.isSingleColumnLayout()) {
 					this.viewModel.setDaySelectorExpanded(!this.viewModel.isDaySelectorExpanded())
@@ -757,22 +763,22 @@ export class CalendarView extends BaseTopLevelView implements TopLevelView<Calen
 		return [
 			{
 				key: Keys.ONE,
-				exec: () => this.setUrl(CalendarViewType.WEEK, this.viewModel.selectedDate()),
+				exec: () => this.selectView(CalendarViewType.WEEK),
 				help: "switchWeekView_action",
 			},
 			{
 				key: Keys.TWO,
-				exec: () => this.setUrl(CalendarViewType.MONTH, this.viewModel.selectedDate()),
+				exec: () => this.selectView(CalendarViewType.MONTH),
 				help: "switchMonthView_action",
 			},
 			{
 				key: Keys.THREE,
-				exec: () => this.setUrl(CalendarViewType.THREE_DAY, this.viewModel.selectedDate()),
+				exec: () => this.selectView(CalendarViewType.THREE_DAY),
 				help: "switchAgendaView_action",
 			},
 			{
 				key: Keys.FOUR,
-				exec: () => this.setUrl(CalendarViewType.AGENDA, this.viewModel.selectedDate()),
+				exec: () => this.selectView(CalendarViewType.AGENDA),
 				help: "switchAgendaView_action",
 			},
 			{
@@ -946,7 +952,7 @@ export class CalendarView extends BaseTopLevelView implements TopLevelView<Calen
 			const iCalStr = await handleUrlSubscription(calendarModel, properties.sourceUrl!)
 			if (iCalStr instanceof Error) throw iCalStr
 
-			let events: ParsedEvent[] = []
+			let events: ParsedEventAlarmTuple[] = []
 			try {
 				events = parseCalendarStringData(iCalStr, getTimeZone()).contents
 			} catch (e) {
@@ -969,7 +975,15 @@ export class CalendarView extends BaseTopLevelView implements TopLevelView<Calen
 					type: CalendarType.External,
 				}
 			}
-			await handleCalendarImport(calendarGroupRoot, calendarInfo, events, CalendarType.External)
+			const calendarImporter = new CalendarImporter(
+				this.viewModel.getCalendarModel(),
+				new ImportInteractionHandler(),
+				locator.operationProgressTracker,
+				new EventSeriesResolver(calendarModel, new DefaultDateProvider()),
+				getTimeZone(),
+			)
+
+			await calendarImporter.import(calendarGroupRoot, calendarInfo, events, CalendarImporter.classifyImportedEvents, CalendarType.External)
 			this.viewModel.isCreatingExternalCalendar = false
 			dialog.close()
 		}
@@ -1209,8 +1223,6 @@ export class CalendarView extends BaseTopLevelView implements TopLevelView<Calen
 					this.viewSlider.focus(this.viewSlider.getMainColumn())
 				}
 			}
-
-			deviceConfig.setDefaultCalendarView(locator.logins.getUserController().user._id, this.currentViewType)
 		}
 	}
 
@@ -1233,6 +1245,11 @@ export class CalendarView extends BaseTopLevelView implements TopLevelView<Calen
 				state: this.buildRouteState(view, resetState, dateString),
 			},
 		)
+	}
+
+	private selectView(view: CalendarViewType) {
+		this.setUrl(view, this.viewModel.selectedDate(), false, true)
+		deviceConfig.setLastSelectedCalendarView(locator.logins.getUserController().userId, view)
 	}
 
 	private buildRouteState(view: string, resetState: boolean, dateString: string) {
@@ -1407,7 +1424,7 @@ export class CalendarView extends BaseTopLevelView implements TopLevelView<Calen
 			actions.push({
 				label: "import_action",
 				icon: Icons.CloudUploadFilled,
-				click: () => handleCalendarImport(groupRoot, calendarInfo),
+				click: () => this.viewModel.importIcsFile(groupRoot, calendarInfo),
 			})
 		}
 

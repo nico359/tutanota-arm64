@@ -1,16 +1,4 @@
-import {
-	AppType,
-	assertMainOrNode,
-	Const,
-	FeatureType,
-	isAndroidApp,
-	isApp,
-	isBrowser,
-	isDesktop,
-	isIOSApp,
-	Mode,
-	ProgrammingError,
-} from "../../platform-kit/app-env"
+import { AppType, assertMainOrNode, Const, FeatureType, isAndroidApp, isApp, isBrowser, isDesktop, isIOSApp, Mode, ProgrammingError } from "@tutao/app-env"
 import { EventController } from "../common/api/main/EventController.js"
 import { type MailboxDetail, MailboxModel } from "../common/mailFunctionality/MailboxModel.js"
 import { ContactModel } from "../common/contactsFunctionality/ContactModel.js"
@@ -39,9 +27,9 @@ import { PageContextLoginListener } from "../common/api/main/PageContextLoginLis
 import { WebsocketConnectivityModel } from "../common/misc/WebsocketConnectivityModel.js"
 import { OperationProgressTracker } from "../common/api/main/OperationProgressTracker.js"
 import { InfoMessageHandler } from "../common/gui/InfoMessageHandler.js"
-import { assertNotNull, defer, DeferredObject, lazy, lazyAsync, LazyLoaded, lazyMemoized, noOp } from "../../platform-kit/utils"
+import { assertNotNull, defer, DeferredObject, lazy, lazyAsync, LazyLoaded, lazyMemoized, noOp } from "@tutao/utils"
 import { RecipientsModel } from "../common/api/main/RecipientsModel.js"
-import { NoZoneDateProvider } from "../common/api/common/utils/NoZoneDateProvider.js"
+import { NoZoneDateProvider } from "../../platform-kit/utils/NoZoneDateProvider.js"
 import { SendMailModel } from "../common/mailFunctionality/SendMailModel.js"
 import { OfflineIndicatorViewModel } from "../common/gui/base/OfflineIndicatorViewModel.js"
 import { DeviceConfig, deviceConfig } from "../common/misc/DeviceConfig.js"
@@ -70,7 +58,6 @@ import type { AutosaveFacade, LocalAutosavedDraftData } from "../common/api/work
 import { DriveFacade } from "../common/api/worker/facades/lazy/DriveFacade"
 import { TransferProgressDispatcher } from "../common/api/main/TransferProgressDispatcher"
 import { CalendarEventUpdateCoordinator } from "../calendar-app/calendar/model/CalendarEventUpdateCoordinator"
-import { ParsedEvent } from "../common/calendar/gui/ImportExportUtils"
 import { DriveSearchModelStub } from "./search/model/DriveSearchModelStub"
 import type { DriveViewModel } from "./drive/view/DriveViewModel"
 import type { CalendarEventModel, CalendarOperation } from "../calendar-app/calendar/gui/eventeditor-model/CalendarEventModel"
@@ -106,21 +93,21 @@ import { GroupManagementFacade } from "../../platform-kit/base/facades/lazy/Grou
 import { ShareFacade } from "../../platform-kit/base/facades/lazy/ShareFacade"
 import { CounterFacade } from "../../platform-kit/network/CounterFacade"
 import { KeyVerificationFacade } from "../../platform-kit/base/facades/lazy/KeyVerificationFacade"
-import PublicEncryptionKeyProvider from "../../platform-kit/base/crypto/PublicEncryptionKeyProvider"
-import { PublicIdentityKeyProvider } from "../../platform-kit/base/crypto/PublicIdentityKeyProvider"
+import PublicEncryptionKeyProvider from "../../platform-kit/base/base-crypto/PublicEncryptionKeyProvider"
+import { PublicIdentityKeyProvider } from "../../platform-kit/base/base-crypto/PublicIdentityKeyProvider"
 import { RecoverCodeFacade } from "../../platform-kit/base/facades/lazy/RecoverCodeFacade"
 import { IServiceExecutor } from "../../platform-kit/network/ServiceRequest"
-import { CryptoFacade } from "../../platform-kit/base/crypto/CryptoFacade"
+import { CryptoFacade } from "../../platform-kit/base/base-crypto/CryptoFacade"
 import { WebMobileFacade } from "../common/native/WebMobileFacade"
 import { SystemPermissionHandler } from "../common/native/SystemPermissionHandler"
 import { InterWindowEventFacadeSendDispatcher } from "@tutao/native-bridge/generatedIpc/dispatchers"
 import { ExposedCacheStorage } from "../../app-kit/local-store/CacheStorage"
 import { NativeThemeFacade, ThemeController, WebThemeFacade } from "../../ui/ThemeController"
-import { IdentityKeyCreator } from "../../platform-kit/base/crypto/IdentityKeyCreator"
+import { IdentityKeyCreator } from "../../platform-kit/base/base-crypto/IdentityKeyCreator"
 import { WhitelabelThemeGenerator } from "../../ui/WhitelabelThemeGenerator"
 import { NativeInterfaces } from "../common/native/NativeInterfaceFactory"
 import { EntropyFacade } from "../../platform-kit/base/facades/EntropyFacade"
-import { ClientModelInfo } from "../../platform-kit/instance-pipeline"
+import { ClientModelInfo } from "@tutao/instance-pipeline"
 import { Router, ScopedRouter, ThrottledRouter } from "../../ui/ScopedRouter"
 import { CalendarEvent, CalendarEventAttendee, Contact, Mail, MailboxProperties } from "@tutao/entities/tutanota"
 import { getEventWithDefaultTimes, setNextHalfHour } from "../common/api/common/utils/CommonCalendarUtils"
@@ -130,8 +117,10 @@ import { theme } from "../../ui/theme"
 import { CALENDAR_MIME_TYPE } from "../../platform-kit/utils/FileConstants"
 import { lang } from "../../ui/utils/LanguageViewModel"
 import { SearchToken } from "../../ui/utils/QueryTokenUtils"
-import { KdfType } from "../../platform-kit/base/crypto/Constants"
+import { KdfType } from "../../platform-kit/base/base-crypto/Constants"
 import { GroupSettingsModel } from "../common/sharing/model/GroupSettingsModel"
+
+import { ParsedEventAlarmTuple } from "../calendar-app/calendar/export/CalendarParser"
 
 assertMainOrNode()
 
@@ -243,7 +232,7 @@ class DriveLocator implements CommonLocator {
 		const { DriveTransferController } = await import("./drive/view/DriveTransferController.js")
 
 		const redraw = await this.redraw()
-		const driveUploadStackModel = new DriveTransferController(this.driveFacade, this.blobFacade, redraw, this.fileController, await this.scheduler())
+		const driveUploadStackModel = new DriveTransferController(this.driveFacade, this.blobFacade, redraw, this.fileController)
 
 		return new DriveViewModel(
 			this.entityClient,
@@ -629,7 +618,11 @@ class DriveLocator implements CommonLocator {
 			this.webMobileFacade = new WebMobileFacade(this.connectivityModel, CALENDAR_PREFIX)
 			this.nativeInterfaces = createNativeInterfaces(
 				this.webMobileFacade,
-				new WebDesktopFacade(this.logins, async () => this.native, this.desktopSettingsFacade),
+				new WebDesktopFacade(
+					this.logins,
+					async () => this.native,
+					() => this.desktopSettingsFacade,
+				),
 				new WebInterWindowEventFacade(this.logins, windowFacade, deviceConfig),
 				new WebCommonNativeFacade(
 					this.logins,
@@ -764,9 +757,23 @@ class DriveLocator implements CommonLocator {
 		const files = await this.fileApp.getFilesMetaData(filesUris)
 		const areAllICSFiles = files.every((file) => file.mimeType === CALENDAR_MIME_TYPE)
 		if (areAllICSFiles) {
-			const { importCalendarFile, parseCalendarFile } = await import("../common/calendar/gui/CalendarImporter.js")
+			const [
+				{ parseCalendarFile },
+				{ CalendarImporter },
+				{ importCalendarFile },
+				{ EventSeriesResolver },
+				{ ImportInteractionHandler },
+				{ DefaultDateProvider },
+			] = await Promise.all([
+				import("../calendar-app/calendar/export/CalendarParser"),
+				import("../common/calendar/import/CalendarImporter"),
+				import("../common/calendar/gui/CalendarImporterDialog"),
+				import("../common/calendar/import/EventSeriesResolver"),
+				import("../common/calendar/gui/ImportInteractionHandler"),
+				import("../common/calendar/date/CalendarUtils"),
+			])
 
-			let parsedEvents: ParsedEvent[] = []
+			let parsedEvents: ParsedEventAlarmTuple[] = []
 			for (const fileRef of files) {
 				const dataFile = await this.fileApp.readDataFile(fileRef.location)
 				if (dataFile == null) continue
@@ -775,7 +782,21 @@ class DriveLocator implements CommonLocator {
 				parsedEvents.push(...data.contents)
 			}
 
-			await importCalendarFile(await this.calendarModel(), this.logins.getUserController(), parsedEvents)
+			const calendarModel = await this.calendarModel()
+
+			const defaultDateProvider = new DefaultDateProvider()
+			await importCalendarFile(
+				calendarModel,
+				this.logins.getUserController(),
+				parsedEvents,
+				new CalendarImporter(
+					calendarModel,
+					new ImportInteractionHandler(),
+					this.operationProgressTracker,
+					new EventSeriesResolver(calendarModel, defaultDateProvider),
+					defaultDateProvider.timeZone(),
+				),
+			)
 		}
 	}
 
@@ -861,7 +882,10 @@ class DriveLocator implements CommonLocator {
 		const ownAttendee: CalendarEventAttendee | null = findAttendeeInAddresses(selectedEvent.attendees, ownMailAddresses)
 		const eventType = getEventType(selectedEvent, calendars, ownMailAddresses, userController)
 		const hasBusinessFeature = isCustomizationEnabledForCustomer(customer, FeatureType.BusinessFeatureEnabled) || (await userController.isNewPaidPlan())
-		const lazyIndexEntry = async () => (selectedEvent.uid != null ? this.calendarFacade.getEventsByUid(selectedEvent.uid) : null)
+		const lazyIndexEntry = async () =>
+			selectedEvent.uid != null && selectedEvent._ownerGroup != null
+				? this.calendarFacade.getEventsByUid(selectedEvent.uid, selectedEvent._ownerGroup)
+				: null
 		const popupModel = new CalendarEventPreviewViewModel(
 			selectedEvent,
 			await this.calendarModel(),

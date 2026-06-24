@@ -7,7 +7,6 @@ import { MobilePaymentSubscriptionOwnership } from "@tutao/native-bridge/generat
 import { client } from "../../../../platform-kit/app-env/boot/ClientDetector"
 import { formatMonthlyPrice, PaymentInterval, PriceAndConfigProvider } from "./PriceUtils.js"
 import { ReplacementKey, UpgradePriceType } from "../FeatureListProvider.js"
-import { CacheMode } from "../../../../platform-kit/network/EntityRestClient"
 import {
 	AccountingInfo,
 	Booking,
@@ -28,7 +27,7 @@ import {
 	BookingItemFeatureType,
 	CustomDomainType,
 	CustomDomainTypeCount,
-	LegacyPrivatePlans,
+	LegacyBusinessPlans,
 	NewBusinessPlans,
 	NewPaidPlans,
 	PaymentMethodType,
@@ -36,6 +35,7 @@ import {
 	PlanType,
 } from "../../../../entities/sys/Utils"
 import { EntityUpdateData, isUpdateFor, OnEntityUpdateReceivedPriority } from "../../../../platform-kit/instance-pipeline/utils/EntityUpdateUtils"
+import { CacheMode, DEFAULT_ENTITY_RESTCLIENT_LOAD_OPTIONS } from "../../../../platform-kit/instance-pipeline/RestClientOptions"
 
 export const enum UpgradeType {
 	/**
@@ -186,6 +186,7 @@ export function getLazyLoadedPayPalUrl(): LazyLoaded<string> {
 				clientType,
 				subscriptionApp,
 			}),
+			null,
 		)
 		return result.loginUrl
 	})
@@ -322,9 +323,13 @@ export async function queryAppStoreSubscriptionOwnership(userIdBytes: Uint8Array
 export async function waitUntilCustomerInfoPlanTypeIsCorrect(expectedPlan: PlanType, customerId: Id): Promise<boolean> {
 	const timeout_ms = 60_000
 	const customer = await locator.entityClient.load(CustomerTypeRef, customerId, {
+		...DEFAULT_ENTITY_RESTCLIENT_LOAD_OPTIONS,
 		cacheMode: CacheMode.WriteOnly,
 	})
-	const customerInfo = await locator.entityClient.load(CustomerInfoTypeRef, customer.customerInfo, { cacheMode: CacheMode.WriteOnly })
+	const customerInfo = await locator.entityClient.load(CustomerInfoTypeRef, customer.customerInfo, {
+		...DEFAULT_ENTITY_RESTCLIENT_LOAD_OPTIONS,
+		cacheMode: CacheMode.WriteOnly,
+	})
 	if (expectedPlan === customerInfo.plan) {
 		// plan is already correct!
 		return true
@@ -338,9 +343,11 @@ export async function waitUntilCustomerInfoPlanTypeIsCorrect(expectedPlan: PlanT
 								// since we're waiting for an account upgrade, the customerInfo moves between the free and the paid list.
 								// we need to load the customer to find the new location.
 								const customer = await locator.entityClient.load(CustomerTypeRef, customerId, {
+									...DEFAULT_ENTITY_RESTCLIENT_LOAD_OPTIONS,
 									cacheMode: CacheMode.WriteOnly,
 								})
 								const newCustomerInfo = await locator.entityClient.load(CustomerInfoTypeRef, customer.customerInfo, {
+									...DEFAULT_ENTITY_RESTCLIENT_LOAD_OPTIONS,
 									cacheMode: CacheMode.WriteOnly,
 								})
 								if (expectedPlan === newCustomerInfo.plan) {
@@ -531,7 +538,7 @@ export function getFeaturePlaceholderReplacement(
  * @return true if the given plan is a business plan
  */
 export function isBusinessPlan(plan: AvailablePlanType): boolean {
-	return NewBusinessPlans.includes(plan) || LegacyPrivatePlans.includes(plan)
+	return NewBusinessPlans.includes(plan) || LegacyBusinessPlans.includes(plan)
 }
 
 /**
@@ -556,6 +563,7 @@ export function canSubscribeToPlan(plan: AvailablePlanType): boolean {
 export function getCurrentPaymentInterval(accountingInfo: AccountingInfo | null): PaymentInterval | undefined {
 	return accountingInfo ? (parseInt(accountingInfo.paymentInterval) as PaymentInterval) : undefined
 }
+
 export const BookingItemFeatureByCode = reverse(BookingItemFeatureType)
 
 export function getDefaultPaymentMethod(): PaymentMethodType {

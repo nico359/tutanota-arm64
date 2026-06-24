@@ -1,9 +1,9 @@
 import { MessageDispatcher } from "../../../../app-kit/native-bridge/shared/MessageDispatcher.js"
 import { BookingFacade } from "../../../common/api/worker/facades/lazy/BookingFacade.js"
-import { RestClient, restError } from "../../../../platform-kit/rest-client"
+import { RestClient } from "../../../../platform-kit/rest-client"
 import { assertWorkerOrNode, isMainOrNode, ProgrammingError } from "../../../../platform-kit/app-env"
 import { initLocator, locator, resetLocator } from "./WorkerLocator.js"
-import { CryptoFacade } from "../../../../platform-kit/base/crypto/CryptoFacade.js"
+import { CryptoFacade } from "../../../../platform-kit/base/base-crypto/CryptoFacade.js"
 import type { GiftCardFacade } from "../../../common/api/worker/facades/lazy/GiftCardFacade.js"
 import type { LoginFacade } from "../../../../platform-kit/base/facades/LoginFacade.js"
 import type { CustomerFacade } from "../../../common/api/worker/facades/lazy/CustomerFacade.js"
@@ -31,17 +31,17 @@ import { RecoverCodeFacade } from "../../../../platform-kit/base/facades/lazy/Re
 import { CacheManagementFacade } from "../../../common/api/worker/facades/lazy/CacheManagementFacade.js"
 import { ExposedEventBus, MainInterface, WorkerRandomizer } from "../../../common/api/worker/workerInterfaces.js"
 import { CryptoError } from "../../../../platform-kit/crypto/error"
-import { AsymmetricCryptoFacade } from "../../../../platform-kit/base/crypto/AsymmetricCryptoFacade.js"
+import { AsymmetricCryptoFacade } from "../../../../platform-kit/base/base-crypto/AsymmetricCryptoFacade.js"
 import { KeyVerificationFacade } from "../../../../platform-kit/base/facades/lazy/KeyVerificationFacade"
-import PublicEncryptionKeyProvider from "../../../../platform-kit/base/crypto/PublicEncryptionKeyProvider.js"
+import PublicEncryptionKeyProvider from "../../../../platform-kit/base/base-crypto/PublicEncryptionKeyProvider.js"
 import { MailExportFacade } from "../../../common/api/worker/facades/lazy/MailExportFacade"
 import { BulkMailLoader } from "../index/BulkMailLoader.js"
 import { ApplicationTypesFacade } from "../../../../platform-kit/instance-pipeline/ApplicationTypesFacade"
 import { Indexer } from "../index/Indexer"
 import { SearchFacade } from "../index/SearchFacade"
 import { ContactSearchFacade } from "../index/ContactSearchFacade"
-import { IdentityKeyCreator } from "../../../../platform-kit/base/crypto/IdentityKeyCreator"
-import { PublicIdentityKeyProvider } from "../../../../platform-kit/base/crypto/PublicIdentityKeyProvider"
+import { IdentityKeyCreator } from "../../../../platform-kit/base/base-crypto/IdentityKeyCreator"
+import { PublicIdentityKeyProvider } from "../../../../platform-kit/base/base-crypto/PublicIdentityKeyProvider"
 import { AutosaveFacade } from "../../../common/api/worker/facades/lazy/AutosaveFacade"
 import { SpamClassifier } from "../spamClassification/SpamClassifier"
 import { DriveFacade } from "../../../common/api/worker/facades/lazy/DriveFacade"
@@ -159,7 +159,7 @@ export class WorkerImpl implements NativeInterface {
 	get exposedInterface(): DelayedImpls<WorkerInterface> {
 		return {
 			async loginFacade() {
-				return locator.login
+				return locator.base.login
 			},
 
 			async customerFacade() {
@@ -171,10 +171,10 @@ export class WorkerImpl implements NativeInterface {
 			},
 
 			async groupManagementFacade() {
-				return locator.groupManagement()
+				return locator.base.groupManagement()
 			},
 			async identityKeyCreator() {
-				return locator.identityKeyCreator()
+				return locator.base.identityKeyCreator()
 			},
 
 			async configFacade() {
@@ -194,7 +194,7 @@ export class WorkerImpl implements NativeInterface {
 			},
 
 			async shareFacade() {
-				return locator.share()
+				return locator.base.share()
 			},
 
 			async cacheManagementFacade() {
@@ -202,7 +202,7 @@ export class WorkerImpl implements NativeInterface {
 			},
 
 			async counterFacade() {
-				return locator.counters()
+				return locator.base.counters()
 			},
 
 			async indexerFacade() {
@@ -226,11 +226,11 @@ export class WorkerImpl implements NativeInterface {
 			},
 
 			async keyVerificationFacade() {
-				return locator.keyVerification()
+				return locator.base.keyVerification()
 			},
 
 			async blobAccessTokenFacade() {
-				return locator.blobAccessToken
+				return locator.base.blobAccessToken
 			},
 
 			async blobFacade() {
@@ -242,35 +242,35 @@ export class WorkerImpl implements NativeInterface {
 			},
 
 			async recoverCodeFacade() {
-				return locator.recoverCode()
+				return locator.base.recoverCode()
 			},
 
 			async restInterface() {
-				return locator.cache
+				return locator.base.cache
 			},
 
 			async serviceExecutor() {
-				return locator.serviceExecutor
+				return locator.base.serviceExecutor
 			},
 
 			async cryptoWrapper() {
-				return locator.cryptoWrapper
+				return locator.base.cryptoWrapper
 			},
 
 			async publicEncryptionKeyProvider() {
-				return locator.publicEncryptionKeyProvider
+				return locator.base.publicEncryptionKeyProvider
 			},
 
 			async publicIdentityKeyProvider() {
-				return locator.publicIdentityKeyProvider
+				return locator.base.publicIdentityKeyProvider
 			},
 
 			async asymmetricCryptoFacade() {
-				return locator.asymmetricCrypto
+				return locator.base.asymmetricCrypto
 			},
 
 			async cryptoFacade() {
-				return locator.crypto
+				return locator.base.crypto
 			},
 
 			async cacheStorage() {
@@ -294,7 +294,7 @@ export class WorkerImpl implements NativeInterface {
 			},
 
 			async entropyFacade() {
-				return locator.entropyFacade
+				return locator.base.entropyFacade
 			},
 
 			async workerFacade() {
@@ -311,7 +311,7 @@ export class WorkerImpl implements NativeInterface {
 				return locator.mailExportFacade()
 			},
 			async applicationTypesFacade() {
-				return locator.applicationTypesFacade
+				return locator.base.applicationTypesFacade
 			},
 			async autosaveFacade() {
 				return locator.autosaveFacade()
@@ -352,8 +352,8 @@ export class WorkerImpl implements NativeInterface {
 				const args = message.args as Parameters<RestClient["request"]>
 				let [path, method, options] = args
 				options = options ?? {}
-				options.headers = { ...locator.user.createAuthHeaders(), ...options.headers }
-				return locator.restClient.request(path, method, options)
+				options.headers = { ...locator.base.user.createAuthHeaders(), ...options.headers }
+				return locator.base.restClient.request(path, method, options)
 			},
 
 			facade: exposeLocalDelayed<DelayedImpls<WorkerInterface>, WorkerRequestType>(exposedWorker),

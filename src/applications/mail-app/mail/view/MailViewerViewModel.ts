@@ -18,11 +18,11 @@ import {
 	ofClass,
 	startsWith,
 	utf8Uint8ArrayToString,
-} from "../../../../platform-kit/utils"
+} from "@tutao/utils"
 import { lang } from "../../../../ui/utils/LanguageViewModel"
 import { LoginController } from "../../../common/api/main/LoginController"
 import m from "mithril"
-import { isOfflineError, LockedError, NotAuthorizedError, NotFoundError } from "../../../../platform-kit/rest-client/error"
+import { isOfflineError, LockedError, NotAuthorizedError, NotFoundError } from "@tutao/rest-client/error"
 import { getReferencedAttachments, loadInlineImages, moveMails, moveMailsToSystemFolder, showDownloadProgressDialog } from "./MailGuiUtils"
 import { FileController } from "../../../common/file/FileController"
 import { exportMails } from "../export/Exporter.js"
@@ -40,7 +40,7 @@ import { WorkerFacade } from "../../../common/api/worker/facades/WorkerFacade.js
 import { SearchModel } from "../../search/model/SearchModel.js"
 import { ParsedIcalFileContent } from "../../../calendar-app/calendar/view/CalendarInvites.js"
 import { MailFacade } from "../../../common/api/worker/facades/lazy/MailFacade.js"
-import { CryptoFacade } from "../../../../platform-kit/base/crypto/CryptoFacade.js"
+import { CryptoFacade } from "../../../../platform-kit/base/base-crypto/CryptoFacade.js"
 import { AttachmentType, getAttachmentType } from "../../../../ui/AttachmentBubble.js"
 import type { ContactImporter } from "../../contacts/ContactImporter.js"
 import { InlineImages, revokeInlineImages } from "../../../common/mailFunctionality/inlineImagesUtils.js"
@@ -72,14 +72,15 @@ import {
 	NewsletterBannerRule,
 } from "../../../../entities/tutanota/Utils"
 import { isPermanentDeleteAllowedMailSetKind } from "../MailUtils"
-import { haveSameId, isSameId, OperationType } from "../../../../platform-kit/meta"
+import { haveSameId, isSameId, OperationType } from "@tutao/meta"
 import {
 	EntityEventsListener,
 	EntityUpdateData,
 	isUpdateForTypeRef,
 	OnEntityUpdateReceivedPriority,
 } from "../../../../platform-kit/instance-pipeline/utils/EntityUpdateUtils"
-import { EncryptionAuthStatus, FeatureType, isBrowser, MailAuthenticationStatus, ProgrammingError } from "../../../../platform-kit/app-env"
+import { EncryptionAuthStatus, FeatureType, isBrowser, MailAuthenticationStatus, ProgrammingError } from "@tutao/app-env"
+import { OperationProgressTracker } from "../../../common/api/main/OperationProgressTracker"
 
 export const enum ContentBlockingStatus {
 	Block = "0",
@@ -173,6 +174,7 @@ export class MailViewerViewModel {
 		readonly eventsRepository: CalendarEventsRepository,
 		private readonly undoModel: UndoModel,
 		private readonly transferProgressDispatcher: TransferProgressDispatcher,
+		private readonly operationProgressTracker: OperationProgressTracker,
 	) {
 		this.folderMailboxText = null
 		if (showFolder) {
@@ -1314,10 +1316,31 @@ export class MailViewerViewModel {
 	private async importCalendar(file: File) {
 		file = (await this.cryptoFacade.enforceSessionKeyUpdateIfNeeded(this._mail, [file]))[0]
 		try {
-			const { importCalendarFile, parseCalendarFile } = await import("../../../common/calendar/gui/CalendarImporter.js")
+			const [{ CalendarImporter }, { ImportInteractionHandler }, { DefaultDateProvider }, { EventSeriesResolver }] = await Promise.all([
+				import("../../../common/calendar/import/CalendarImporter"),
+				import("../../../common/calendar/gui/ImportInteractionHandler"),
+				import("../../../common/calendar/date/CalendarUtils"),
+				import("../../../common/calendar/import/EventSeriesResolver"),
+			])
+			const { parseCalendarFile } = await import("../../../calendar-app/calendar/export/CalendarParser")
+			const { importCalendarFile } = await import("../../../common/calendar/gui/CalendarImporterDialog")
+
 			const dataFile = await this.fileController.getAsDataFile(file)
 			const data = parseCalendarFile(dataFile)
-			await importCalendarFile(await mailLocator.calendarModel(), this.logins.getUserController(), data.contents)
+			const calendarModel = await mailLocator.calendarModel()
+			const defaultDateProvider = new DefaultDateProvider()
+			await importCalendarFile(
+				calendarModel,
+				this.logins.getUserController(),
+				data.contents,
+				new CalendarImporter(
+					calendarModel,
+					new ImportInteractionHandler(),
+					this.operationProgressTracker,
+					new EventSeriesResolver(calendarModel, defaultDateProvider),
+					defaultDateProvider.timeZone(),
+				),
+			)
 		} catch (e) {
 			console.log(e)
 			throw new UserError("errorDuringFileOpen_msg")

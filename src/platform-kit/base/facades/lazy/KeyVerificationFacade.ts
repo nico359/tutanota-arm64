@@ -1,12 +1,19 @@
-import { IdentityKeyTrustDatabase, TrustDBEntry } from "../../../../app-kit/local-store/IdentityKeyTrustDatabase"
 import { KeyVerificationMismatchError } from "../../../network/error/KeyVerificationMismatchError"
 import { assertWorkerOrNode, EncryptionKeyVerificationState, IdentityKeySourceOfTrust, ProgrammingError } from "@tutao/app-env"
 import { concat, uint8ArrayToHex, Versioned } from "@tutao/utils"
-import { ed25519PublicKeyToBytes, PublicKey, PublicKeyIdentifier, PublicKeyIdentifierType, sha256Hash, SigningKeyPairType } from "@tutao/crypto"
-import { PublicKeySignatureFacade } from "../../crypto/PublicKeySignatureFacade"
-import { PublicIdentityKeyProvider } from "../../crypto/PublicIdentityKeyProvider"
-import { SigningPublicKey } from "../../../crypto/encryption/Ed25519"
-import { MaybeSignedPublicKey } from "../../../../app-kit/local-store/PublicEncryptionKeyCache"
+import {
+	ed25519PublicKeyToBytes,
+	PublicKey,
+	PublicKeyIdentifier,
+	PublicKeyIdentifierType,
+	sha256Hash,
+	SigningKeyPairType,
+	SigningPublicKey,
+} from "@tutao/crypto"
+import { PublicKeySignatureFacade } from "../../base-crypto/PublicKeySignatureFacade"
+import { PublicIdentityKeyProvider } from "../../base-crypto/PublicIdentityKeyProvider"
+import { IdentityKeyTrustDatabase, TrustDBEntry } from "../../base-crypto/persistence/IdentityKeyTrustDatabase"
+import { MaybeSignedPublicKey } from "../../base-crypto/MaybeSignedPublicKey"
 
 assertWorkerOrNode()
 

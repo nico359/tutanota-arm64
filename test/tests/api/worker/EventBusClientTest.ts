@@ -1,5 +1,5 @@
 import o from "@tutao/otest"
-import { EventBusClient, EventBusListener } from "../../../../src/platform-kit/network/EventBusClient.js"
+import { EventBusClient, EventBusListener } from "../../../../src/app-kit/local-store/event/EventBusClient.js"
 import { OperationType, timestampToGeneratedId } from "../../../../src/platform-kit/meta"
 import { DefaultEntityRestCache } from "../../../../src/applications/common/api/worker/rest/DefaultEntityRestCache.js"
 import { OutOfSyncError, ProgrammingError } from "../../../../src/platform-kit/app-env"
@@ -8,7 +8,7 @@ import { SleepDetector } from "../../../../src/applications/common/api/worker/ut
 import { UserFacade } from "../../../../src/platform-kit/base/facades/UserFacade"
 import { clientInitializedTypeModelResolver, createTestEntity, instancePipelineFromTypeModelResolver, removeOriginals } from "../../TestUtils.js"
 import { InstancePipeline, TypeModelResolver } from "../../../../src/platform-kit/instance-pipeline"
-import { CryptoFacade } from "../../../../src/platform-kit/base/crypto/CryptoFacade"
+import { CryptoFacade } from "../../../../src/platform-kit/base/base-crypto/CryptoFacade"
 import { Thunk } from "../../../../src/platform-kit/utils"
 import { ConnectMode, WsConnectionState } from "../../../../src/platform-kit/network/Constants"
 import { MailTypeRef } from "@tutao/entities/tutanota"
@@ -71,7 +71,7 @@ o.spec("EventBusClient", function () {
 			sleepDetector,
 			typeModelResolver,
 			cryptoFacadeMock,
-			cryptoFacadeMock,
+			object(),
 			() => Promise.resolve(lastProcessedEventBatchStorageFacade),
 			serverDateProvider,
 			createProgressMonitor,

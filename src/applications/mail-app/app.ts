@@ -52,7 +52,6 @@ import { DriveView, DriveViewAttrs } from "../drive-app/drive/view/DriveView"
 import { DriveViewModel } from "../drive-app/drive/view/DriveViewModel"
 import { PartnerView, PartnerViewAttrs } from "../common/partner/PartnerView"
 import type { DriveFilePicker } from "../drive-app/drive/view/DriveFilePicker"
-import { CacheMode } from "../../platform-kit/network/EntityRestClient"
 import { client } from "../../platform-kit/app-env/boot/ClientDetector"
 import { initUiSingletons } from "../common/app-common"
 import { AppNameEnum } from "@tutao/meta"
@@ -64,8 +63,9 @@ import { storageModelInfo, storageTypeModels } from "@tutao/entities/storage"
 import { monitorModelInfo, monitorTypeModels } from "@tutao/entities/monitor"
 import { usageModelInfo, usageTypeModels } from "@tutao/entities/usage"
 import { accountingModelInfo, accountingTypeModels } from "@tutao/entities/accounting"
-import { NamedClientModel } from "@tutao/instance-pipeline"
+import type { NamedClientModel } from "@tutao/instance-pipeline"
 import { initClientModels } from "../common/api/common/ClientModelInfoInitializer"
+import { CacheMode, DEFAULT_ENTITY_RESTCLIENT_LOAD_OPTIONS } from "../../platform-kit/instance-pipeline/RestClientOptions"
 
 assertMainOrNodeBoot()
 bootFinished()
@@ -179,6 +179,15 @@ import("../../ui/translations/en.js")
 
 		mailLocator.logins.addPostLoginAction(() => mailLocator.postLoginActions())
 		mailLocator.logins.addPostLoginAction(async () => {
+			const { setupCalendarModels } = await import("../calendar-app/calendar/login/SetupCalendarModels.js")
+			return await setupCalendarModels(
+				mailLocator.calendarModel,
+				mailLocator.entityClient,
+				mailLocator.calendarEventUpdateCoordinator,
+				mailLocator.syncTracker,
+			)
+		})
+		mailLocator.logins.addPostLoginAction(async () => {
 			return {
 				async onPartialLoginSuccess({ sessionType }) {
 					if (sessionType === SessionType.Temporary) {
@@ -213,7 +222,7 @@ import("../../ui/translations/en.js")
 						const reloadTutanotaProperties = await mailLocator.entityClient.loadRoot(
 							TutanotaPropertiesTypeRef,
 							mailLocator.logins.getUserController().user.userGroup.group,
-							{ cacheMode: CacheMode.WriteOnly },
+							{ ...DEFAULT_ENTITY_RESTCLIENT_LOAD_OPTIONS, cacheMode: CacheMode.WriteOnly },
 						)
 
 						if (!reloadTutanotaProperties.defaultLabelCreated) {

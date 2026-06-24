@@ -21,12 +21,12 @@ import { HttpMethod, MediaType } from "../../rest-client/types"
 import { EntityClient } from "../../network/EntityClient"
 import {
 	_encryptString,
-	Aes128Key,
 	aes256DecryptWithRecoveryKey,
 	Aes256Key,
 	aes256RandomKey,
 	aesDecrypt,
 	AesKey,
+	AesKeyLength,
 	base64ToKey,
 	createAuthVerifier,
 	createAuthVerifierAsBase64Url,
@@ -36,23 +36,22 @@ import {
 	KeyLength,
 	keyToUint8Array,
 	sha256Hash,
+	SymmetricEncryptionScheme,
 	TotpSecret,
 	TotpVerifier,
 	uint8ArrayToKey,
 	VersionedKey,
 } from "@tutao/crypto"
-import { CryptoFacade } from "../crypto/CryptoFacade"
+import { CryptoFacade } from "../base-crypto/CryptoFacade"
 import { IServiceExecutor } from "../../network/ServiceRequest"
 import { UserFacade } from "./UserFacade"
 import { EntropyFacade } from "./EntropyFacade.js"
 import { BlobAccessTokenFacade } from "../../network/BlobAccessTokenFacade.js"
-import { DatabaseKeyFactory } from "../crypto/DatabaseKeyFactory.js"
+import { DatabaseKeyFactory } from "../base-crypto/DatabaseKeyFactory.js"
 import { ApplicationTypesFacade, InstancePipeline, LoggedInUserProvider, typeModelToRestPath } from "@tutao/instance-pipeline"
-import { KeyRotationFacade, KeyRotationRolloutAction } from "../crypto/KeyRotationFacade.js"
+import { KeyRotationFacade, KeyRotationRolloutAction } from "../base-crypto/KeyRotationFacade.js"
 import { RolloutFacade } from "./RolloutFacade"
-import { CacheStorageLateInitializer, SessionTypeProvider } from "../../../app-kit/local-store/Types.js"
-import { Argon2idFacade } from "../crypto/WasmArgon2idFacade"
-import { CacheManagementInterface } from "../../../app-kit/local-store/CacheManagementInterface"
+import { Argon2idFacade } from "../base-crypto/WasmArgon2idFacade"
 import {
 	Challenge,
 	createChangeKdfPostIn,
@@ -76,11 +75,9 @@ import {
 	UserTypeRef,
 	WebsocketLeaderStatus,
 } from "../../../entities/sys/TypeRefs"
-import { EventBusClient } from "../../network/EventBusClient"
-import { CacheMode, EntityRestClient } from "../../network/EntityRestClient"
-import { CloseEventBusOption, ConnectMode } from "../../network/Constants"
+import { EntityMigrator, EntityRestClient } from "../../network/EntityRestClient"
 import { Credentials, CredentialType } from "../../network/types"
-import { asKdfType, DEFAULT_KDF_TYPE, ExternalUserKeyDeriver, KdfType } from "../crypto/Constants"
+import { asKdfType, DEFAULT_KDF_TYPE, ExternalUserKeyDeriver, KdfType } from "../base-crypto/Constants"
 import { ServerModelUntypedInstance } from "../../meta/EntityTypes"
 import { TypeModelResolver } from "../../instance-pipeline/EntityFunctions"
 import {
@@ -104,6 +101,15 @@ import {
 	NotFoundError,
 	SessionExpiredError,
 } from "@tutao/rest-client/error"
+import { SessionTypeProvider } from "./SessionTypeProvider"
+import { CacheStorageLateInitializer } from "./CacheStorageLateInitializer"
+import { CacheManager } from "../base-crypto/persistence/CacheManager"
+import {
+	CacheMode,
+	DEFAULT_ENTITY_RESTCLIENT_LOAD_OPTIONS,
+	DEFAULT_EXTRA_SERVICE_PARAMS,
+	DEFAULT_REST_CLIENT_OPTIONS,
+} from "../../instance-pipeline/RestClientOptions"
 
 assertWorkerOrNode()
 
@@ -193,12 +199,13 @@ export interface LoginListener {
 	 * Shows a dialog with possibility to use second factor and with a message that the login can be approved from another client.
 	 */
 	onSecondFactorChallenge(sessionId: IdTuple, challenges: ReadonlyArray<Challenge>, mailAddress: string | null): Promise<void>
+
+	onResetSession(): void
 }
 
 export class LoginFacade implements SessionTypeProvider {
 	/** On platforms with offline cache we do the actual login asynchronously and we can retry it. This is the state of such async login. */
 	asyncLoginState: AsyncLoginState = { state: "idle" }
-	private eventBusClient!: EventBusClient
 	/**
 	 * Used for cancelling second factor and to not mix different attempts
 	 */
@@ -219,7 +226,7 @@ export class LoginFacade implements SessionTypeProvider {
 		private readonly keyRotationFacade: KeyRotationFacade,
 		/**
 		 *  Only needed so that we can initialize the offline storage after login.
-		 *  This is necessary because we don't know if we'll be persistent or not until the user tries to login
+		 *  This is necessary because we don't know if we'll be persistent or not until the user tries to log in
 		 *  Once the credential handling has been changed to *always* save in desktop, then this should become obsolete
 		 */
 		private readonly cacheInitializer: CacheStorageLateInitializer,
@@ -231,26 +238,23 @@ export class LoginFacade implements SessionTypeProvider {
 		private readonly argon2idFacade: Argon2idFacade,
 		private readonly noncachingEntityClient: EntityClient,
 		private readonly sendError: (error: Error) => Promise<void>,
-		private readonly cacheManagementFacade: lazyAsync<CacheManagementInterface>,
+		private readonly cacheManagementFacade: lazyAsync<CacheManager>,
 		private readonly typeModelResolver: TypeModelResolver,
 		private readonly rolloutFacade: RolloutFacade,
 		private readonly applicationTypesFacade: ApplicationTypesFacade,
+		private readonly entityMigrator: EntityMigrator,
 	) {}
 
-	init(eventBusClient: EventBusClient) {
-		this.eventBusClient = eventBusClient
-	}
-
 	async resetSession(): Promise<void> {
-		this.eventBusClient.close(CloseEventBusOption.Terminate)
+		this.loginListener.onResetSession()
 		await this.deInitCache()
 		this.userFacade.reset()
 	}
 
 	/**
-	 * Create session and log in. Changes internal state to refer to the logged in user.
+	 * Create session and log in. Changes internal state to refer to the logged-in user.
 	 * if createSessionOnly == true, the app will not continue to initialize app-specific state
-	 * aftrer the session is created + stored and will also not create a persistent offline DB,
+	 * after the session is created + stored and will also not create a persistent offline DB,
 	 * but still store the database key with the credentials so the offline DB can be created when the
 	 * credentials are first used.
 	 */
@@ -287,7 +291,7 @@ export class LoginFacade implements SessionTypeProvider {
 			accessKey = aes256RandomKey()
 			createSessionData.accessKey = keyToUint8Array(accessKey)
 		}
-		const createSessionReturn = await this.serviceExecutor.post(SessionService, createSessionData)
+		const createSessionReturn = await this.serviceExecutor.post(SessionService, createSessionData, null)
 		const sessionData = await this.waitUntilSecondFactorApprovedOrCancelled(createSessionReturn, mailAddress)
 
 		const forceNewDatabase = sessionType === SessionType.Persistent && databaseKey == null
@@ -376,7 +380,7 @@ export class LoginFacade implements SessionTypeProvider {
 			userGroupKeyVersion: String(currentUserGroupKey.version),
 		})
 		console.log("Migrate KDF from:", user.kdfVersion, "to", targetKdfType)
-		await this.serviceExecutor.post(ChangeKdfService, changeKdfPostIn)
+		await this.serviceExecutor.post(ChangeKdfService, changeKdfPostIn, null)
 		// We reload the user because we experienced a race condition
 		// were we do not process the User update after doing the argon2 migration from the web client.´
 		// In order do not rework the entity processing and its initialization for new clients we
@@ -421,7 +425,7 @@ export class LoginFacade implements SessionTypeProvider {
 			sessionData.accessKey = keyToUint8Array(accessKey)
 		}
 
-		const createSessionReturn = await this.serviceExecutor.post(SessionService, sessionData)
+		const createSessionReturn = await this.serviceExecutor.post(SessionService, sessionData, null)
 
 		let sessionId = [this.getSessionListId(createSessionReturn.accessToken), this.getSessionElementId(createSessionReturn.accessToken)] as const
 		const cacheInfo = await this.initCache({
@@ -476,7 +480,7 @@ export class LoginFacade implements SessionTypeProvider {
 			session: sessionId,
 		})
 		await this.serviceExecutor
-			.delete(SecondFactorAuthService, secondFactorAuthDeleteData)
+			.delete(SecondFactorAuthService, secondFactorAuthDeleteData, null)
 			.catch(
 				ofClass(NotFoundError, (e) => {
 					// This can happen during some odd behavior in browser where main loop would be blocked by webauthn (hello, FF) and then we would try to
@@ -495,8 +499,8 @@ export class LoginFacade implements SessionTypeProvider {
 	}
 
 	/** Finishes 2FA process either using second factor or approving session on another client. */
-	async authenticateWithSecondFactor(data: SecondFactorAuthData, host?: string): Promise<void> {
-		await this.serviceExecutor.post(SecondFactorAuthService, data, { baseUrl: host })
+	async authenticateWithSecondFactor(data: SecondFactorAuthData, host: string | null): Promise<void> {
+		await this.serviceExecutor.post(SecondFactorAuthService, data, { ...DEFAULT_EXTRA_SERVICE_PARAMS, baseUrl: host })
 	}
 
 	/**
@@ -543,7 +547,7 @@ export class LoginFacade implements SessionTypeProvider {
 				const user = await this.entityClient.load(UserTypeRef, credentials.userId)
 				this.userFacade.setUser(user)
 
-				// Before offline login was enabled (in 3.96.4) we didn't use cache for the login process, only afterwards.
+				// Before offline login was enabled (in 3.96.4) we didn't use cache for the login process, only afterward.
 				// This could lead to a situation where we never loaded or saved user groupInfo but would try to use it now.
 				let userGroupInfo: GroupInfo
 				try {
@@ -609,6 +613,7 @@ export class LoginFacade implements SessionTypeProvider {
 		const queryParams: Dict = pushIdentifier == null ? {} : { pushIdentifier }
 		return this.restClient
 			.request(path, HttpMethod.DELETE, {
+				...DEFAULT_REST_CLIENT_OPTIONS,
 				headers,
 				responseType: MediaType.Json,
 				queryParams,
@@ -655,7 +660,7 @@ export class LoginFacade implements SessionTypeProvider {
 			userGroupKeyVersion: String(currentUserGroupKey.version),
 		})
 
-		await this.serviceExecutor.post(ChangePasswordService, service)
+		await this.serviceExecutor.post(ChangePasswordService, service, null)
 
 		this.userFacade.setUserDistKey(currentUserGroupKey.version, newUserPassphraseKey)
 		const accessToken = assertNotNull(this.userFacade.getAccessToken())
@@ -695,12 +700,12 @@ export class LoginFacade implements SessionTypeProvider {
 		} else {
 			deleteCustomerData.takeoverMailAddress = null
 		}
-		await this.serviceExecutor.delete(CustomerService, deleteCustomerData)
+		await this.serviceExecutor.delete(CustomerService, deleteCustomerData, null)
 	}
 
 	/** Changes user password to another one using recoverCode instead of the old password. */
 	async recoverLogin(mailAddress: string, recoverCode: string, newPassword: string, clientIdentifier: string): Promise<void> {
-		const recoverCodeKey = uint8ArrayToKey(hexToUint8Array(recoverCode))
+		const recoverCodeKey = uint8ArrayToKey(hexToUint8Array(recoverCode), AesKeyLength.Aes256)
 		const recoverCodeVerifier = createAuthVerifier(recoverCodeKey)
 		const recoverCodeVerifierBase64 = base64ToBase64Url(uint8ArrayToBase64(recoverCodeVerifier))
 		const sessionData = createCreateSessionData({
@@ -735,6 +740,10 @@ export class LoginFacade implements SessionTypeProvider {
 			setLeaderStatus(data: WebsocketLeaderStatus): void {
 				throw new Error("No loggedInUser to update leader status")
 			}
+
+			getDefaultSymmetricEncryptionScheme(): SymmetricEncryptionScheme {
+				throw new Error("No loggedInUser to have an encryption scheme")
+			}
 		})()
 		const lazyCrypto = () => this.cryptoFacade
 		const eventRestClient = new EntityRestClient(
@@ -745,12 +754,14 @@ export class LoginFacade implements SessionTypeProvider {
 			this.blobAccessTokenFacade,
 			this.typeModelResolver,
 			lazyCrypto,
+			() => this.entityMigrator,
 		)
 		const entityClient = new EntityClient(eventRestClient, this.typeModelResolver)
-		const createSessionReturn = await this.serviceExecutor.post(SessionService, sessionData) // Don't pass email address to avoid proposing to reset second factor when we're resetting password
+		const createSessionReturn = await this.serviceExecutor.post(SessionService, sessionData, null) // Don't pass email address to avoid proposing to reset second factor when we're resetting password
 
 		const { userId, accessToken } = await this.waitUntilSecondFactorApprovedOrCancelled(createSessionReturn, null)
 		const user = await entityClient.load(UserTypeRef, userId, {
+			...DEFAULT_ENTITY_RESTCLIENT_LOAD_OPTIONS,
 			extraHeaders: {
 				accessToken,
 			},
@@ -763,7 +774,10 @@ export class LoginFacade implements SessionTypeProvider {
 			recoverCodeVerifier: recoverCodeVerifierBase64,
 		}
 
-		const recoverCodeData = await entityClient.load(RecoverCodeTypeRef, user.auth.recoverCode, { extraHeaders: recoverCodeExtraHeaders })
+		const recoverCodeData = await entityClient.load(RecoverCodeTypeRef, user.auth.recoverCode, {
+			...DEFAULT_ENTITY_RESTCLIENT_LOAD_OPTIONS,
+			extraHeaders: recoverCodeExtraHeaders,
+		})
 		try {
 			const groupKey = aes256DecryptWithRecoveryKey(recoverCodeKey, recoverCodeData.recoverCodeEncUserGroupKey)
 			const salt = generateRandomSalt()
@@ -787,7 +801,7 @@ export class LoginFacade implements SessionTypeProvider {
 			const extraHeaders = {
 				accessToken,
 			}
-			await this.serviceExecutor.post(ChangePasswordService, postData, { extraHeaders })
+			await this.serviceExecutor.post(ChangePasswordService, postData, { ...DEFAULT_EXTRA_SERVICE_PARAMS, extraHeaders })
 		} finally {
 			this.deleteSession(accessToken)
 		}
@@ -804,7 +818,7 @@ export class LoginFacade implements SessionTypeProvider {
 				authVerifier,
 				recoverCodeVerifier,
 			})
-			return this.serviceExecutor.delete(ResetFactorsService, deleteData)
+			return this.serviceExecutor.delete(ResetFactorsService, deleteData, null)
 		})
 	}
 
@@ -824,7 +838,7 @@ export class LoginFacade implements SessionTypeProvider {
 				recoverCodeVerifier,
 				targetAccountMailAddress,
 			})
-			return this.serviceExecutor.post(TakeOverDeletedAddressService, data)
+			return this.serviceExecutor.post(TakeOverDeletedAddressService, data, null)
 		})
 	}
 
@@ -859,7 +873,7 @@ export class LoginFacade implements SessionTypeProvider {
 		})
 
 		const authVerifier = createAuthVerifier(passphraseKey)
-		const out = await this.serviceExecutor.post(VerifierTokenService, createVerifierTokenServiceIn({ authVerifier }))
+		const out = await this.serviceExecutor.post(VerifierTokenService, createVerifierTokenServiceIn({ authVerifier }), null)
 		return out.token
 	}
 
@@ -924,7 +938,7 @@ export class LoginFacade implements SessionTypeProvider {
 			accessToken,
 		})
 		try {
-			const secondFactorAuthGetReturn = await this.serviceExecutor.get(SecondFactorAuthService, secondFactorAuthGetData)
+			const secondFactorAuthGetReturn = await this.serviceExecutor.get(SecondFactorAuthService, secondFactorAuthGetData, null)
 			if (!this.loginRequestSessionId || !isSameId(this.loginRequestSessionId, sessionId)) {
 				throw new CancelledError("login cancelled")
 			}
@@ -950,16 +964,6 @@ export class LoginFacade implements SessionTypeProvider {
 	private async triggerFullLoginSuccess(sessionType: SessionType, cacheInfo: CacheInfo, credentials: Credentials): Promise<void> {
 		this.lastLoginSessionType = sessionType
 		await this.loginListener.onFullLoginSuccess(sessionType, cacheInfo, credentials)
-
-		// If we have been fully logged in at least once already (probably expired ephemeral session)
-		// then we just reconnect and re-download missing events.
-		// For new connections we have special handling.
-		const wasFullyLoggedIn = this.userFacade.isFullyLoggedIn()
-		if (wasFullyLoggedIn) {
-			await this.eventBusClient.connect(ConnectMode.Reconnect)
-		} else {
-			await this.eventBusClient.connect(ConnectMode.Initial)
-		}
 	}
 
 	private getSessionId(credentials: Credentials): IdTuple {
@@ -1070,7 +1074,7 @@ export class LoginFacade implements SessionTypeProvider {
 
 		try {
 			// We need to use up-to-date user to make sure that we are not checking for outdated verified against cached user.
-			const user = await this.entityClient.load(UserTypeRef, userId, { cacheMode: CacheMode.WriteOnly })
+			const user = await this.entityClient.load(UserTypeRef, userId, { ...DEFAULT_ENTITY_RESTCLIENT_LOAD_OPTIONS, cacheMode: CacheMode.WriteOnly })
 			await this.checkOutdatedVerifier(user, accessToken, userPassphraseKey)
 
 			// this may be the second time we set user in case we had a partial offline login before
@@ -1156,11 +1160,13 @@ export class LoginFacade implements SessionTypeProvider {
 	 * We do not delete all sessions on the server when changing the external password to avoid that an external user is immediately logged out.
 	 *
 	 * @param user Should be up-to-date, i.e., not loaded from cache, but fresh from the server, otherwise an outdated verifier will cause a logout.
+	 * @param accessToken
+	 * @param userPassphraseKey
 	 */
-	private async checkOutdatedVerifier(user: User, accessToken: string, userPassphraseKey: Aes128Key) {
+	private async checkOutdatedVerifier(user: User, accessToken: string, userPassphraseKey: AesKey) {
 		if (uint8ArrayToBase64(user.verifier) !== uint8ArrayToBase64(sha256Hash(createAuthVerifier(userPassphraseKey)))) {
 			console.log("Auth verifier has changed")
-			// delete the obsolete session to make sure it can not be used any more
+			// delete the obsolete session to make sure it can not be used anymore
 			await this.deleteSession(accessToken).catch((e) => console.error("Could not delete session", e))
 			await this.resetSession()
 			throw new NotAuthenticatedError("Auth verifier has changed")
@@ -1176,7 +1182,7 @@ export class LoginFacade implements SessionTypeProvider {
 	}> {
 		mailAddress = mailAddress.toLowerCase().trim()
 		const saltRequest = createSaltData({ mailAddress })
-		const saltReturn = await this.serviceExecutor.get(SaltService, saltRequest)
+		const saltReturn = await this.serviceExecutor.get(SaltService, saltRequest, null)
 		const kdfType = asKdfType(saltReturn.kdfVersion)
 		return {
 			userPassphraseKey: await this.deriveUserPassphraseKey({ kdfType, passphrase, salt: saltReturn.salt }),
@@ -1209,12 +1215,13 @@ export class LoginFacade implements SessionTypeProvider {
 		// we cannot use the entity client yet because this type is encrypted and we don't have an owner key yet
 		return this.restClient
 			.request(path, HttpMethod.GET, {
+				...DEFAULT_REST_CLIENT_OPTIONS,
 				headers,
 				responseType: MediaType.Json,
 			})
 			.then(async (instance) => {
 				const untypedSession = AttributeModel.removeNetworkDebuggingInfoIfNeeded<ServerModelUntypedInstance>(JSON.parse(instance))
-				// Intentionally passing an UntypedInstance to AttributeModel to circumvent sessionkey resolution during login.
+				// Intentionally passing an UntypedInstance to AttributeModel to circumvent session key resolution during login.
 				const accessKey = AttributeModel.getAttributeorNull<Base64>(untypedSession, "accessKey", SessionTypeModel)
 				const userId = AttributeModel.getAttribute<Id[]>(untypedSession, "user", SessionTypeModel)[0]
 				return {

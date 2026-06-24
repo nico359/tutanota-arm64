@@ -1,6 +1,6 @@
 import { assertWorkerOrNode, ProgrammingError } from "@tutao/app-env"
 import { IServiceExecutor } from "./ServiceRequest"
-import { DateProvider, deduplicate, first, isEmpty, lazyMemoized } from "@tutao/utils"
+import { DateProvider, deduplicate, first, isEmpty, lazyMemoized, Nullable } from "@tutao/utils"
 import { SuspensionBehavior } from "../rest-client/types"
 import { LoggedInUserProvider } from "@tutao/instance-pipeline"
 import { TypeModelResolver } from "../instance-pipeline/EntityFunctions"
@@ -9,14 +9,20 @@ import { BlobServerAccessInfo, createBlobAccessTokenPostIn, createBlobReadData, 
 import { BlobAccessTokenService } from "../../entities/storage/Services"
 import { BlobReferencingInstance } from "../../entities/storage/BlobUtils"
 import { TypeRef } from "@tutao/meta"
+import { DEFAULT_EXTRA_SERVICE_PARAMS } from "../instance-pipeline/RestClientOptions"
 
 assertWorkerOrNode()
 
 export interface BlobLoadOptions {
-	extraHeaders?: Dict
-	suspensionBehavior?: SuspensionBehavior
+	extraHeaders: Nullable<Dict>
+	suspensionBehavior: Nullable<SuspensionBehavior>
 	/** override origin for the request */
-	baseUrl?: string
+	baseUrl: Nullable<string>
+}
+export const DEFAULT_BLOB_LOAD_OPTIONS: BlobLoadOptions = {
+	extraHeaders: null,
+	suspensionBehavior: null,
+	baseUrl: null,
 }
 
 /**
@@ -56,7 +62,7 @@ export class BlobAccessTokenFacade {
 				}),
 				read: null,
 			})
-			const { blobAccessInfo } = await this.serviceExecutor.post(BlobAccessTokenService, tokenRequest)
+			const { blobAccessInfo } = await this.serviceExecutor.post(BlobAccessTokenService, tokenRequest, null)
 			return blobAccessInfo
 		}
 		const key = this.makeWriteCacheKey(ownerGroupId, archiveDataType)
@@ -112,7 +118,10 @@ export class BlobAccessTokenFacade {
 				}),
 				write: null,
 			})
-			const { blobAccessInfo } = await this.serviceExecutor.post(BlobAccessTokenService, tokenRequest, blobLoadOptions)
+			const { blobAccessInfo } = await this.serviceExecutor.post(BlobAccessTokenService, tokenRequest, {
+				...DEFAULT_EXTRA_SERVICE_PARAMS,
+				...blobLoadOptions,
+			})
 			return blobAccessInfo
 		})
 
@@ -151,7 +160,12 @@ export class BlobAccessTokenFacade {
 					}),
 					write: null,
 				})
-				return (await this.serviceExecutor.post(BlobAccessTokenService, tokenRequest, blobLoadOptions)).blobAccessInfo
+				return (
+					await this.serviceExecutor.post(BlobAccessTokenService, tokenRequest, {
+						...DEFAULT_EXTRA_SERVICE_PARAMS,
+						...blobLoadOptions,
+					})
+				).blobAccessInfo
 			}
 			const blobServerAccessInfo = await this.readCache.getToken(archiveId, [referencingInstance.elementId], requestNewToken)
 			archiveIdsToAccessInfo.set(archiveId, blobServerAccessInfo)
@@ -194,7 +208,7 @@ export class BlobAccessTokenFacade {
 				}),
 				write: null,
 			})
-			const { blobAccessInfo } = await this.serviceExecutor.post(BlobAccessTokenService, tokenRequest)
+			const { blobAccessInfo } = await this.serviceExecutor.post(BlobAccessTokenService, tokenRequest, null)
 			return blobAccessInfo
 		}
 		return this.readCache.getToken(archiveId, [], requestNewToken)

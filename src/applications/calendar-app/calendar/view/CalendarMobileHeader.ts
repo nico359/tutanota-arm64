@@ -20,6 +20,7 @@ import { CalendarViewType, formatJSDate } from "../../../common/api/common/utils
 import { Icons } from "../../../../ui/base/icons/Icons.js"
 import { client } from "../../../../platform-kit/app-env/boot/ClientDetector.js"
 import { isApp } from "../../../../platform-kit/app-env"
+import { deviceConfig } from "../../../common/misc/DeviceConfig"
 
 export interface CalendarMobileHeaderAttrs extends AppHeaderAttrs {
 	viewType: CalendarViewType
@@ -134,7 +135,7 @@ export class CalendarMobileHeader implements Component<CalendarMobileHeaderAttrs
 					icon: getIconForViewType(attrs.viewType),
 					title: "view_label",
 				},
-				childAttrs: () => {
+				childAttrs: async () => {
 					const calendarViewValues: Array<{ name: TranslationKey; value: CalendarViewType }> = [
 						{
 							name: "agenda_label",

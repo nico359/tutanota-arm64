@@ -8,12 +8,12 @@ import { EntityClient } from "../../../../src/platform-kit/network/EntityClient.
 import { lazyAsync, lazyMemoized } from "../../../../src/platform-kit/utils"
 import { MailFacade } from "../../../../src/applications/common/api/worker/facades/lazy/MailFacade.js"
 import { EventController } from "../../../../src/applications/common/api/main/EventController.js"
-import { KeyRotationFacade } from "../../../../src/platform-kit/base/crypto/KeyRotationFacade.js"
+import { KeyRotationFacade } from "../../../../src/platform-kit/base/base-crypto/KeyRotationFacade.js"
 import { CacheManagementFacade } from "../../../../src/applications/common/api/worker/facades/lazy/CacheManagementFacade.js"
 import { RolloutFacade } from "../../../../src/platform-kit/base/facades/RolloutFacade"
 import { GroupManagementFacade } from "../../../../src/platform-kit/base/facades/lazy/GroupManagementFacade"
 import { SyncTracker } from "../../../../src/applications/common/api/main/SyncTracker"
-import { IdentityKeyCreator } from "../../../../src/platform-kit/base/crypto/IdentityKeyCreator"
+import { IdentityKeyCreator } from "../../../../src/platform-kit/base/base-crypto/IdentityKeyCreator"
 import { noPatchesAndInstance } from "./EventBusClientTest"
 import { OperationType } from "../../../../src/platform-kit/meta"
 import { Group, GroupKeyUpdateTypeRef, GroupMembershipTypeRef, GroupTypeRef, User, UserGroupKeyDistributionTypeRef, UserTypeRef } from "@tutao/entities/sys"
@@ -73,7 +73,7 @@ o.spec("EventBusEventCoordinatorTest", () => {
 			object(),
 			keyRotationFacadeMock,
 			async () => cacheManagementFacade,
-			async (error: Error) => {},
+			async (_error: Error) => {},
 			(_) => {},
 			rolloutFacadeMock,
 			async () => groupManagementFacade,
@@ -174,11 +174,12 @@ o.spec("EventBusEventCoordinatorTest", () => {
 			verify(identityKeyCreator.createIdentityKeyPairForExistingTeamGroups(teamGroupIds))
 		})
 
-		o("does not execute rollouts if it is not the leader client", async function () {
+		o("does not execute rollouts, except for enabling AEAD encryption, if it is not the leader client", async function () {
 			when(userFacade.isLeader()).thenReturn(false)
 
 			await eventBusEventCoordinator.onSyncDone()
-			verify(rolloutFacadeMock.processRollout(matchers.anything()), { times: 0 })
+			verify(rolloutFacadeMock.processRollout(matchers.anything()), { times: 1 })
+			verify(rolloutFacadeMock.processRollout(RolloutType.EncryptionOfAttributesViaAead))
 		})
 	})
 

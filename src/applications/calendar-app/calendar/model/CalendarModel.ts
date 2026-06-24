@@ -1,5 +1,4 @@
 import {
-	$Promisable,
 	assertNotNull,
 	deepEqual,
 	defer,
@@ -8,9 +7,11 @@ import {
 	downcast,
 	filterInt,
 	findAndRemove,
+	getFirstOrThrow,
 	getFromMap,
 	isEmpty,
 	isNotEmpty,
+	isNotNull,
 	LazyLoaded,
 	splitInChunks,
 	symmetricDifference,
@@ -24,7 +25,7 @@ import {
 	isApp,
 	isDesktop,
 	TutanotaError,
-} from "../../../../platform-kit/app-env"
+} from "@tutao/app-env"
 import { EventController } from "../../../common/api/main/EventController"
 import Stream from "mithril/stream"
 import {
@@ -37,7 +38,7 @@ import {
 	OperationType,
 	POST_MULTIPLE_LIMIT,
 	removeTechnicalFields,
-} from "../../../../platform-kit/meta"
+} from "@tutao/meta"
 import type { LoginController } from "../../../common/api/main/LoginController"
 import { LockedError, NotAuthorizedError, NotFoundError, PreconditionFailedError } from "@tutao/rest-client/error"
 import { ParserError } from "../../../common/misc/parsing/ParserCombinator"
@@ -53,14 +54,14 @@ import {
 	CalendarEventAlteredInstance,
 	CalendarEventInstance,
 	CalendarEventProgenitor,
-	CalendarEventUidIndexEntry,
 	CalendarFacade,
 	CreateCalendarEventsResult,
+	ResolvedUidIndexEntry,
 } from "../../../common/api/worker/facades/lazy/CalendarFacade.js"
 import { IServiceExecutor } from "../../../../platform-kit/network/ServiceRequest"
 import { FileController } from "../../../common/file/FileController"
 import { findAttendeeInAddresses, isAllDayEvent, serializeAlarmInterval } from "../../../common/api/common/utils/CommonCalendarUtils.js"
-import { SessionKeyNotFoundError } from "../../../../platform-kit/crypto/error"
+import { SessionKeyNotFoundError } from "@tutao/crypto/error"
 import { ObservableLazyLoaded } from "../../../common/api/common/utils/ObservableLazyLoaded.js"
 import { UserController } from "../../../common/api/main/UserController.js"
 
@@ -80,25 +81,10 @@ import { getSharedGroupName, loadGroupMembers } from "../../../common/sharing/Gr
 import { ExternalCalendarFacade } from "@tutao/native-bridge/generatedIpc/types"
 import { DeviceConfig } from "../../../common/misc/DeviceConfig.js"
 import { locator } from "../../../common/api/main/CommonLocator.js"
-import {
-	EventAlarmInfoTemplatesTuple,
-	eventHasSameFields,
-	EventImportRejectionReason,
-	IcsCalendarEvent,
-	makeCalendarEventFromIcsCalendarEvent,
-	normalizeCalendarUrl,
-	parseCalendarStringData,
-	ParsedCalendarData,
-	ParsedEvent,
-	shallowIsSameEvent,
-	sortOutParsedEvents,
-	SyncStatus,
-} from "../../../common/calendar/gui/ImportExportUtils.js"
 import { UserError } from "../../../common/api/main/UserError.js"
 import { LanguageViewModel } from "../../../../ui/utils/LanguageViewModel.js"
 import { NativePushServiceApp } from "../../../common/native/NativePushServiceApp.js"
 import { SyncDonePriority, SyncTracker } from "../../../common/api/main/SyncTracker.js"
-import { CacheMode } from "../../../../platform-kit/network/EntityRestClient"
 import { NoopProgressMonitor, ProgressMonitorInterface } from "../../../../platform-kit/network/ProgressMonitorInterface"
 import { getEnabledMailAddressesForGroupInfo } from "../../../../platform-kit/network/GroupUtils"
 import { ContactModel } from "../../../common/contactsFunctionality/ContactModel"
@@ -137,16 +123,28 @@ import {
 	isUpdateForTypeRef,
 	OnEntityUpdateReceivedPriority,
 } from "../../../../platform-kit/instance-pipeline/utils/EntityUpdateUtils"
-import { OperationProgressTracker } from "../../../common/api/main/OperationProgressTracker"
+import { OperationId, OperationProgressTracker } from "../../../common/api/main/OperationProgressTracker"
 import { errorsToString } from "../../../../platform-kit/utils/Utils"
 import { formatNotificationForDisplay } from "../../../../ui/utils/Formatter"
+import {
+	EventAlarmInfoTemplatesTuple,
+	eventHasSameFields,
+	makeCalendarEventFromIcsCalendarEvent,
+	normalizeCalendarUrl,
+	shallowIsSameEvent,
+	SyncStatus,
+} from "../../../common/calendar/import/ImportExportUtils"
+import { IcsCalendarEvent, parseCalendarStringData, ParsedCalendarData, ParsedEventAlarmTuple } from "../export/CalendarParser"
+import { CalendarImporter, EventImportRejectionReason } from "../../../common/calendar/import/CalendarImporter"
+import { $Promisable } from "../../../mail-app/workerUtils/index/IndexerPromiseUtils"
+import { CacheMode, DEFAULT_ENTITY_RESTCLIENT_LOAD_OPTIONS } from "../../../../platform-kit/instance-pipeline/RestClientOptions"
 
 const TAG = "[CalendarModel]"
 const EXTERNAL_CALENDAR_RETRY_LIMIT = 3
 const EXTERNAL_CALENDAR_RETRY_DELAY_MS = 1000
 
 export type CalendarInfoBase = {
-	id: string
+	id: Id
 	name: string
 	color: string
 	type: CalendarType
@@ -321,6 +319,13 @@ export class CalendarModel {
 	}
 
 	/**
+	 * Provides public access to {@link CalendarFacade.createCalendarEvents}
+	 */
+	async createCalendarEvents(events: EventAlarmInfoTemplatesTuple[], operationId: OperationId) {
+		return await this.calendarFacade.createCalendarEvents(events, operationId)
+	}
+
+	/**
 	 * Process an update to an CalendarEvent entity.
 	 * Event will be deleted & remade if there is a change to event start time, ownerGroup, or long/short list.
 	 *
@@ -381,7 +386,7 @@ export class CalendarModel {
 		}
 		let errorMessage = "Failed events: " + result.failedEvents.length + "\n"
 		errorMessage = errorMessage.concat(errorsToString(result.failedEventErrors))
-		errorMessage = "\nFailed alarms: " + result.failedAlarms.length + "\n"
+		errorMessage += "\nFailed alarms: " + result.failedAlarms.length + "\n"
 		errorMessage = errorMessage.concat(errorsToString(result.failedAlarmErrors))
 		throw new Error(errorMessage)
 	}
@@ -438,6 +443,7 @@ export class CalendarModel {
 						user: userController.userId,
 						group: membership.group,
 					}),
+					null,
 				)
 				.catch(() => console.log("error cleaning up membership for group: ", membership.group))
 		}
@@ -561,7 +567,7 @@ export class CalendarModel {
 				continue
 			}
 
-			let parsedExternalEvents: ParsedEvent[] = []
+			let parsedExternalEvents: ParsedEventAlarmTuple[] = []
 			try {
 				const externalCalendar = await this.fetchExternalCalendar(calendar.url)
 				parsedExternalEvents = parseCalendarStringData(externalCalendar, getTimeZone()).contents
@@ -576,7 +582,7 @@ export class CalendarModel {
 				continue
 			}
 
-			const existingEventList = await loadAllEvents(currentCalendarGroupRoot)
+			const existingEventList = await this.loadAllEvents(currentCalendarGroupRoot)
 
 			/**
 			 * Sync strategy
@@ -585,7 +591,12 @@ export class CalendarModel {
 			 * - Update existing events
 			 * - Add new
 			 */
-			const { rejectedEvents, eventsForCreation } = sortOutParsedEvents(parsedExternalEvents, existingEventList, currentCalendarGroupRoot, getTimeZone())
+			const { rejectedEvents, eventsForCreationTuples } = CalendarImporter.classifyImportedEvents(
+				parsedExternalEvents,
+				existingEventList,
+				currentCalendarGroupRoot,
+				getTimeZone(),
+			)
 			const duplicates = rejectedEvents.get(EventImportRejectionReason.Duplicate) ?? []
 			const eventsToUpdate = duplicates.filter((event) => {
 				const existingEvent = existingEventList.find((existing) => shallowIsSameEvent(event, existing))
@@ -603,7 +614,7 @@ export class CalendarModel {
 			)
 			eventsToRemove.push(...this.findDuplicatedEvents(existingEventList))
 
-			const creationRequests = Math.ceil(eventsForCreation.length / POST_MULTIPLE_LIMIT)
+			const creationRequests = Math.ceil(eventsForCreationTuples.length / POST_MULTIPLE_LIMIT)
 			const totalRequests = creationRequests + eventsToRemove.length + eventsToUpdate.length
 
 			try {
@@ -612,7 +623,7 @@ export class CalendarModel {
 					eventsToUpdate,
 					existingEventList,
 					duplicates.length,
-					eventsForCreation,
+					eventsForCreationTuples,
 					currentCalendarGroupRoot,
 					totalRequests > 50,
 				)
@@ -883,8 +894,10 @@ export class CalendarModel {
 	 *
 	 * note about recurrenceId in event series https://stackoverflow.com/questions/11456406/recurrence-id-in-icalendar-rfc-5545
 	 */
-	async resolveCalendarEventProgenitor({ uid }: Pick<CalendarEvent, "uid">): Promise<CalendarEvent | null> {
-		return (await this.getEventsByUid(assertNotNull(uid, "could not resolve progenitor: no uid")))?.progenitor ?? null
+	async resolveCalendarEventProgenitor({ uid, _ownerGroup }: Pick<CalendarEvent, "uid" | "_ownerGroup">): Promise<CalendarEventProgenitor | null> {
+		const progenitorUid = assertNotNull(uid, "could not resolve progenitor: no uid")
+		const progenitorOwnerGroup = assertNotNull(_ownerGroup, "could not resolve progenitor: no _ownerGroup")
+		return (await this.getEventsByUid(progenitorUid, progenitorOwnerGroup))?.progenitor ?? null
 	}
 
 	/**
@@ -913,10 +926,10 @@ export class CalendarModel {
 		try {
 			// We are not supposed to load files without the key provider, but we hope that the key
 			// was already resolved and the entity updated.
-			const file = await this.entityClient.load(FileTypeRef, fileId, { cacheMode: CacheMode.WriteOnly })
+			const file = await this.entityClient.load(FileTypeRef, fileId, { ...DEFAULT_ENTITY_RESTCLIENT_LOAD_OPTIONS, cacheMode: CacheMode.WriteOnly })
 			// const file = await this.entityClient.load(FileTypeRef, fileId)
 			const dataFile = await this.fileController.getAsDataFile(file)
-			const { parseCalendarFile } = await import("../../../common/calendar/gui/CalendarImporter.js")
+			const { parseCalendarFile } = await import("../../../calendar-app/calendar/export/CalendarParser")
 			return await parseCalendarFile(dataFile)
 		} catch (e) {
 			if (e instanceof SessionKeyNotFoundError) {
@@ -943,7 +956,7 @@ export class CalendarModel {
 		try {
 			const parsedCalendarData = await this.getCalendarDataForUpdate(update.file)
 			if (parsedCalendarData != null) {
-				await this.processParsedCalendarDataFromIcs(update.sender, parsedCalendarData)
+				await this.processParsedCalendarDataFromCalendarEventUpdate(update.sender, parsedCalendarData)
 			}
 		} catch (e) {
 			if (e instanceof NotAuthorizedError) {
@@ -992,10 +1005,10 @@ export class CalendarModel {
 	}
 
 	/** whether the operation could be performed or not */
-	async deleteEventsByUid(uid: string): Promise<void> {
-		const entry = await this.calendarFacade.getEventsByUid(uid, CachingMode.Cached, false)
+	async deleteEventsByUid(uid: string, calendarGroupId: Id): Promise<void> {
+		const entry = await this.calendarFacade.getEventsByUid(uid, calendarGroupId)
 		if (entry == null) {
-			console.log("could not find an uid index entry to delete event")
+			console.warn("Could not find an uid index entry to delete event")
 			return
 		}
 		// not doing this in parallel because we would get locked errors
@@ -1012,7 +1025,7 @@ export class CalendarModel {
 	 *
 	 * @VisibleForTesting
 	 */
-	async processParsedCalendarDataFromIcs(sender: string, parsedCalendarData: ParsedCalendarData): Promise<void> {
+	async processParsedCalendarDataFromCalendarEventUpdate(sender: string, parsedCalendarData: ParsedCalendarData): Promise<void> {
 		if (parsedCalendarData.contents.length === 0) {
 			console.log(TAG, `CalendarEventUpdate with no events, ignoring`)
 			return
@@ -1030,12 +1043,9 @@ export class CalendarModel {
 
 		// Load the events bypassing the cache because we might have already processed some updates and they might have changed the events we are about to load.
 		// We want to operate on the latest events only, otherwise we might lose some data.
-		const latestPersistedEventsIndexEntry = await this.calendarFacade.getEventsByUid(
-			parsedCalendarData.contents[0].icsCalendarEvent.uid,
-			CachingMode.Bypass,
-			true,
+		const latestPersistedEventsIndexEntry: ResolvedUidIndexEntry | null = await this.getFirstUidIndexEntryMatch(
+			getFirstOrThrow(parsedCalendarData.contents).icsCalendarEvent.uid,
 		)
-
 		const icsEventRecurrenceIdTimestamp = parsedCalendarData.contents[0].icsCalendarEvent.recurrenceId?.getTime()
 		const resolvedPersistedCalendarEvent = !icsEventRecurrenceIdTimestamp
 			? latestPersistedEventsIndexEntry?.progenitor
@@ -1067,10 +1077,28 @@ export class CalendarModel {
 		}
 	}
 
+	public async getFirstUidIndexEntryMatch(uid: string): Promise<ResolvedUidIndexEntry | null> {
+		const calendarInfos = await this.getCalendarInfos()
+
+		for (const calendarGroupId of calendarInfos.keys()) {
+			const entry = await this.calendarFacade.getEventsByUid(uid, calendarGroupId, CachingMode.Bypass)
+			if (entry) {
+				return entry
+			}
+		}
+
+		return null
+	}
+
+	public async resolveFirstPrivateOwnedCalendar() {
+		const calendarInfos = await this.getCalendarInfos()
+		return assertNotNull(findFirstPrivateCalendar(calendarInfos))
+	}
+
 	/**
 	 * Handles new Calendar Invitations. The server takes care of inserting an index entry into CalendarEventUidIndexTypeRef
 	 */
-	async handleNewCalendarEventInvitationFromIcs(sender: string, calendarData: ParsedCalendarData, uidIndexEntry: CalendarEventUidIndexEntry | null) {
+	async handleNewCalendarEventInvitationFromIcs(sender: string, calendarData: ParsedCalendarData, uidIndexEntry: ResolvedUidIndexEntry | null) {
 		if (calendarData.method !== CalendarMethod.REQUEST) {
 			console.log(TAG, `got something that's not a REQUEST for nonexistent server event on uid: `, calendarData.method)
 			return // We don't handle anything different from an invitation
@@ -1125,7 +1153,7 @@ export class CalendarModel {
 		method: string,
 		icsCalendarEvent: IcsCalendarEvent,
 		resolvedPersistedCalendarEvent: CalendarEventInstance,
-		uidIndexEntry: CalendarEventUidIndexEntry,
+		uidIndexEntry: ResolvedUidIndexEntry,
 	): Promise<void> {
 		const calendarEvent = makeCalendarEventFromIcsCalendarEvent(icsCalendarEvent)
 		const sentByOrganizer: boolean = resolvedPersistedCalendarEvent.organizer != null && resolvedPersistedCalendarEvent.organizer.address === sender
@@ -1140,7 +1168,7 @@ export class CalendarModel {
 		}
 	}
 
-	private async processCalendarCancel(target: CalendarEventUidIndexEntry, targetDbEvent: CalendarEventInstance) {
+	private async processCalendarCancel(target: ResolvedUidIndexEntry, targetDbEvent: CalendarEventInstance) {
 		const progenitor = target.progenitor
 		const shouldRemoveAlteredIntanceFromProgenitorExcludedDates = progenitor && progenitor.repeatRule?.excludedDates
 		if (shouldRemoveAlteredIntanceFromProgenitorExcludedDates) {
@@ -1161,7 +1189,7 @@ export class CalendarModel {
 	 * @param dbEvent the version of updateEvent stored on the server. must be identical to dbTarget.progenitor or one of dbTarget.alteredInstances
 	 * @param updateEvent the event that contains the new version of dbEvent. */
 	public async processUpdateToCalendarEventFromIcs(
-		dbTarget: CalendarEventUidIndexEntry,
+		dbTarget: ResolvedUidIndexEntry,
 		dbEvent: CalendarEventInstance,
 		updateEvent: CalendarEvent,
 	): Promise<void> {
@@ -1208,13 +1236,12 @@ export class CalendarModel {
 	 * @param alarms alarms to set up for this user/event
 	 * @param sender email address that the event request was received from
 	 */
-	private async processNewAlteredInstanceOrNewEvent(dbTarget: CalendarEventUidIndexEntry | null, updateEvent: CalendarEvent, sender: string): Promise<void> {
+	private async processNewAlteredInstanceOrNewEvent(dbTarget: ResolvedUidIndexEntry | null, updateEvent: CalendarEvent, sender: string): Promise<void> {
 		const { repeatRuleWithExcludedAlteredInstances } = await import("../gui/eventeditor-model/CalendarEventWhenModel.js")
 
 		let ownerGroup = dbTarget?.ownerGroup
 		if (ownerGroup == null) {
-			const calendarInfos = await this.getCalendarInfos()
-			ownerGroup = findFirstPrivateCalendar(calendarInfos)?.groupRoot._id
+			ownerGroup = (await this.resolveFirstPrivateOwnedCalendar()).id
 			assertNotNull(ownerGroup, "Missing private calendar")
 		}
 
@@ -1279,8 +1306,8 @@ export class CalendarModel {
 	 * or the altered occurrence. */
 	private async deletePersistedEvents(dbEvent: CalendarEventInstance): Promise<void> {
 		// not having UID is technically an error, but we'll do our best (the event came from the server after all)
-		if (dbEvent.recurrenceId == null && dbEvent.uid != null) {
-			return await this.deleteEventsByUid(dbEvent.uid)
+		if (dbEvent.recurrenceId == null && isNotNull(dbEvent.uid) && isNotNull(dbEvent._ownerGroup)) {
+			return await this.deleteEventsByUid(dbEvent.uid, dbEvent._ownerGroup)
 		} else {
 			// either this has a recurrenceId and we only delete that instance
 			// or we don't have a uid to get all instances.
@@ -1385,8 +1412,8 @@ export class CalendarModel {
 		this.deviceConfig.removeLastSync(calendar.group._id)
 	}
 
-	async getEventsByUid(uid: string, fetchOnlyPrivateCalendars: boolean = false): Promise<CalendarEventUidIndexEntry | null> {
-		return this.calendarFacade.getEventsByUid(uid, CachingMode.Cached, fetchOnlyPrivateCalendars)
+	async getEventsByUid(uid: string, calendarGroupId: Id): Promise<ResolvedUidIndexEntry | null> {
+		return this.calendarFacade.getEventsByUid(uid, calendarGroupId, CachingMode.Cached)
 	}
 
 	// Visible for testing
@@ -1540,6 +1567,13 @@ export class CalendarModel {
 	getGroupSettings(): GroupSettings[] {
 		return this.logins.getUserController().userSettingsGroupRoot.groupSettings
 	}
+
+	async loadAllEvents(groupRoot: CalendarGroupRoot): Promise<Array<CalendarEvent>> {
+		return Promise.all([
+			locator.entityClient.loadAll(CalendarEventTypeRef, groupRoot.longEvents),
+			locator.entityClient.loadAll(CalendarEventTypeRef, groupRoot.shortEvents),
+		]).then((results) => results.flat())
+	}
 }
 
 /** return false when the given events (representing the new and old version of the same event) are both long events
@@ -1576,11 +1610,4 @@ function* oneShotProgressMonitorGenerator(progressTracker: ProgressTracker, user
 	while (true) {
 		yield new NoopProgressMonitor()
 	}
-}
-
-async function loadAllEvents(groupRoot: CalendarGroupRoot): Promise<Array<CalendarEvent>> {
-	return Promise.all([
-		locator.entityClient.loadAll(CalendarEventTypeRef, groupRoot.longEvents),
-		locator.entityClient.loadAll(CalendarEventTypeRef, groupRoot.shortEvents),
-	]).then((results) => results.flat())
 }

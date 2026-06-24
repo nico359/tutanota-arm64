@@ -1,16 +1,11 @@
 import o, { assertThrows } from "@tutao/otest"
 import { UserFacade } from "../../../../../src/platform-kit/base/facades/UserFacade.js"
-import { PQFacade } from "../../../../../src/platform-kit/base/crypto/PQFacade.js"
-import { WASMKyberFacade } from "../../../../../src/platform-kit/base/crypto/KyberFacade.js"
+import { PQFacade } from "../../../../../src/platform-kit/base/base-crypto/PQFacade.js"
+import { WASMKyberFacade } from "../../../../../src/platform-kit/base/base-crypto/KyberFacade.js"
 import {
 	aes256RandomKey,
-	aesEncrypt,
 	AesKey,
 	cryptoUtils,
-	CryptoWrapper,
-	encryptKey,
-	encryptRsaKey,
-	encryptX25519Key,
 	kyberPrivateKeyToBytes,
 	kyberPublicKeyToBytes,
 	PQKeyPairs,
@@ -22,8 +17,8 @@ import { freshVersioned, hexToUint8Array, KeyVersion, stringToBase64UrlCustomId 
 import { createTestEntity } from "../../../TestUtils.js"
 import { EntityClient } from "../../../../../src/platform-kit/network/EntityClient.js"
 import { matchers, object, reset, verify, when } from "testdouble"
-import { KeyLoaderFacade } from "../../../../../src/platform-kit/base/crypto/KeyLoaderFacade.js"
-import { KeyCache } from "../../../../../src/app-kit/local-store/KeyCache.js"
+import { KeyLoaderFacade } from "../../../../../src/platform-kit/base/base-crypto/KeyLoaderFacade.js"
+import { KeyCache } from "../../../../../src/platform-kit/base/base-crypto/persistence/KeyCache.js"
 import { CacheManagementFacade } from "../../../../../src/applications/common/api/worker/facades/lazy/CacheManagementFacade.js"
 import { CryptoError } from "../../../../../src/platform-kit/crypto/error"
 import { RSA_TEST_KEYPAIR } from "../../../api/worker/facades/RsaPqPerformanceTest.js"
@@ -43,6 +38,9 @@ import {
 	User,
 	UserTypeRef,
 } from "@tutao/entities/sys"
+import { encryptKey, encryptRsaKey, encryptX25519Key } from "../../../../../src/platform-kit/crypto/instance-pipeline-crypto/KeyEncryption"
+import { aesEncrypt } from "../../../../../src/platform-kit/crypto/instance-pipeline-crypto/Aes"
+import { CryptoWrapper } from "../../../../../src/platform-kit/crypto/instance-pipeline-crypto/CryptoWrapper"
 
 o.spec("KeyLoaderFacadeTest", function () {
 	let keyCache: KeyCache

@@ -78,6 +78,7 @@ import "./api/worker/search/ContactIndexerTest.js"
 import "./api/worker/search/EventQueueTest.js"
 import "./api/worker/search/IndexUtilsTest.js"
 import "./api/worker/search/IndexerCoreTest.js"
+import "./api/worker/search/IndexerPromiseUtilsTest.js"
 import "./api/worker/search/IndexedDbIndexerTest.js"
 import "./api/worker/search/MailIndexerTest.js"
 import "./api/worker/search/IndexedDbMailIndexerBackendTest.js"
@@ -93,11 +94,12 @@ import "./api/worker/utils/spamClassification/PreprocessPatternsTest.js"
 import "./calendar/AlarmSchedulerTest.js"
 import "./calendar/CalendarAgendaViewTest.js"
 import "./calendar/CalendarGuiUtilsTest.js"
-import "./calendar/CalendarImporterTest.js"
+import "./calendar/import/CalendarExporterTest.js"
+import "./calendar/import/CalendarImporterTest.js"
 import "./calendar/CalendarInvitesTest.js"
 import "./calendar/CalendarModelTest.js"
 import "./calendar/CalendarEventUpdateCoordinatorTest.js"
-import "./calendar/gui/ImportExportUtilsTest.js"
+import "./calendar/import/ImportExportUtilsTest.js"
 import "./calendar/CalendarParserTest.js"
 import "./calendar/CalendarUtilsTest.js"
 import "./calendar/CalendarViewModelTest.js"
@@ -108,6 +110,7 @@ import "./calendar/eventeditor/CalendarEventWhenModelTest.js"
 import "./calendar/eventeditor/CalendarEventWhoModelTest.js"
 import "./calendar/eventeditor/CalendarNotificationModelTest.js"
 import "./calendar/CalendarEventsRepositoryTest.js"
+import "./calendar/import/EventSeriesResolverTest.js"
 import "./contacts/ContactListEditorTest.js"
 import "./contacts/ContactMergeUtilsTest.js"
 import "./contacts/ContactUtilsTest.js"
@@ -233,9 +236,14 @@ import "./utils/LazyLoadedTest.js"
 import "./utils/CsvTest.js"
 import "./utils/TokenizerTest.js"
 import "./app-env/TimeConstants.js"
+import "./crypto/InstanceDecryptorTest.js"
+import "./crypto/ParsedCiphertextTest.js"
+import "./crypto/ValueDecryptorTest.js"
+import "./crypto/SubKeyProviderTest.js"
 
 import * as td from "testdouble"
 import { Mode } from "../../src/platform-kit/app-env"
+import { EntropySource } from "../../src/platform-kit/crypto"
 
 export async function run({ integration, filter, regexp, exclude }: { integration?: boolean; filter?: string; regexp?: string; exclude?: string } = {}) {
 	await setupSuite({ integration })
@@ -262,9 +270,9 @@ async function setupSuite({ integration }: { integration?: boolean }) {
 	}
 
 	if (typeof process !== "undefined") {
-		// setup the Entropy for all testcases
+		// set up the Entropy for all testcases
 
-		await random.addEntropy([{ data: 36, entropy: 256, source: "key" }])
+		await random.addEntropy([{ data: 36, entropy: 256, source: EntropySource.Key }])
 		await import("./api/worker/utils/spamClassification/SparseVectorCompressorTest.js")
 		await import("./api/worker/utils/spamClassification/SpamMailProcessorTest.js")
 		await import("./api/worker/utils/spamClassification/SpamClassifierTest.js")
@@ -317,7 +325,7 @@ async function setupSuite({ integration }: { integration?: boolean }) {
 	})
 	o.before(async function () {
 		// setup the Entropy for all testcases
-		await random.addEntropy([{ data: 36, entropy: 256, source: "key" }])
+		await random.addEntropy([{ data: 36, entropy: 256, source: EntropySource.Key }])
 	})
 
 	o.afterEach(function () {

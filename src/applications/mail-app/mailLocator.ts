@@ -45,7 +45,7 @@ import { UsageTestController } from "@tutao/usagetests"
 import { EphemeralUsageTestStorage, StorageBehavior, UsageTestModel } from "../common/misc/UsageTestModel.js"
 import { NewsModel } from "../common/misc/news/NewsModel.js"
 import { IServiceExecutor } from "../../platform-kit/network/ServiceRequest.js"
-import { CryptoFacade } from "../../platform-kit/base/crypto/CryptoFacade.js"
+import { CryptoFacade } from "../../platform-kit/base/base-crypto/CryptoFacade.js"
 import {
 	CommonSystemFacade,
 	ContactSuggestion,
@@ -71,7 +71,7 @@ import { InfoMessageHandler } from "../common/gui/InfoMessageHandler.js"
 import { EntropyFacade } from "../../platform-kit/base/facades/EntropyFacade.js"
 import { assert, assertNotNull, defer, DeferredObject, lazy, lazyAsync, LazyLoaded, lazyMemoized, noOp } from "../../platform-kit/utils"
 import { RecipientsModel } from "../common/api/main/RecipientsModel.js"
-import { NoZoneDateProvider } from "../common/api/common/utils/NoZoneDateProvider.js"
+import { NoZoneDateProvider } from "../../platform-kit/utils/NoZoneDateProvider.js"
 import { SendMailModel } from "../common/mailFunctionality/SendMailModel.js"
 import { OfflineIndicatorViewModel } from "../common/gui/base/OfflineIndicatorViewModel.js"
 import { Router, ScopedRouter, ThrottledRouter } from "../../ui/ScopedRouter.js"
@@ -125,7 +125,7 @@ import { WorkerInterface } from "./workerUtils/worker/WorkerImpl.js"
 import { isEditableDraft, isMailInSpamOrTrash } from "./mail/model/MailChecks.js"
 import type { ContactImporter } from "./contacts/ContactImporter.js"
 import type { CalendarContactPreviewViewModel } from "../calendar-app/calendar/gui/eventpopup/CalendarContactPreviewViewModel.js"
-import { KeyLoaderFacade } from "../../platform-kit/base/crypto/KeyLoaderFacade.js"
+import { KeyLoaderFacade } from "../../platform-kit/base/base-crypto/KeyLoaderFacade.js"
 import { KeyVerificationFacade } from "../../platform-kit/base/facades/lazy/KeyVerificationFacade"
 import { MailImporter } from "./mail/import/MailImporter.js"
 import type { MailExportController } from "./native/main/MailExportController.js"
@@ -138,9 +138,9 @@ import { getEventWithDefaultTimes, setNextHalfHour } from "../common/api/common/
 import { OfflineStorageSettingsModel } from "../common/offline/OfflineStorageSettingsModel"
 import { SearchToken } from "../../ui/utils/QueryTokenUtils"
 import type { ContactSearchFacade } from "./workerUtils/index/ContactSearchFacade"
-import PublicEncryptionKeyProvider from "../../platform-kit/base/crypto/PublicEncryptionKeyProvider"
-import { IdentityKeyCreator } from "../../platform-kit/base/crypto/IdentityKeyCreator"
-import { PublicIdentityKeyProvider } from "../../platform-kit/base/crypto/PublicIdentityKeyProvider"
+import PublicEncryptionKeyProvider from "../../platform-kit/base/base-crypto/PublicEncryptionKeyProvider"
+import { IdentityKeyCreator } from "../../platform-kit/base/base-crypto/IdentityKeyCreator"
+import { PublicIdentityKeyProvider } from "../../platform-kit/base/base-crypto/PublicIdentityKeyProvider"
 import { WhitelabelThemeGenerator } from "../../ui/WhitelabelThemeGenerator"
 import { UndoModel } from "./UndoModel"
 import { GroupSettingsModel } from "../common/sharing/model/GroupSettingsModel"
@@ -155,7 +155,6 @@ import { DriveViewModel } from "../drive-app/drive/view/DriveViewModel"
 import { TransferProgressDispatcher } from "../common/api/main/TransferProgressDispatcher"
 import { FolderItem } from "../drive-app/drive/view/DriveUtils"
 import { CalendarEventUpdateCoordinator } from "../calendar-app/calendar/model/CalendarEventUpdateCoordinator"
-import { ParsedEvent } from "../common/calendar/gui/ImportExportUtils"
 import { MoveItems } from "../drive-app/drive/view/DriveMoveItemDialog"
 import { WebMobileFacade } from "../common/native/WebMobileFacade"
 import { SystemPermissionHandler } from "../common/native/SystemPermissionHandler"
@@ -168,6 +167,8 @@ import { CALENDAR_MIME_TYPE, MAIL_MIME_TYPES, VCARD_MIME_TYPES } from "../../pla
 import { CalendarEvent, CalendarEventAttendee, Contact, Mail, MailboxProperties } from "@tutao/entities/tutanota"
 import { GroupType, ShareableGroupType } from "../../entities/sys/Utils"
 import { ClientModelInfo } from "../../platform-kit/instance-pipeline/EntityFunctions"
+
+import { ParsedEventAlarmTuple } from "../calendar-app/calendar/export/CalendarParser"
 
 assertMainOrNode()
 
@@ -432,6 +433,7 @@ class MailLocator implements CommonLocator {
 			this.mailboxModel,
 			this.contactModel,
 			this.groupSettingsModel,
+			this.operationProgressTracker,
 		)
 	})
 
@@ -588,6 +590,7 @@ class MailLocator implements CommonLocator {
 				eventRepository,
 				undoModel,
 				this.transferProgressDispatcher,
+				this.operationProgressTracker,
 			)
 	}
 
@@ -928,7 +931,11 @@ class MailLocator implements CommonLocator {
 
 			this.nativeInterfaces = createNativeInterfaces(
 				this.webMobileFacade,
-				new WebDesktopFacade(this.logins, async () => this.native, this.desktopSettingsFacade),
+				new WebDesktopFacade(
+					this.logins,
+					async () => this.native,
+					() => this.desktopSettingsFacade,
+				),
 				new WebInterWindowEventFacade(this.logins, windowFacade, deviceConfig),
 				new WebCommonNativeFacade(
 					this.logins,
@@ -1138,6 +1145,22 @@ class MailLocator implements CommonLocator {
 
 			await importer.importContactsFromFile(vCardData, contactListId)
 		} else if (areAllFilesICS) {
+			const [
+				{ parseCalendarFile },
+				{ CalendarImporter },
+				{ calendarSelectionDialog },
+				{ EventSeriesResolver },
+				{ ImportInteractionHandler },
+				{ DefaultDateProvider },
+			] = await Promise.all([
+				import("../calendar-app/calendar/export/CalendarParser"),
+				import("../common/calendar/import/CalendarImporter"),
+				import("../common/calendar/gui/CalendarImporterDialog"),
+				import("../common/calendar/import/EventSeriesResolver"),
+				import("../common/calendar/gui/ImportInteractionHandler"),
+				import("../common/calendar/date/CalendarUtils"),
+			])
+
 			const calendarModel = await this.calendarModel()
 			const groupSettings = this.logins.getUserController().userSettingsGroupRoot.groupSettings
 			const calendarInfos = await calendarModel.getCalendarInfos()
@@ -1146,10 +1169,7 @@ class MailLocator implements CommonLocator {
 				return acc
 			}, new Map())
 
-			const { calendarSelectionDialog, parseCalendarFile } = await import("../common/calendar/gui/CalendarImporter.js")
-			const { handleCalendarImport } = await import("../common/calendar/gui/CalendarImporterDialog.js")
-
-			let parsedEvents: ParsedEvent[] = []
+			let parsedEvents: ParsedEventAlarmTuple[] = []
 
 			for (const fileRef of files) {
 				const dataFile = await this.fileApp.readDataFile(fileRef.location)
@@ -1159,9 +1179,24 @@ class MailLocator implements CommonLocator {
 				parsedEvents.push(...data.contents)
 			}
 
-			calendarSelectionDialog(Array.from(calendarInfos.values()), this.logins.getUserController(), groupColors, (dialog, selectedCalendar) => {
+			calendarSelectionDialog(Array.from(calendarInfos.values()), this.logins.getUserController(), groupColors, async (dialog, selectedCalendar) => {
 				dialog.close()
-				handleCalendarImport(selectedCalendar.groupRoot, selectedCalendar, parsedEvents)
+
+				const defaultDateProvider = new DefaultDateProvider()
+				const calendarImporter = new CalendarImporter(
+					calendarModel,
+					new ImportInteractionHandler(),
+					this.operationProgressTracker,
+					new EventSeriesResolver(calendarModel, defaultDateProvider),
+					defaultDateProvider.timeZone(),
+				)
+				await calendarImporter.import(
+					selectedCalendar.groupRoot,
+					selectedCalendar,
+					parsedEvents,
+					CalendarImporter.classifyImportedEvents,
+					selectedCalendar.type,
+				)
 			})
 		}
 	}
@@ -1197,7 +1232,10 @@ class MailLocator implements CommonLocator {
 		const ownAttendee: CalendarEventAttendee | null = findAttendeeInAddresses(selectedEvent.attendees, ownMailAddresses)
 		const eventType = getEventType(selectedEvent, calendars, ownMailAddresses, userController)
 		const hasBusinessFeature = isCustomizationEnabledForCustomer(customer, FeatureType.BusinessFeatureEnabled) || (await userController.isNewPaidPlan())
-		const lazyIndexEntry = async () => (selectedEvent.uid != null ? this.calendarFacade.getEventsByUid(selectedEvent.uid) : null)
+		const lazyIndexEntry = async () =>
+			selectedEvent.uid != null && selectedEvent._ownerGroup != null
+				? this.calendarFacade.getEventsByUid(selectedEvent.uid, selectedEvent._ownerGroup)
+				: null
 		const popupModel = new CalendarEventPreviewViewModel(
 			selectedEvent,
 			await this.calendarModel(),
@@ -1345,7 +1383,7 @@ class MailLocator implements CommonLocator {
 		const { DriveTransferController } = await import("../drive-app/drive/view/DriveTransferController.js")
 
 		const redraw = await this.redraw()
-		const driveUploadStackModel = new DriveTransferController(this.driveFacade, this.blobFacade, redraw, this.fileController, await this.scheduler())
+		const driveUploadStackModel = new DriveTransferController(this.driveFacade, this.blobFacade, redraw, this.fileController)
 
 		const model = new DriveViewModel(
 			this.entityClient,

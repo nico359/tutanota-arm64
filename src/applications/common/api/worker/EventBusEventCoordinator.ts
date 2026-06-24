@@ -1,18 +1,17 @@
-import { EventBusListener } from "../../../../platform-kit/network/EventBusClient.js"
+import { EventBusListener } from "../../../../app-kit/local-store/event/EventBusClient.js"
 import { MailFacade } from "./facades/lazy/MailFacade.js"
 import { UserFacade } from "../../../../platform-kit/base/facades/UserFacade.js"
 import { EntityClient } from "../../../../platform-kit/network/EntityClient.js"
 import { isAdminClient, isTest, RolloutType } from "@tutao/app-env"
-import { assertNotNull, lazyAsync, Nullable } from "@tutao/utils"
+import { assertNotNull, lazyAsync } from "@tutao/utils"
 import { ExposedEventController } from "../main/EventController.js"
 import { ConfigurationDatabase } from "./facades/lazy/ConfigurationDatabase.js"
-import { KeyRotationFacade } from "../../../../platform-kit/base/crypto/KeyRotationFacade.js"
+import { KeyRotationFacade } from "../../../../platform-kit/base/base-crypto/KeyRotationFacade.js"
 import { CacheManagementFacade } from "./facades/lazy/CacheManagementFacade.js"
 import { RolloutFacade } from "../../../../platform-kit/base/facades/RolloutFacade"
 import { GroupManagementFacade } from "../../../../platform-kit/base/facades/lazy/GroupManagementFacade"
 import { SyncTracker } from "../main/SyncTracker"
-import { IdentityKeyCreator } from "../../../../platform-kit/base/crypto/IdentityKeyCreator"
-import { ProgressMonitorId } from "../../../../platform-kit/network/ProgressMonitorInterface.js"
+import { IdentityKeyCreator } from "../../../../platform-kit/base/base-crypto/IdentityKeyCreator"
 import { ReportedMailFieldMarker } from "@tutao/entities/tutanota"
 import {
 	GroupKeyUpdateTypeRef,
@@ -83,7 +82,7 @@ export class EventBusEventCoordinator implements EventBusListener {
 						await identityKeyCreator.createIdentityKeyPairForExistingUsers()
 					} catch (error) {
 						console.log("error when creating user identity key pair", error)
-						this.sendError(error)
+						void this.sendError(error)
 					}
 				},
 			}
@@ -98,7 +97,7 @@ export class EventBusEventCoordinator implements EventBusListener {
 						await identityKeyCreator.createIdentityKeyPairForExistingTeamGroups(teamGroups)
 					} catch (error) {
 						console.log(`error when creating shared mailbox identity key pairs`, error)
-						this.sendError(error)
+						void this.sendError(error)
 					}
 				},
 			}
@@ -112,7 +111,7 @@ export class EventBusEventCoordinator implements EventBusListener {
 						await this.keyRotationFacade.updateGroupMemberships(groupKeyUpdates)
 					} catch (error) {
 						console.log("error when processing a pending group key update", error)
-						this.sendError(error)
+						void this.sendError(error)
 					}
 				},
 			}
@@ -124,6 +123,14 @@ export class EventBusEventCoordinator implements EventBusListener {
 			await this.rolloutFacade.processRollout(RolloutType.AdminOrUserGroupKeyRotation)
 			await this.rolloutFacade.processRollout(RolloutType.OtherGroupKeyRotation)
 		}
+
+		const useAead = {
+			execute: async () => {
+				this.userFacade.useAeadEncryption()
+			},
+		}
+		await this.rolloutFacade.configureRollout(RolloutType.EncryptionOfAttributesViaAead, useAead)
+		await this.rolloutFacade.processRollout(RolloutType.EncryptionOfAttributesViaAead)
 	}
 
 	onOperationStatusUpdate(update: OperationStatusUpdate) {

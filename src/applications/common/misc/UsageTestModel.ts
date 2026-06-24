@@ -29,6 +29,7 @@ import {
 import { CustomerProperties, CustomerPropertiesTypeRef, CustomerTypeRef } from "@tutao/entities/sys"
 import { ClientTypeModelResolver } from "@tutao/instance-pipeline"
 import { EntityUpdateData, isUpdateForTypeRef, OnEntityUpdateReceivedPriority } from "../../../platform-kit/instance-pipeline/utils/EntityUpdateUtils"
+import { DEFAULT_EXTRA_SERVICE_PARAMS } from "../../../platform-kit/instance-pipeline/RestClientOptions"
 
 const PRESELECTED_LIKERT_VALUE = null
 
@@ -322,9 +323,11 @@ export class UsageTestModel implements PingAdapter {
 		try {
 			const response: UsageTestAssignmentOut = testDeviceId
 				? await this.serviceExecutor.put(UsageTestAssignmentService, data, {
+						...DEFAULT_EXTRA_SERVICE_PARAMS,
 						suspensionBehavior: SuspensionBehavior.Throw,
 					})
 				: await this.serviceExecutor.post(UsageTestAssignmentService, data, {
+						...DEFAULT_EXTRA_SERVICE_PARAMS,
 						suspensionBehavior: SuspensionBehavior.Throw,
 					})
 			await this.storage().storeTestDeviceId(response.testDeviceId)
@@ -390,7 +393,7 @@ export class UsageTestModel implements PingAdapter {
 			pingListId,
 			pingId,
 		})
-		await this.serviceExecutor.delete(UsageTestParticipationService, data)
+		await this.serviceExecutor.delete(UsageTestParticipationService, data, null)
 		console.log(`Removed Ping: ${pingId}, ${pingListId}`)
 	}
 
@@ -428,6 +431,7 @@ export class UsageTestModel implements PingAdapter {
 
 		try {
 			const { pingListId, pingId } = await this.serviceExecutor.post(UsageTestParticipationService, data, {
+				...DEFAULT_EXTRA_SERVICE_PARAMS,
 				suspensionBehavior: SuspensionBehavior.Throw,
 			})
 			return { pingListId, pingId }

@@ -1,19 +1,20 @@
-import { Aes256Key, AesKey, cryptoUtils, CryptoWrapper, decryptKey, VersionedKey } from "@tutao/crypto"
+import { Aes256Key, AesKey, cryptoUtils, CryptoWrapper, decryptKey, HkdfKeyDerivationDomains, SymmetricEncryptionScheme, VersionedKey } from "@tutao/crypto"
 import { assertNotNull, KeyVersion } from "@tutao/utils"
 import { ProgrammingError } from "@tutao/app-env"
 import { isSameId } from "../../meta"
 import { CryptoError } from "@tutao/crypto/error"
-import { KeyCache } from "../../../app-kit/local-store/KeyCache"
 import { LoggedInUserProvider } from "@tutao/instance-pipeline"
 import { createWebsocketLeaderStatus, GroupMembership, User, UserGroupKeyDistribution, WebsocketLeaderStatus } from "@tutao/entities/sys"
 import { GroupType } from "../../../entities/sys/Utils"
 import { LoginIncompleteError } from "@tutao/rest-client/error"
+import { KeyCache } from "../base-crypto/persistence/KeyCache"
 
 /** Holder for the user and session-related data on the worker side. */
 export class UserFacade extends LoggedInUserProvider {
 	private user: User | null = null
 	private accessToken: string | null = null
 	private leaderStatus!: WebsocketLeaderStatus
+	private defaultSymmetricEncryptionScheme: SymmetricEncryptionScheme = SymmetricEncryptionScheme.AesCbc
 
 	constructor(
 		private readonly keyCache: KeyCache,
@@ -23,7 +24,15 @@ export class UserFacade extends LoggedInUserProvider {
 		this.reset()
 	}
 
-	// Login process is somehow multi-step, and we don't use a separate network stack for it. So we have to break up setters.
+	getDefaultSymmetricEncryptionScheme(): SymmetricEncryptionScheme {
+		return this.defaultSymmetricEncryptionScheme
+	}
+
+	useAeadEncryption(): void {
+		this.defaultSymmetricEncryptionScheme = SymmetricEncryptionScheme.Aead
+	}
+
+	// Login process is somehow multistep, and we don't use a separate network stack for it. So we have to break up setters.
 	// 1. We need to download user. For that we need to set access token already (to authenticate the request for the server as it is passed in headers).
 	// 2. We need to get group keys. For that we need to unlock userGroupKey with userPassphraseKey
 	// so this leads to this steps in UserFacade:
@@ -72,13 +81,13 @@ export class UserFacade extends LoggedInUserProvider {
 	}
 
 	/**
-	 * Derives a distribution key from the password key to share the new user group key of the user to their other clients (apps, web etc)
+	 * Derives a distribution key from the password key to share the new user group key of the user to their other clients (apps, web etc.)
 	 * This is a fallback function that gets called when the output key of `deriveUserDistKey` fails to decrypt the new user group key
 	 * @deprecated
-	 * @param userGroupId user group id of the logged in user
+	 * @param userGroupId user group id of the logged-in user
 	 * @param userPasswordKey current password key of the user
 	 */
-	deriveLegacyUserDistKey(userGroupId: Id, userPasswordKey: AesKey): AesKey {
+	deriveLegacyUserDistKey(userGroupId: Id, userPasswordKey: AesKey): Aes256Key {
 		// we prepare a key to encrypt potential user group key rotations with
 		// when passwords are changed clients are logged-out of other sessions
 		// this key is only needed by the logged-in clients, so it should be reliable enough to assume that userPassphraseKey is in sync
@@ -89,13 +98,13 @@ export class UserFacade extends LoggedInUserProvider {
 		return this.cryptoWrapper.deriveKeyWithHkdf({
 			salt: userGroupId,
 			key: userPasswordKey,
-			context: "userGroupKeyDistributionKey",
+			context: HkdfKeyDerivationDomains.UserGroupKeyDistributionKey,
 		})
 	}
 
 	/**
-	 * Derives a distribution to share the new user group key of the user to their other clients (apps, web etc)
-	 * @param userGroupId user group id of the logged in user
+	 * Derives a distribution to share the new user group key of the user to their other clients (apps, web etc.)
+	 * @param userGroupId user group id of the logged-in user
 	 * @param newUserGroupKeyVersion the new user group key version
 	 * @param userPasswordKey current password key of the user
 	 */
@@ -104,7 +113,7 @@ export class UserFacade extends LoggedInUserProvider {
 			salt: `userGroup: ${userGroupId}, newUserGroupKeyVersion: ${newUserGroupKeyVersion}`,
 			key: userPasswordKey,
 			// Formerly,this was not bound to the user group key version.
-			context: "versionedUserGroupKeyDistributionKey",
+			context: HkdfKeyDerivationDomains.VersionedUserGroupKeyDistributionKey,
 		})
 	}
 
@@ -147,6 +156,10 @@ export class UserFacade extends LoggedInUserProvider {
 
 	getMembership(groupId: Id): GroupMembership {
 		let membership = this.getLoggedInUser().memberships.find((g: GroupMembership) => isSameId(g.group, groupId))
+
+		if (!membership) {
+			console.log(new Error().stack)
+		}
 
 		if (!membership) {
 			throw new Error(`No membership with groupId ${groupId} found!`)

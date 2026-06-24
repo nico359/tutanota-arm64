@@ -1,12 +1,13 @@
-import { AeadSubKeys } from "./SymmetricKeyDeriver.js"
-import { AesKeyLength, getAndVerifyAesKeyLength } from "./AesKeyLength.js"
+import { AeadSubKeys, AeadWithGroupKeySubKeys, AeadWithSessionKeySubKeys } from "./SymmetricKeyDeriver.js"
 import { concat } from "@tutao/utils"
-import { bitArrayToUint8Array, generateIV, IV_BYTE_LENGTH, uint8ArrayToBitArray } from "./SymmetricCipherUtils.js"
+import { Aes256Key, bitArrayToUint8Array, generateInitializationVector, keyToUint8Array, uint8ArrayToBitArray } from "./SymmetricCipherUtils.js"
 import sjcl from "../../internal/sjcl.js"
-import { blake3Mac, blake3MacVerify, DEFAULT_BLAKE3_OUTPUT_LENGTH_BYTES } from "../../hashes/Blake3.js"
+import { blake3Mac, blake3MacVerify } from "../../hashes/Blake3.js"
 import { CryptoError } from "../../error.js"
-
-import { MacTag } from "../../CryptoTypes"
+import { ProgrammingError } from "@tutao/app-env"
+import { ParsedCiphertextAead } from "./ParsedCiphertext"
+import { getVersionByte } from "./SymmetricCipherVersion"
+import { AesKeyLength } from "./AesKeyLength"
 
 export const PADDING_BLOCK_SIZE: number = 4
 export const PADDING_BYTE: number = 0x80
@@ -16,7 +17,6 @@ export const PADDING_ZERO_BYTE: number = 0x00
  * This facade contains all methods for encryption/ decryption for Authenticated Encryption with Associated Data (AEAD).
  *
  * We use AES-CTR then BLAKE3, where the tag is computed over: version byte, nonce, ciphertext and associated data.
- * @deprecated DO NOT USE THIS YET - EXPORTED ONLY FOR COMPATIBILITY TESTS!
  */
 export class AeadFacade {
 	private pad(plaintext: Uint8Array): Uint8Array {
@@ -53,57 +53,86 @@ export class AeadFacade {
 	/**
 	 * Encrypt with AEAD.
 	 */
-	encrypt(key: AeadSubKeys, plaintext: Uint8Array, associatedData: Uint8Array): Uint8Array {
+	encrypt(subKeys: AeadSubKeys, plaintext: Uint8Array, associatedData: Uint8Array): Uint8Array {
 		const paddedPlaintext = this.pad(plaintext)
-		return this.encryptInternal(key, paddedPlaintext, associatedData)
+		return this.encryptInternal(subKeys, paddedPlaintext, associatedData)
 	}
 
 	/**
 	 * Encrypt the plaintext with AEAD. It must already be padded.
 	 * @private
 	 */
-	encryptInternal(key: AeadSubKeys, plaintext: Uint8Array, associatedData: Uint8Array): Uint8Array {
-		this.validateKeyLength(key)
+	encryptInternal(subKeys: AeadSubKeys, plaintext: Uint8Array, associatedData: Uint8Array): Uint8Array {
+		this.validateKeyLength(subKeys)
 
-		const iv = generateIV()
+		const initializationVector = generateInitializationVector()
 		const aesCtrCiphertext = bitArrayToUint8Array(
-			sjcl.mode.ctr.encrypt(new sjcl.cipher.aes(key.encryptionKey), uint8ArrayToBitArray(plaintext), uint8ArrayToBitArray(iv), []),
+			sjcl.mode.ctr.encrypt(
+				new sjcl.cipher.aes(subKeys.encryptionKey.bits),
+				uint8ArrayToBitArray(plaintext),
+				uint8ArrayToBitArray(initializationVector.bytes),
+				[],
+			),
 		)
 
-		const unauthenticatedCiphertext = concat(iv, aesCtrCiphertext)
-		const unauthenticatedCiphertextLength = bitArrayToUint8Array([unauthenticatedCiphertext.length])
+		const initializationVectorAndCiphertext = concat(initializationVector.bytes, aesCtrCiphertext)
+		const initializationVectorAndCiphertextLength = this.getSigned32BitIntegerFromNumberAsUint8Array(initializationVectorAndCiphertext.length)
 
-		const authenticationKey = bitArrayToUint8Array(key.authenticationKey)
-		const tag = blake3Mac(authenticationKey, concat(unauthenticatedCiphertextLength, unauthenticatedCiphertext, associatedData))
+		const authenticationKey = keyToUint8Array(subKeys.authenticationKey)
+		const tag = blake3Mac(authenticationKey, concat(initializationVectorAndCiphertextLength, initializationVectorAndCiphertext, associatedData))
 
-		return concat(unauthenticatedCiphertext, tag)
+		return concat(this.ciphertextVersionPrefix(subKeys), initializationVectorAndCiphertext, tag)
+	}
+
+	private ciphertextVersionPrefix(subKeys: AeadSubKeys): Uint8Array {
+		if (subKeys instanceof AeadWithGroupKeySubKeys) {
+			const keyVersionLengthByte = 0
+			if (subKeys.groupKeyVersion == null) {
+				throw new ProgrammingError("AEAD encryption with group key requires a group key version")
+			}
+			return Uint8Array.of(getVersionByte(subKeys.cipherVersion), keyVersionLengthByte, subKeys.groupKeyVersion)
+		} else if (subKeys instanceof AeadWithSessionKeySubKeys) {
+			return Uint8Array.of(getVersionByte(subKeys.cipherVersion))
+		}
+		throw new ProgrammingError("invalid sub-keys")
 	}
 
 	/**
 	 * Decrypt with AEAD.
 	 */
-	decrypt(key: AeadSubKeys, ciphertext: Uint8Array, associatedData: Uint8Array): Uint8Array {
-		this.validateKeyLength(key)
+	decrypt(subKeys: AeadSubKeys, parsedCiphertext: ParsedCiphertextAead, associatedData: Uint8Array): Uint8Array {
+		this.validateKeyLength(subKeys)
+		if (subKeys.cipherVersion !== parsedCiphertext.cipherVersion) {
+			throw new CryptoError("AEAD sub-keys have the wrong cipher version for decryption")
+		}
 
-		const ciphertextWithoutMac = ciphertext.subarray(0, ciphertext.length - DEFAULT_BLAKE3_OUTPUT_LENGTH_BYTES)
-		const authenticationTag = ciphertext.subarray(ciphertext.length - DEFAULT_BLAKE3_OUTPUT_LENGTH_BYTES, ciphertext.length)
-		const ciphertextWithoutMacLength = bitArrayToUint8Array([ciphertextWithoutMac.length])
-		const authenticatedData = concat(ciphertextWithoutMacLength, ciphertextWithoutMac, associatedData)
-		const authenticationKey = bitArrayToUint8Array(key.authenticationKey)
-		blake3MacVerify(authenticationKey, authenticatedData, authenticationTag as MacTag)
-
-		const iv = ciphertextWithoutMac.subarray(0, IV_BYTE_LENGTH)
-		const aesCtrCiphertext = ciphertextWithoutMac.subarray(IV_BYTE_LENGTH, ciphertextWithoutMac.length)
+		const initializationVectorAndCiphertext = concat(parsedCiphertext.initializationVector.bytes, parsedCiphertext.ciphertext)
+		const initializationVectorAndCiphertextLength = this.getSigned32BitIntegerFromNumberAsUint8Array(initializationVectorAndCiphertext.length)
+		const authenticatedData = concat(initializationVectorAndCiphertextLength, initializationVectorAndCiphertext, associatedData)
+		const authenticationKey = keyToUint8Array(subKeys.authenticationKey)
+		blake3MacVerify(authenticationKey, authenticatedData, parsedCiphertext.macTag)
 
 		const paddedPlaintext = bitArrayToUint8Array(
-			sjcl.mode.ctr.decrypt(new sjcl.cipher.aes(key.encryptionKey), uint8ArrayToBitArray(aesCtrCiphertext), uint8ArrayToBitArray(iv), []),
+			sjcl.mode.ctr.decrypt(
+				new sjcl.cipher.aes(subKeys.encryptionKey.bits),
+				uint8ArrayToBitArray(parsedCiphertext.ciphertext),
+				uint8ArrayToBitArray(parsedCiphertext.initializationVector.bytes),
+				[],
+			),
 		)
 		return this.unpad(paddedPlaintext)
 	}
 
 	private validateKeyLength(key: AeadSubKeys) {
-		getAndVerifyAesKeyLength(key.encryptionKey, [AesKeyLength.Aes256])
-		getAndVerifyAesKeyLength(key.authenticationKey, [AesKeyLength.Aes256])
+		let authenticationKeyBitLength = key.authenticationKey.bits.length * 4 * 8
+		let encryptionKeyBitLength = key.encryptionKey.bits.length * 4 * 8
+		if (authenticationKeyBitLength !== AesKeyLength.Aes256 || encryptionKeyBitLength !== AesKeyLength.Aes256) {
+			throw new CryptoError("Illegal key length")
+		}
+	}
+
+	private getSigned32BitIntegerFromNumberAsUint8Array(integer: number): Uint8Array {
+		return bitArrayToUint8Array([integer])
 	}
 }
 

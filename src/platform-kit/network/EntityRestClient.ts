@@ -1,12 +1,11 @@
 import { type RestClient } from "@tutao/rest-client"
-import { HttpMethod, MediaType, SuspensionBehavior } from "../rest-client/types"
+import { HttpMethod, MediaType, RestTextBody } from "../rest-client/types"
 import { AttributeModel, elementIdPart, expandId, LOAD_MULTIPLE_LIMIT, POST_MULTIPLE_LIMIT, Type, TypeRef } from "../meta"
 import { SessionKeyNotFoundError } from "@tutao/crypto/error"
 import { assertNotNull, Category, downcast, lazy, Mapper, Nullable, ofClass, promiseMap, splitInChunks, syncMetrics } from "@tutao/utils"
-import { assertWorkerOrNode } from "@tutao/app-env"
+import { assertWorkerOrNode, ProgrammingError } from "@tutao/app-env"
 import { SetupMultipleError } from "./error/SetupMultipleError"
 import { BlobAccessTokenFacade } from "./BlobAccessTokenFacade.js"
-import { AesKey, VersionedKey } from "@tutao/crypto"
 import {
 	_verifyType,
 	EntityAdapter,
@@ -33,7 +32,7 @@ import {
 } from "@tutao/meta"
 import { PersistenceResourcePostReturnTypeRef } from "@tutao/entities/base"
 import { computePatchPayload } from "../instance-pipeline/PatchGenerator"
-import { PatchListTypeRef } from "@tutao/entities/sys"
+import { createInstanceKdfNonce, createTypeInfo, PatchListTypeRef } from "@tutao/entities/sys"
 import { EntityUpdateData } from "../instance-pipeline/utils/EntityUpdateUtils"
 import { BlobServerUrl } from "@tutao/entities/storage"
 import { EntityRestInterface } from "./EntityRestCacheInterface"
@@ -47,72 +46,38 @@ import {
 	NotFoundError,
 	PayloadTooLargeError,
 } from "@tutao/rest-client/error"
+import {
+	AesKey,
+	generateKdfNonce,
+	KdfNonce,
+	SubKeyInfo,
+	SubKeyInfoWithGroupKey,
+	SubKeyInfoWithoutSessionKey,
+	SubKeyInfoWithSessionKey,
+	SymmetricCipherVersion,
+	SymmetricEncryptionScheme,
+	validateKdfNonceLength,
+	VersionedKey,
+} from "@tutao/crypto"
+import {
+	DEFAULT_ENTITY_RESTCLIENT_LOAD_OPTIONS,
+	DEFAULT_REST_CLIENT_OPTIONS,
+	EntityRestClientEraseOptions,
+	EntityRestClientLoadOptions,
+	EntityRestClientSetupOptions,
+	EntityRestClientUpdateOptions,
+} from "../instance-pipeline/RestClientOptions"
 
 assertWorkerOrNode()
 
-export interface EntityRestClientSetupOptions {
-	baseUrl?: string
-	/** Use this key to encrypt session key instead of trying to resolve the owner key based on the ownerGroup. */
-	ownerKey?: VersionedKey
-}
-
-export interface EntityRestClientUpdateOptions {
-	baseUrl?: string
-	/** Use the key provided by this to decrypt the existing ownerEncSessionKey instead of trying to resolve the owner key based on the ownerGroup. */
-	ownerKeyProvider?: OwnerKeyProvider
-}
-
-export interface EntityRestClientEraseOptions {
-	extraHeaders?: Dict
-}
-
-/**
- * Determines how to handle caching behavior (i.e. reading/writing).
- *
- * Use {@link getCacheModeBehavior} to programmatically check the behavior of the cache mode.
- */
-export const enum CacheMode {
-	/** Prefer cached value if it's there, or fall back to network and write it to cache. */
-	ReadAndWrite,
-
+export interface EntityMigrator {
 	/**
-	 * Always retrieve from the network, but still save to cache.
-	 *
-	 * NOTE: This cannot be used with ranged requests.
+	 * Takes a freshly JSON-parsed, unmapped object and apply migrations as necessary
+	 * @param typeRef
+	 * @param data
+	 * @return the unmapped and still encrypted instance
 	 */
-	WriteOnly,
-
-	/** Prefer cached value, but in case of a cache miss, retrieve the value from network without writing it to cache. */
-	ReadOnly,
-}
-
-/**
- * Get the behavior of the cache mode for the options
- * @param cacheMode cache mode to check, or if `undefined`, check the default cache mode ({@link CacheMode.ReadAndWrite})
- */
-export function getCacheModeBehavior(cacheMode: CacheMode | undefined): {
-	readsFromCache: boolean
-	writesToCache: boolean
-} {
-	switch (cacheMode ?? CacheMode.ReadAndWrite) {
-		case CacheMode.ReadAndWrite:
-			return { readsFromCache: true, writesToCache: true }
-		case CacheMode.WriteOnly:
-			return { readsFromCache: false, writesToCache: true }
-		case CacheMode.ReadOnly:
-			return { readsFromCache: true, writesToCache: false }
-	}
-}
-
-export interface EntityRestClientLoadOptions {
-	queryParams?: Dict
-	extraHeaders?: Dict
-	/** Use the key provided by this to decrypt the existing ownerEncSessionKey instead of trying to resolve the owner key based on the ownerGroup. */
-	ownerKeyProvider?: OwnerKeyProvider
-	/** Defaults to {@link CacheMode.ReadAndWrite }*/
-	cacheMode?: CacheMode
-	baseUrl?: string
-	suspensionBehavior?: SuspensionBehavior
+	applyMigrations(typeRef: TypeRef<Entity>, data: EntityAdapter): Promise<EntityAdapter>
 }
 
 /**
@@ -132,17 +97,18 @@ export class EntityRestClient implements EntityRestInterface {
 	constructor(
 		private readonly authDataProvider: LoggedInUserProvider,
 		private readonly restClient: RestClient,
-		private readonly lazyCrypto: lazy<CryptoNetworkHelper>,
+		private readonly lazyCrypto: () => CryptoNetworkHelper,
 		public readonly instancePipeline: InstancePipeline,
 		private readonly blobAccessTokenFacade: BlobAccessTokenFacade,
 		private readonly typeModelResolver: TypeModelResolver,
 		private readonly sessionKeyResolver: lazy<SessionKeyResolver>,
+		private readonly entityMigrator: lazy<EntityMigrator>,
 	) {}
 
 	async loadParsedInstance<T extends SomeEntity>(
 		typeRef: TypeRef<T>,
 		id: PropertyType<T, "_id">,
-		opts: EntityRestClientLoadOptions = {},
+		opts: EntityRestClientLoadOptions = DEFAULT_ENTITY_RESTCLIENT_LOAD_OPTIONS,
 	): Promise<ServerModelParsedInstance> {
 		const tm = syncMetrics?.beginMeasurement(Category.LoadRest)
 		const { listId, elementId } = expandId(id)
@@ -155,6 +121,7 @@ export class EntityRestClient implements EntityRestInterface {
 			opts.ownerKeyProvider,
 		)
 		const json = await this.restClient.request(path, HttpMethod.GET, {
+			...DEFAULT_REST_CLIENT_OPTIONS,
 			queryParams,
 			headers,
 			responseType: MediaType.Json,
@@ -165,20 +132,24 @@ export class EntityRestClient implements EntityRestInterface {
 
 		const encryptedParsedInstance = await this.instancePipeline.typeMapper.applyJsTypes(serverTypeModel, untypedInstance)
 		const entityAdapter = await EntityAdapter.from(serverTypeModel, encryptedParsedInstance, this.instancePipeline.modelMapper)
-		const migratedEntity = await this._crypto.applyMigrations(typeRef, entityAdapter)
+		const migratedEntity = await this.entityMigrator().applyMigrations(typeRef, entityAdapter)
 		const sessionKey = await this.sessionKeyResolver().resolveSessionKeyWithOwnerKeyProvider(opts.ownerKeyProvider, migratedEntity)
 		const decrypted = await this.instancePipeline.cryptoMapper.decryptParsedInstance(
 			serverTypeModel,
 			migratedEntity.encryptedParsedInstance as ServerModelEncryptedParsedInstance,
 			sessionKey,
-			migratedEntity._kdfNonce,
-			migratedEntity._ownerGroup,
+			validateKdfNonceLength(migratedEntity._kdfNonce),
+			opts.ownerKeyProvider ?? this.instancePipeline.cryptoMapper.makeOwnerKeyProvider(migratedEntity._ownerGroup),
 		)
 		tm?.endMeasurement()
 		return decrypted
 	}
 
-	async load<T extends SomeEntity>(typeRef: TypeRef<T>, id: PropertyType<T, "_id">, opts: EntityRestClientLoadOptions = {}): Promise<T> {
+	async load<T extends SomeEntity>(
+		typeRef: TypeRef<T>,
+		id: PropertyType<T, "_id">,
+		opts: EntityRestClientLoadOptions = DEFAULT_ENTITY_RESTCLIENT_LOAD_OPTIONS,
+	): Promise<T> {
 		const parsedInstance = await this.loadParsedInstance(typeRef, id, opts)
 		return await this.mapInstanceToEntity(typeRef, parsedInstance)
 	}
@@ -205,7 +176,7 @@ export class EntityRestClient implements EntityRestInterface {
 		start: Id,
 		count: number,
 		reverse: boolean,
-		opts: EntityRestClientLoadOptions = {},
+		opts: EntityRestClientLoadOptions = DEFAULT_ENTITY_RESTCLIENT_LOAD_OPTIONS,
 	): Promise<ServerModelParsedInstance[]> {
 		const rangeRequestParams = {
 			start: String(start),
@@ -223,6 +194,7 @@ export class EntityRestClient implements EntityRestInterface {
 		// This should never happen if type checking is not bypassed with any
 		if (clientTypeModel.type !== Type.ListElement) throw new Error("only ListElement types are permitted")
 		const json = await this.restClient.request(path, HttpMethod.GET, {
+			...DEFAULT_REST_CLIENT_OPTIONS,
 			queryParams,
 			headers,
 			responseType: MediaType.Json,
@@ -230,7 +202,7 @@ export class EntityRestClient implements EntityRestInterface {
 			suspensionBehavior: opts.suspensionBehavior,
 		})
 		const parsedResponse: Array<ServerModelUntypedInstance> = JSON.parse(json)
-		return await this._handleLoadResult(typeRef, parsedResponse)
+		return await this._handleLoadResult(typeRef, parsedResponse, opts.ownerKeyProvider ?? null)
 	}
 
 	async loadRange<T extends ListElementEntity>(
@@ -239,7 +211,7 @@ export class EntityRestClient implements EntityRestInterface {
 		start: Id,
 		count: number,
 		reverse: boolean,
-		opts: EntityRestClientLoadOptions = {},
+		opts: EntityRestClientLoadOptions = DEFAULT_ENTITY_RESTCLIENT_LOAD_OPTIONS,
 	): Promise<T[]> {
 		const parsedInstances = await this.loadParsedInstancesRange(typeRef, listId, start, count, reverse, opts)
 		return this.mapInstancesToEntity(typeRef, parsedInstances)
@@ -250,7 +222,7 @@ export class EntityRestClient implements EntityRestInterface {
 		listId: Id | null,
 		elementIds: Array<Id>,
 		ownerEncSessionKeyProvider?: OwnerEncSessionKeyProvider,
-		opts: EntityRestClientLoadOptions = {},
+		opts: EntityRestClientLoadOptions = DEFAULT_ENTITY_RESTCLIENT_LOAD_OPTIONS,
 	): Promise<Array<ServerModelParsedInstance>> {
 		const { path, headers } = await this._validateAndPrepareRestRequest(typeRef, listId, null, opts.queryParams, opts.extraHeaders, opts.ownerKeyProvider)
 		const idChunks = splitInChunks(LOAD_MULTIPLE_LIMIT, elementIds)
@@ -266,6 +238,7 @@ export class EntityRestClient implements EntityRestInterface {
 				json = await this.loadMultipleBlobElements(listId, queryParams, headers, path, typeRef, opts)
 			} else {
 				json = await this.restClient.request(path, HttpMethod.GET, {
+					...DEFAULT_REST_CLIENT_OPTIONS,
 					queryParams,
 					headers,
 					responseType: MediaType.Json,
@@ -274,7 +247,7 @@ export class EntityRestClient implements EntityRestInterface {
 				})
 			}
 			tm?.endMeasurement()
-			return this._handleLoadResult(typeRef, JSON.parse(json), ownerEncSessionKeyProvider)
+			return this._handleLoadResult(typeRef, JSON.parse(json), opts.ownerKeyProvider ?? null, ownerEncSessionKeyProvider)
 		})
 		return loadedChunks.flat()
 	}
@@ -284,7 +257,7 @@ export class EntityRestClient implements EntityRestInterface {
 		listId: Id | null,
 		elementIds: Array<Id>,
 		ownerEncSessionKeyProvider?: OwnerEncSessionKeyProvider,
-		opts: EntityRestClientLoadOptions = {},
+		opts: EntityRestClientLoadOptions = DEFAULT_ENTITY_RESTCLIENT_LOAD_OPTIONS,
 	): Promise<Array<T>> {
 		const parsedInstances = await this.loadMultipleParsedInstances(typeRef, listId, elementIds, ownerEncSessionKeyProvider, opts)
 		return await this.mapInstancesToEntity(typeRef, parsedInstances)
@@ -293,10 +266,10 @@ export class EntityRestClient implements EntityRestInterface {
 	private async loadMultipleBlobElements(
 		archiveId: Id | null,
 		queryParams: { ids: string },
-		headers: Dict | undefined,
+		headers: Dict,
 		path: string,
 		typeRef: TypeRef<any>,
-		opts: EntityRestClientLoadOptions = {},
+		opts: EntityRestClientLoadOptions = DEFAULT_ENTITY_RESTCLIENT_LOAD_OPTIONS,
 	): Promise<string> {
 		if (archiveId == null) {
 			throw new Error("archiveId must be set to load BlobElementTypes")
@@ -324,6 +297,7 @@ export class EntityRestClient implements EntityRestInterface {
 				serversToTry,
 				async (serverUrl) =>
 					this.restClient.request(path, HttpMethod.GET, {
+						...DEFAULT_REST_CLIENT_OPTIONS,
 						queryParams: allParams,
 						headers: {}, // prevent CORS request due to non standard header usage
 						responseType: MediaType.Json,
@@ -342,6 +316,7 @@ export class EntityRestClient implements EntityRestInterface {
 	async _handleLoadResult<T extends SomeEntity>(
 		typeRef: TypeRef<T>,
 		loadedEntities: Array<ServerModelUntypedInstance>,
+		ownerKeyProvider: Nullable<OwnerKeyProvider>,
 		ownerEncSessionKeyProvider?: OwnerEncSessionKeyProvider,
 	): Promise<Array<ServerModelParsedInstance>> {
 		const serverTypeModel = await this.typeModelResolver.resolveServerTypeReference(typeRef)
@@ -351,7 +326,12 @@ export class EntityRestClient implements EntityRestInterface {
 				const noNetworkDebugInstance = AttributeModel.removeNetworkDebuggingInfoIfNeeded<ServerModelUntypedInstance>(instance)
 				const encryptedParsedInstance = await this.instancePipeline.typeMapper.applyJsTypes(serverTypeModel, noNetworkDebugInstance)
 				let entityAdapter = await EntityAdapter.from(serverTypeModel, encryptedParsedInstance, this.instancePipeline.modelMapper)
-				return this._decryptAndMap(serverTypeModel, entityAdapter, ownerEncSessionKeyProvider)
+				return this._decryptAndMap(
+					serverTypeModel,
+					entityAdapter,
+					ownerKeyProvider ?? this.instancePipeline.cryptoMapper.makeOwnerKeyProvider(entityAdapter._ownerGroup),
+					ownerEncSessionKeyProvider,
+				)
 			},
 			{
 				concurrency: 5,
@@ -362,6 +342,7 @@ export class EntityRestClient implements EntityRestInterface {
 	async _decryptAndMap(
 		serverTypeModel: ServerTypeModel,
 		entityAdapter: EntityAdapter,
+		ownerKeyProvider: Nullable<OwnerKeyProvider>,
 		ownerEncSessionKeyProvider?: OwnerEncSessionKeyProvider,
 	): Promise<ServerModelParsedInstance> {
 		let sessionKey: AesKey | null
@@ -389,20 +370,25 @@ export class EntityRestClient implements EntityRestInterface {
 			serverTypeModel,
 			entityAdapter.encryptedParsedInstance as ServerModelEncryptedParsedInstance,
 			sessionKey,
-			entityAdapter._kdfNonce,
-			entityAdapter._ownerGroup,
+			validateKdfNonceLength(entityAdapter._kdfNonce),
+			ownerKeyProvider,
 		)
 	}
 
-	async setup<T extends SomeEntity>(listId: Id | null, instance: T, extraHeaders?: Dict, options?: EntityRestClientSetupOptions): Promise<Id | null> {
+	async setup<T extends SomeEntity>(
+		listId: Id | null,
+		instance: T,
+		extraHeaders: Nullable<Dict>,
+		options: Nullable<EntityRestClientSetupOptions> = null,
+	): Promise<Id | null> {
 		const typeRef = instance._type
 		const { clientTypeModel, path, headers, queryParams } = await this._validateAndPrepareRestRequest(
 			typeRef,
 			listId,
 			null,
-			undefined,
+			null,
 			extraHeaders,
-			options?.ownerKey,
+			options?.ownerKey ?? null,
 		)
 
 		if (clientTypeModel.type === Type.ListElement) {
@@ -410,13 +396,14 @@ export class EntityRestClient implements EntityRestInterface {
 		} else {
 			if (listId) throw new Error("List id must not be defined for ETs")
 		}
-		const sk: Nullable<AesKey> = await this._crypto.setNewOwnerEncSessionKey(clientTypeModel, instance, options?.ownerKey)
-		const untypedInstance = await this.instancePipeline.mapAndEncrypt(downcast<TypeRef<Entity>>(instance._type), instance, sk)
+		const subKeyInfo = await this.getSubKeyInfoOnSetup(options?.ownerKey ?? null, instance, clientTypeModel)
+		const untypedInstance = await this.instancePipeline.mapAndEncryptWithSubKeyInfo(downcast<TypeRef<Entity>>(instance._type), instance, subKeyInfo)
 		const persistencePostReturn: string = await this.restClient.request(path, HttpMethod.POST, {
-			baseUrl: options?.baseUrl,
+			...DEFAULT_REST_CLIENT_OPTIONS,
+			baseUrl: options?.baseUrl ?? null,
 			queryParams,
 			headers,
-			body: JSON.stringify(untypedInstance),
+			body: new RestTextBody(JSON.stringify(untypedInstance)),
 			responseType: MediaType.Json,
 		})
 		const postReturnTypeModel = await this.typeModelResolver.resolveClientTypeReference(PersistenceResourcePostReturnTypeRef)
@@ -433,7 +420,7 @@ export class EntityRestClient implements EntityRestInterface {
 
 		const instanceChunks = splitInChunks(POST_MULTIPLE_LIMIT, instances)
 		const typeRef = instances[0]._type
-		const { clientTypeModel, path, headers } = await this._validateAndPrepareRestRequest(typeRef, listId, null, undefined, undefined, undefined)
+		const { clientTypeModel, path, headers } = await this._validateAndPrepareRestRequest(typeRef, listId, null, null, null, null)
 
 		if (clientTypeModel.type === Type.ListElement) {
 			if (!listId) throw new Error("List id must be defined for LETs")
@@ -446,7 +433,7 @@ export class EntityRestClient implements EntityRestInterface {
 		const idChunks: Array<Array<Id>> = await promiseMap(instanceChunks, async (instanceChunk) => {
 			try {
 				const encryptedEntities = await promiseMap(instanceChunk, async (instance) => {
-					const sk = await this._crypto.setNewOwnerEncSessionKey(clientTypeModel, instance)
+					const sk = await this._crypto.setNewOwnerEncSessionKey(clientTypeModel, instance, null)
 					return await this.instancePipeline.mapAndEncrypt(downcast<TypeRef<Entity>>(instance._type), instance, sk)
 				})
 				// informs the server that this is a POST_MULTIPLE request
@@ -454,9 +441,10 @@ export class EntityRestClient implements EntityRestInterface {
 					count: String(instanceChunk.length),
 				}
 				const persistencePostReturn = await this.restClient.request(path, HttpMethod.POST, {
+					...DEFAULT_REST_CLIENT_OPTIONS,
 					queryParams,
 					headers,
-					body: JSON.stringify(encryptedEntities),
+					body: new RestTextBody(JSON.stringify(encryptedEntities)),
 					responseType: MediaType.Json,
 				})
 				const untypedPersistencePostReturn = JSON.parse(persistencePostReturn)
@@ -467,7 +455,7 @@ export class EntityRestClient implements EntityRestInterface {
 					// So we fall back to posting single instances
 					const returnedIds = await promiseMap(instanceChunk, async (instance) => {
 						try {
-							return await this.setup(listId, instance)
+							return await this.setup(listId, instance, null, null)
 						} catch (e) {
 							errors.push(e)
 							failedInstances.push(instance)
@@ -499,16 +487,16 @@ export class EntityRestClient implements EntityRestInterface {
 			instance._type,
 			listId,
 			elementId,
-			undefined,
-			undefined,
-			options?.ownerKeyProvider,
+			null,
+			null,
+			options?.ownerKey ?? null,
 		)
-		const sessionKey = await this.sessionKeyResolver().resolveSessionKeyWithOwnerKeyProvider(options?.ownerKeyProvider, instance)
 		// map and encrypt instance._original and the instance
 		const originalParsedInstance = await this.instancePipeline.modelMapper.mapToClientModelParsedInstance(instance._type, assertNotNull(instance._original))
+		const subKeyInfo = await this.getSubKeyInfoOnUpdate(options?.ownerKey ?? null, instance)
 		const parsedInstance = await this.instancePipeline.modelMapper.mapToClientModelParsedInstance(instance._type as TypeRef<any>, instance)
 		const typeReferenceResolver = this.typeModelResolver.resolveClientTypeReference.bind(this.typeModelResolver)
-		const encryptedParsedInstance = await this.instancePipeline.cryptoMapper.encryptParsedInstance(clientTypeModel, parsedInstance, sessionKey)
+		const encryptedParsedInstance = await this.instancePipeline.cryptoMapper.encryptParsedInstance(clientTypeModel, parsedInstance, subKeyInfo)
 		const untypedInstance = await this.instancePipeline.typeMapper.applyDbTypes(clientTypeModel, encryptedParsedInstance)
 		// figure out differing fields and build the PATCH request payload
 		const patchList = await computePatchPayload(
@@ -522,12 +510,86 @@ export class EntityRestClient implements EntityRestInterface {
 		// PatchList has no encrypted fields (sk == null)
 		const patchPayload = await this.instancePipeline.mapAndEncrypt(PatchListTypeRef, patchList, null)
 		await this.restClient.request(path, HttpMethod.PATCH, {
-			baseUrl: options?.baseUrl,
+			...DEFAULT_REST_CLIENT_OPTIONS,
+			baseUrl: options?.baseUrl ?? null,
 			queryParams,
 			headers,
-			body: JSON.stringify(patchPayload),
+			body: new RestTextBody(JSON.stringify(patchPayload)),
 			responseType: MediaType.Json,
 		})
+	}
+
+	private async getSubKeyInfoOnSetup<T extends SomeEntity>(
+		ownerKey: VersionedKey | null,
+		instance: T,
+		clientTypeModel: ClientTypeModel,
+	): Promise<SubKeyInfo> {
+		if (this.authDataProvider.getDefaultSymmetricEncryptionScheme() === SymmetricEncryptionScheme.AesCbc) {
+			const sessionKey: Nullable<AesKey> = await this._crypto.setNewOwnerEncSessionKey(clientTypeModel, instance, ownerKey)
+			if (sessionKey) {
+				return new SubKeyInfoWithSessionKey(SymmetricCipherVersion.AesCbcThenHmac, sessionKey)
+			} else {
+				return new SubKeyInfoWithoutSessionKey(SymmetricCipherVersion.AesCbcThenHmac)
+			}
+		} else {
+			if (ownerKey == null) {
+				if (instance._ownerGroup == null) {
+					throw new ProgrammingError("This instance has no owner group")
+				}
+				ownerKey = await this._crypto.getCurrentSymGroupKey(instance._ownerGroup)
+			}
+			if (instance._kdfNonce != null) {
+				// why do you have a KDF nonce at this point? is the instance a deep copy?
+				console.log(`overwriting KDF nonce previously found on instance of type ${instance._type} with ID ${instance._id}`)
+			}
+
+			const kdfNonce: KdfNonce = generateKdfNonce()
+			instance._kdfNonce = kdfNonce
+			return new SubKeyInfoWithGroupKey(SymmetricCipherVersion.AeadWithGroupKey, ownerKey, kdfNonce)
+		}
+	}
+
+	private async getSubKeyInfoOnUpdate<T extends SomeEntity>(ownerKey: VersionedKey | null, instance: T): Promise<SubKeyInfo> {
+		if (this.authDataProvider.getDefaultSymmetricEncryptionScheme() === SymmetricEncryptionScheme.AesCbc) {
+			const sessionKey: Nullable<AesKey> = await this.sessionKeyResolver().resolveSessionKeyWithOwnerKey(
+				ownerKey != null ? ownerKey.object : null,
+				instance,
+			)
+			if (sessionKey) {
+				return new SubKeyInfoWithSessionKey(SymmetricCipherVersion.AesCbcThenHmac, sessionKey)
+			} else {
+				return new SubKeyInfoWithoutSessionKey(SymmetricCipherVersion.AesCbcThenHmac)
+			}
+		} else {
+			if (!ownerKey) {
+				if (instance._ownerGroup == null) {
+					throw new ProgrammingError("This instance has no owner group")
+				}
+				ownerKey = await this._crypto.getCurrentSymGroupKey(instance._ownerGroup)
+			}
+			let kdfNonce: KdfNonce
+			if (instance._kdfNonce == null) {
+				let instanceList: Nullable<Id> = null
+				let instanceId: Id
+				if (instance._id instanceof Array) {
+					instanceList = instance._id[0]
+					instanceId = instance._id[1]
+				} else {
+					instanceId = instance._id
+				}
+				const application = instance._type.app
+				const typeId = instance._type.typeId.toString()
+				const typeInfo = createTypeInfo({ application, typeId })
+				const out = await this._crypto.postUpdateKdfNonceService(
+					createInstanceKdfNonce({ kdfNonce: generateKdfNonce(), instanceId, instanceList, typeInfo }),
+				)
+				kdfNonce = validateKdfNonceLength(out.kdfNonce)
+				instance._kdfNonce = kdfNonce
+			} else {
+				kdfNonce = validateKdfNonceLength(instance._kdfNonce)
+			}
+			return new SubKeyInfoWithGroupKey(SymmetricCipherVersion.AeadWithGroupKey, ownerKey, kdfNonce)
+		}
 	}
 
 	async erase<T extends SomeEntity>(instance: T, options?: EntityRestClientEraseOptions): Promise<void> {
@@ -536,17 +598,18 @@ export class EntityRestClient implements EntityRestInterface {
 			instance._type,
 			listId,
 			elementId,
-			undefined,
-			options?.extraHeaders,
-			undefined,
+			null,
+			options?.extraHeaders ?? null,
+			null,
 		)
 		await this.restClient.request(path, HttpMethod.DELETE, {
+			...DEFAULT_REST_CLIENT_OPTIONS,
 			queryParams,
 			headers,
 		})
 	}
 
-	async eraseMultiple<T extends SomeEntity>(listId: string, instances: T[], options?: EntityRestClientEraseOptions | undefined): Promise<void> {
+	async eraseMultiple<T extends SomeEntity>(listId: string, instances: T[], options?: EntityRestClientEraseOptions): Promise<void> {
 		if (instances.length === 0) {
 			return
 		}
@@ -559,11 +622,12 @@ export class EntityRestClient implements EntityRestInterface {
 			listId,
 			null,
 			{ ids: instancesIdsString },
-			options?.extraHeaders,
-			undefined,
+			options?.extraHeaders ?? null,
+			null,
 		)
 
 		await this.restClient.request(path, HttpMethod.DELETE, {
+			...DEFAULT_REST_CLIENT_OPTIONS,
 			queryParams,
 			headers,
 		})
@@ -573,13 +637,13 @@ export class EntityRestClient implements EntityRestInterface {
 		typeRef: TypeRef<any>,
 		listId: Id | null,
 		elementId: Id | null,
-		queryParams: Dict | undefined,
-		extraHeaders: Dict | undefined,
-		ownerKey: OwnerKeyProvider | VersionedKey | undefined,
+		queryParams: Nullable<Dict>,
+		extraHeaders: Nullable<Dict>,
+		ownerKey: OwnerKeyProvider | VersionedKey | null,
 	): Promise<{
 		path: string
-		queryParams: Dict | undefined
-		headers: Dict | undefined
+		queryParams: Nullable<Dict>
+		headers: Dict
 		clientTypeModel: ClientTypeModel
 	}> {
 		const clientTypeModel = await this.typeModelResolver.resolveClientTypeReference(typeRef)

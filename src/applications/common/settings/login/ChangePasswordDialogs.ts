@@ -2,12 +2,11 @@ import { Dialog } from "../../../../ui/base/Dialog.js"
 import { locator } from "../../api/main/CommonLocator.js"
 import { showProgressDialog } from "../../../../ui/dialogs/ProgressDialog.js"
 import m from "mithril"
-import * as restError from "@tutao/rest-client/error"
+import { NotAuthenticatedError } from "@tutao/rest-client/error"
 import { PasswordForm, PasswordModel } from "../PasswordForm.js"
 import { assertNonNull, assertNotNull, newPromise, ofClass } from "@tutao/utils"
 import { User } from "@tutao/entities/sys"
-import { asKdfType, DEFAULT_KDF_TYPE } from "../../../../platform-kit/base/crypto/Constants"
-import { NotAuthenticatedError } from "@tutao/rest-client/error"
+import { asKdfType, DEFAULT_KDF_TYPE } from "../../../../platform-kit/base/base-crypto/Constants"
 
 /**
  *The admin does not have to enter the old password in addition to the new password (twice). The password strength is not enforced.
@@ -35,7 +34,7 @@ export async function showChangeUserPasswordAsAdminDialog(user: User) {
 	Dialog.showActionDialog({
 		title: "changePassword_label",
 		child: () => m(PasswordForm, { model }),
-		validator: () => model.getErrorMessageId(),
+		validator: async () => model.getErrorMessageId(),
 		okAction: changeUserPasswordAsAdminOkAction,
 	})
 }
@@ -108,7 +107,7 @@ export async function showChangeOwnPasswordDialog(allowCancel: boolean = true) {
 		Dialog.showActionDialog({
 			title: "changePassword_label",
 			child: () => m(PasswordForm, { model }),
-			validator: () => model.getErrorMessageId(),
+			validator: async () => model.getErrorMessageId(),
 			okAction: async (dialog) => {
 				try {
 					await changeOwnPasswordOkAction(dialog)

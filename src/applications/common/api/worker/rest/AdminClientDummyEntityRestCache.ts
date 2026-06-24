@@ -1,8 +1,10 @@
 import { ListElementEntity, SomeEntity, TypeRef } from "@tutao/meta"
 import { ProgrammingError } from "@tutao/app-env"
 import { EntityRestCache } from "../../../../../platform-kit/network/EntityRestCacheInterface"
-import { EntityRestClientLoadOptions } from "../../../../../platform-kit/network/EntityRestClient"
 import { EntityUpdateData } from "../../../../../platform-kit/instance-pipeline/utils/EntityUpdateUtils"
+import { Nullable } from "@tutao/utils"
+
+import { EntityRestClientLoadOptions } from "../../../../../platform-kit/instance-pipeline/RestClientOptions"
 
 export class AdminClientDummyEntityRestCache implements EntityRestCache {
 	async entityEventsReceived(events: readonly EntityUpdateData[], batchId: Id, groupId: Id): Promise<readonly EntityUpdateData[]> {
@@ -37,7 +39,7 @@ export class AdminClientDummyEntityRestCache implements EntityRestCache {
 		return
 	}
 
-	async setup<T extends SomeEntity>(listId: Id | null, instance: T, extraHeaders?: Dict): Promise<Id> {
+	async setup<T extends SomeEntity>(listId: Id | null, instance: T, extraHeaders: Nullable<Dict>): Promise<Id> {
 		throw new ProgrammingError("setup not implemented")
 	}
 

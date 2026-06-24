@@ -4,12 +4,11 @@ import { CounterFacade } from "../../../network/CounterFacade.js"
 import { EntityClient } from "../../../network/EntityClient.js"
 import { IServiceExecutor } from "../../../network/ServiceRequest.js"
 import { UserFacade } from "../UserFacade.js"
-import { PQFacade } from "../../crypto/PQFacade.js"
-import { KeyLoaderFacade } from "../../crypto/KeyLoaderFacade.js"
+import { PQFacade } from "../../base-crypto/PQFacade.js"
+import { KeyLoaderFacade } from "../../base-crypto/KeyLoaderFacade.js"
 import { _encryptKeyWithVersionedKey, _encryptString, AesKey, CryptoWrapper, PQKeyPairs, VersionedKey } from "@tutao/crypto"
-import { IdentityKeyCreator } from "../../crypto/IdentityKeyCreator"
-import { AdminKeyLoaderFacade } from "../../crypto/AdminKeyLoaderFacade"
-import { CacheManagementInterface } from "../../../../app-kit/local-store/CacheManagementInterface"
+import { IdentityKeyCreator } from "../../base-crypto/IdentityKeyCreator"
+import { AdminKeyLoaderFacade } from "../../base-crypto/AdminKeyLoaderFacade"
 import { CounterType } from "../../../../entities/monitor/Utils"
 import {
 	createMembershipAddData,
@@ -37,6 +36,8 @@ import {
 	TemplateGroupService,
 	UserAreaGroupData,
 } from "@tutao/entities/tutanota"
+import { CacheManager } from "../../base-crypto/persistence/CacheManager"
+import { DEFAULT_EXTRA_SERVICE_PARAMS } from "../../../instance-pipeline/RestClientOptions"
 
 assertWorkerOrNode()
 
@@ -49,7 +50,7 @@ export class GroupManagementFacade {
 		private readonly pqFacade: PQFacade,
 		private readonly keyLoaderFacade: KeyLoaderFacade,
 		private readonly adminKeyLoaderFacade: AdminKeyLoaderFacade,
-		private readonly cacheManagementFacade: CacheManagementInterface,
+		private readonly cacheManagementFacade: CacheManager,
 		private readonly cryptoWrapper: CryptoWrapper,
 		private readonly identityKeyCreator: IdentityKeyCreator,
 	) {}
@@ -86,7 +87,7 @@ export class GroupManagementFacade {
 			mailEncMailboxSessionKey: mailEncMailboxSessionKey.key,
 			groupData: mailGroupData,
 		})
-		const mailGroupPostOut = await this.serviceExecutor.post(MailGroupService, data)
+		const mailGroupPostOut = await this.serviceExecutor.post(MailGroupService, data, null)
 
 		await this.identityKeyCreator.createIdentityKeyPair(
 			mailGroupPostOut.mailGroup,
@@ -148,7 +149,10 @@ export class GroupManagementFacade {
 		const postData = createUserAreaGroupPostData({
 			groupData,
 		})
-		const postGroupData = await this.serviceExecutor.post(CalendarService, postData, { sessionKey: this.cryptoWrapper.aes256RandomKey() }) // we expect a session key to be defined as the entity is marked encrypted
+		const postGroupData = await this.serviceExecutor.post(CalendarService, postData, {
+			...DEFAULT_EXTRA_SERVICE_PARAMS,
+			sessionKey: this.cryptoWrapper.aes256RandomKey(),
+		}) // we expect a session key to be defined as the entity is marked encrypted
 		const group = await this.entityClient.load(GroupTypeRef, postGroupData.group)
 		const user = await this.cacheManagementFacade.reloadUser()
 
@@ -162,6 +166,7 @@ export class GroupManagementFacade {
 		})
 
 		const postGroupData = await this.serviceExecutor.post(TemplateGroupService, serviceData, {
+			...DEFAULT_EXTRA_SERVICE_PARAMS,
 			sessionKey: this.cryptoWrapper.aes256RandomKey(),
 		}) // we expect a session key to be defined as the entity is marked encrypted
 
@@ -176,6 +181,7 @@ export class GroupManagementFacade {
 			groupData,
 		})
 		const postGroupData = await this.serviceExecutor.post(ContactListGroupService, serviceData, {
+			...DEFAULT_EXTRA_SERVICE_PARAMS,
 			sessionKey: this.cryptoWrapper.aes256RandomKey(),
 		}) // we expect a session key to be defined as the entity is marked encrypted
 		const group = await this.entityClient.load(GroupTypeRef, postGroupData.group)
@@ -188,7 +194,7 @@ export class GroupManagementFacade {
 		const serviceData = createUserAreaGroupDeleteData({
 			group: groupRoot._id,
 		})
-		await this.serviceExecutor.delete(ContactListGroupService, serviceData)
+		await this.serviceExecutor.delete(ContactListGroupService, serviceData, null)
 	}
 
 	/**
@@ -244,7 +250,7 @@ export class GroupManagementFacade {
 			groupKeyVersion: String(groupKey.version),
 			symKeyVersion: symEncGKey.encryptingKeyVersion.toString(),
 		})
-		await this.serviceExecutor.post(MembershipService, data)
+		await this.serviceExecutor.post(MembershipService, data, null)
 	}
 
 	async removeUserFromGroup(userId: Id, groupId: Id): Promise<void> {
@@ -252,7 +258,7 @@ export class GroupManagementFacade {
 			user: userId,
 			group: groupId,
 		})
-		await this.serviceExecutor.delete(MembershipService, data)
+		await this.serviceExecutor.delete(MembershipService, data, null)
 	}
 
 	async deactivateGroup(group: Group, restore: boolean): Promise<void> {
@@ -262,7 +268,7 @@ export class GroupManagementFacade {
 		})
 
 		if (group.type === GroupType.Mail) {
-			await this.serviceExecutor.delete(MailGroupService, data)
+			await this.serviceExecutor.delete(MailGroupService, data, null)
 		} else {
 			throw new Error("invalid group type for deactivation")
 		}

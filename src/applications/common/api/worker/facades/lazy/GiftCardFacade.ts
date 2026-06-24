@@ -12,11 +12,11 @@ import {
 import { elementIdPart, GENERATED_MAX_ID } from "@tutao/meta"
 import { _encryptKeyWithVersionedKey, aes256RandomKey, base64ToKey, keyToUint8Array, sha256Hash } from "@tutao/crypto"
 import { IServiceExecutor } from "../../../../../../platform-kit/network/ServiceRequest.js"
-import { CryptoFacade } from "../../../../../../platform-kit/base/crypto/CryptoFacade.js"
+import { CryptoFacade } from "../../../../../../platform-kit/base/base-crypto/CryptoFacade.js"
 import { UserFacade } from "../../../../../../platform-kit/base/facades/UserFacade.js"
 import { ProgrammingError } from "@tutao/app-env"
 import { CustomerFacade } from "./CustomerFacade.js"
-import { KeyLoaderFacade } from "../../../../../../platform-kit/base/crypto/KeyLoaderFacade.js"
+import { KeyLoaderFacade } from "../../../../../../platform-kit/base/base-crypto/KeyLoaderFacade.js"
 import {
 	createGiftCardCreateData,
 	createGiftCardRedeemData,
@@ -26,6 +26,7 @@ import {
 	GiftCardService,
 } from "@tutao/entities/sys"
 import { GroupType } from "../../../../../../entities/sys/Utils"
+import { DEFAULT_EXTRA_SERVICE_PARAMS } from "../../../../../../platform-kit/instance-pipeline/RestClientOptions"
 
 const ID_LENGTH = GENERATED_MAX_ID.length
 const KEY_LENGTH_128_BIT_B64 = 24
@@ -61,7 +62,7 @@ export class GiftCardFacade {
 				ownerEncSessionKey: ownerEncSessionKey.key,
 				ownerKeyVersion: ownerEncSessionKey.encryptingKeyVersion.toString(),
 			}),
-			{ sessionKey },
+			{ ...DEFAULT_EXTRA_SERVICE_PARAMS, sessionKey },
 		)
 
 		return giftCard
@@ -76,6 +77,7 @@ export class GiftCardFacade {
 				countryCode: "",
 			}),
 			{
+				...DEFAULT_EXTRA_SERVICE_PARAMS,
 				sessionKey: base64ToKey(key),
 			},
 		)
@@ -98,6 +100,7 @@ export class GiftCardFacade {
 				keyHash: sha256Hash(base64ToUint8Array(key)),
 				countryCode,
 			}),
+			null,
 		)
 	}
 

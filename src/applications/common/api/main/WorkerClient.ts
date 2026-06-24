@@ -6,12 +6,13 @@ import { defer, downcast } from "@tutao/utils"
 import { handleUncaughtError } from "../../misc/ErrorHandler"
 import { DelayedImpls, exposeLocalDelayed, exposeRemote } from "../common/WorkerProxy"
 import type { RestClient } from "@tutao/rest-client"
-import { EntropyDataChunk } from "../../../../platform-kit/base/facades/EntropyFacade.js"
+import { EntropySource } from "@tutao/crypto"
 import { objToError } from "../common/utils/ErrorUtils.js"
 import { CommonLocator } from "./CommonLocator.js"
 import { CommonWorkerInterface, MainInterface } from "../worker/workerInterfaces.js"
 import { MessageDispatcher } from "../../../../app-kit/native-bridge/shared/MessageDispatcher.js"
 import { client } from "../../../../platform-kit/app-env/boot/ClientDetector"
+import { EntropyDataChunk } from "../../../../platform-kit/crypto/random/EntropyDataChunk"
 
 assertMainOrNode()
 
@@ -139,7 +140,7 @@ export class WorkerClient {
 		for (let i = 0; i < valueList.length; i++) {
 			// 32 because we have 32-bit values Uint32Array
 			entropy.push({
-				source: "random",
+				source: EntropySource.Random,
 				entropy: 32,
 				data: valueList[i],
 			})

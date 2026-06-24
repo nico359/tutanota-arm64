@@ -145,10 +145,11 @@ export function firstBiggerThanSecondBase64Ext(firstId: Id, secondId: Id): boole
 	}
 }
 
-export function get_IdValue(typeModel?: TypeModel): ModelValue | undefined {
+export function get_IdValue(typeModel?: TypeModel): ModelValue | null {
 	if (typeModel) {
-		return Object.values(typeModel.values).find((valueType) => valueType.name === "_id")
+		return Object.values(typeModel.values).find((valueType) => valueType.name === "_id") ?? null
 	}
+	return null
 }
 
 export function base64UrlIdToUint8array(id: Id): Uint8Array {
@@ -230,7 +231,7 @@ export function getEtId(entity: Element): Id {
 }
 
 export function getLetId(entity: ListElement): IdTuple {
-	if (typeof entity._id === "undefined") {
+	if (typeof entity._id === "undefined" || entity._id === null) {
 		throw new Error("listId is not defined for " + (typeof (entity as any)._type === "undefined" ? JSON.stringify(entity) : (entity as any)))
 	}
 
@@ -511,7 +512,7 @@ export const TECHNICAL_FIELDS = ["_original", "_errors"]
 
 export function isCustomIdType(typeModel: TypeModel): boolean {
 	const _idValue = get_IdValue(typeModel)
-	return _idValue !== undefined && _idValue.type === ValueType.CustomId
+	return _idValue !== null && _idValue.type === ValueType.CustomId
 }
 
 /**

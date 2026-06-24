@@ -2,17 +2,16 @@ import o from "@tutao/otest"
 import { clientInitializedTypeModelResolver, createTestEntity, instancePipelineFromTypeModelResolver } from "../../../TestUtils"
 import { matchers, object, verify, when } from "testdouble"
 import { assertNotNull } from "../../../../../src/platform-kit/utils"
-import { AesKey, base64ToKey, CryptoWrapper, VersionedKey } from "../../../../../src/platform-kit/crypto"
+import { AesKey, base64ToKey, VersionedKey } from "../../../../../src/platform-kit/crypto"
 import { InstancePipeline } from "../../../../../src/platform-kit/instance-pipeline"
 import { AlarmFacade } from "../../../../../src/applications/common/api/worker/facades/lazy/AlarmFacade"
 import { InfoMessageHandler } from "../../../../../src/applications/common/gui/InfoMessageHandler"
 import { AlarmInfoTemplate, EventWithUserAlarmInfos } from "../../../../../src/applications/common/api/worker/facades/lazy/CalendarFacade"
 import { makeEmptyCalendarEvent } from "../../../../../src/applications/common/api/common/utils/CommonCalendarUtils"
-import type { EventAlarmInfoTemplatesTuple } from "../../../../../src/applications/common/calendar/gui/ImportExportUtils"
 import { NativePushFacade } from "../../../../../src/app-kit/native-bridge/common/generatedipc/types"
 import { UserFacade } from "../../../../../src/platform-kit/base/facades/UserFacade"
 import { IServiceExecutor } from "../../../../../src/platform-kit/network/ServiceRequest"
-import { CryptoFacade } from "../../../../../src/platform-kit/base/crypto/CryptoFacade"
+import { CryptoFacade } from "../../../../../src/platform-kit/base/base-crypto/CryptoFacade"
 import { elementIdPart, listIdPart, OperationType } from "../../../../../src/platform-kit/meta"
 import {
 	AlarmInfoTypeRef,
@@ -35,6 +34,8 @@ import {
 	UserTypeRef,
 } from "@tutao/entities/sys"
 import { CalendarEvent, CalendarEventTypeRef, createCalendarEvent } from "@tutao/entities/tutanota"
+import { CryptoWrapper } from "../../../../../src/platform-kit/crypto/instance-pipeline-crypto/CryptoWrapper"
+import { EventAlarmInfoTemplatesTuple } from "../../../../../src/applications/common/calendar/import/ImportExportUtils"
 
 o.spec("AlarmFacadeTest", function () {
 	let nativePushFacadeMock: NativePushFacade

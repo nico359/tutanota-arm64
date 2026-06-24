@@ -11,7 +11,7 @@ import { InboxRuleHandler } from "../../../src/applications/mail-app/mail/model/
 import { ProcessInboxHandler, UnencryptedProcessInboxDatum } from "../../../src/applications/mail-app/mail/model/ProcessInboxHandler"
 import { MailboxDetail } from "../../../src/applications/common/mailFunctionality/MailboxModel"
 import { LoginController } from "../../../src/applications/common/api/main/LoginController"
-import { CryptoFacade } from "../../../src/platform-kit/base/crypto/CryptoFacade"
+import { CryptoFacade } from "../../../src/platform-kit/base/base-crypto/CryptoFacade"
 import * as restError from "../../../src/platform-kit/rest-client/error"
 import { MailSetKind, ProcessingState, SpamDecision } from "../../../src/entities/tutanota/Utils"
 import {
@@ -27,6 +27,7 @@ import {
 import { isSameId } from "../../../src/platform-kit/meta"
 
 import { BucketKeyTypeRef, InstanceSessionKeyTypeRef, TypeInfoTypeRef } from "@tutao/entities/sys"
+import { Aes256Key } from "@tutao/crypto/symmetric-cipher-utils"
 
 const { captor, anything } = matchers
 
@@ -121,10 +122,10 @@ o.spec("ProcessInboxHandlerTest", function () {
 
 			when(cryptoFacade.resolveWithBucketKey(mail)).thenResolve({
 				instanceSessionKeys: mailInstanceSessionKeys,
-				resolvedSessionKeyForInstance: [0, 2, 3, 4, 2, 1, 2, 3], // decrypted mailSessionKey
+				resolvedSessionKeyForInstance: new Aes256Key([0, 2, 3, 4, 2, 1, 2, 3]), // decrypted mailSessionKey
 			})
 
-			const _ = await processInboxHandler.handleIncomingMail(mail, inboxFolder, mailboxDetail, folderSystem, true)
+			await processInboxHandler.handleIncomingMail(mail, inboxFolder, mailboxDetail, folderSystem, true)
 
 			const processInboxDatumCaptor = captor()
 			await delay(0)
@@ -165,10 +166,10 @@ o.spec("ProcessInboxHandlerTest", function () {
 
 			when(cryptoFacade.resolveWithBucketKey(mail)).thenResolve({
 				instanceSessionKeys: mailInstanceSessionKeys,
-				resolvedSessionKeyForInstance: [0, 2, 3, 4, 2, 1, 2, 3], // decrypted mailSessionKey
+				resolvedSessionKeyForInstance: new Aes256Key([0, 2, 3, 4, 2, 1, 2, 3]), // decrypted mailSessionKey
 			})
 
-			const _ = await processInboxHandler.handleIncomingMail(mail, inboxFolder, mailboxDetail, folderSystem, false)
+			await processInboxHandler.handleIncomingMail(mail, inboxFolder, mailboxDetail, folderSystem, false)
 
 			await delay(0)
 			verify(mailFacade.processNewMails(anything(), anything()), { times: 0 })
@@ -209,7 +210,7 @@ o.spec("ProcessInboxHandlerTest", function () {
 			}),
 		]
 
-		const _ = await processInboxHandler.handleIncomingMail(mail, inboxFolder, mailboxDetail, folderSystem, true)
+		await processInboxHandler.handleIncomingMail(mail, inboxFolder, mailboxDetail, folderSystem, true)
 
 		await delay(0)
 		const processInboxDatumCaptor = captor()
@@ -252,7 +253,7 @@ o.spec("ProcessInboxHandlerTest", function () {
 		const mailInstanceSessionKeys = [createTestEntity(InstanceSessionKeyTypeRef), createTestEntity(InstanceSessionKeyTypeRef)]
 		when(cryptoFacade.resolveWithBucketKey(mail)).thenResolve({
 			instanceSessionKeys: mailInstanceSessionKeys,
-			resolvedSessionKeyForInstance: [0, 2, 3, 4, 2, 1, 2, 3], // decrypted mailSessionKey
+			resolvedSessionKeyForInstance: new Aes256Key([0, 2, 3, 4, 2, 1, 2, 3]), // decrypted mailSessionKey
 		})
 
 		const targetFolder = await processInboxHandler.handleIncomingMail(mail, inboxFolder, mailboxDetail, folderSystem, false)
@@ -288,7 +289,7 @@ o.spec("ProcessInboxHandlerTest", function () {
 		const mailInstanceSessionKeys = [createTestEntity(InstanceSessionKeyTypeRef), createTestEntity(InstanceSessionKeyTypeRef)]
 		when(cryptoFacade.resolveWithBucketKey(mail)).thenResolve({
 			instanceSessionKeys: mailInstanceSessionKeys,
-			resolvedSessionKeyForInstance: [0, 2, 3, 4, 2, 1, 2, 3], // decrypted mailSessionKey
+			resolvedSessionKeyForInstance: new Aes256Key([0, 2, 3, 4, 2, 1, 2, 3]), // decrypted mailSessionKey
 		})
 
 		const targetFolder = await processInboxHandler.handleIncomingMail(mail, inboxFolder, mailboxDetail, folderSystem, true)
@@ -333,7 +334,7 @@ o.spec("ProcessInboxHandlerTest", function () {
 		const mailInstanceSessionKeys = [createTestEntity(InstanceSessionKeyTypeRef), createTestEntity(InstanceSessionKeyTypeRef)]
 		when(cryptoFacade.resolveWithBucketKey(mail)).thenResolve({
 			instanceSessionKeys: mailInstanceSessionKeys,
-			resolvedSessionKeyForInstance: [0, 2, 3, 4, 2, 1, 2, 3], // decrypted mailSessionKey
+			resolvedSessionKeyForInstance: new Aes256Key([0, 2, 3, 4, 2, 1, 2, 3]), // decrypted mailSessionKey
 		})
 
 		const targetFolder = await processInboxHandler.handleIncomingMail(mail, inboxFolder, mailboxDetail, folderSystem, true)
@@ -378,7 +379,7 @@ o.spec("ProcessInboxHandlerTest", function () {
 		const mailInstanceSessionKeys = [createTestEntity(InstanceSessionKeyTypeRef), createTestEntity(InstanceSessionKeyTypeRef)]
 		when(cryptoFacade.resolveWithBucketKey(mail)).thenResolve({
 			instanceSessionKeys: mailInstanceSessionKeys,
-			resolvedSessionKeyForInstance: [0, 2, 3, 4, 2, 1, 2, 3], // decrypted mailSessionKey
+			resolvedSessionKeyForInstance: new Aes256Key([0, 2, 3, 4, 2, 1, 2, 3]), // decrypted mailSessionKey
 		})
 
 		const targetFolder = await processInboxHandler.handleIncomingMail(mail, inboxFolder, mailboxDetail, folderSystem, true)
@@ -472,7 +473,7 @@ o.spec("ProcessInboxHandlerTest", function () {
 		const mailInstanceSessionKeys = [createTestEntity(InstanceSessionKeyTypeRef), createTestEntity(InstanceSessionKeyTypeRef)]
 		when(cryptoFacade.resolveWithBucketKey(mail)).thenResolve({
 			instanceSessionKeys: mailInstanceSessionKeys,
-			resolvedSessionKeyForInstance: [0, 2, 3, 4, 2, 1, 2, 3], // decrypted mailSessionKey
+			resolvedSessionKeyForInstance: new Aes256Key([0, 2, 3, 4, 2, 1, 2, 3]), // decrypted mailSessionKey
 		})
 
 		const targetFolder = await processInboxHandler.handleIncomingMail(mail, inboxFolder, mailboxDetail, folderSystem, true)
@@ -511,7 +512,7 @@ o.spec("ProcessInboxHandlerTest", function () {
 		const mailInstanceSessionKeys = [createTestEntity(InstanceSessionKeyTypeRef), createTestEntity(InstanceSessionKeyTypeRef)]
 		when(cryptoFacade.resolveWithBucketKey(mail)).thenResolve({
 			instanceSessionKeys: mailInstanceSessionKeys,
-			resolvedSessionKeyForInstance: [0, 2, 3, 4, 2, 1, 2, 3], // decrypted mailSessionKey
+			resolvedSessionKeyForInstance: new Aes256Key([0, 2, 3, 4, 2, 1, 2, 3]), // decrypted mailSessionKey
 		})
 
 		const targetFolder = await processInboxHandler.handleIncomingMail(mail, inboxFolder, mailboxDetail, folderSystem, true)
@@ -549,7 +550,7 @@ o.spec("ProcessInboxHandlerTest", function () {
 		const mailInstanceSessionKeys = [createTestEntity(InstanceSessionKeyTypeRef), createTestEntity(InstanceSessionKeyTypeRef)]
 		when(cryptoFacade.resolveWithBucketKey(mail)).thenResolve({
 			instanceSessionKeys: mailInstanceSessionKeys,
-			resolvedSessionKeyForInstance: [0, 2, 3, 4, 2, 1, 2, 3], // decrypted mailSessionKey
+			resolvedSessionKeyForInstance: new Aes256Key([0, 2, 3, 4, 2, 1, 2, 3]), // decrypted mailSessionKey
 		})
 
 		const targetFolder = await processInboxHandler.handleIncomingMail(mail, inboxFolder, mailboxDetail, folderSystem, true)
@@ -587,7 +588,7 @@ o.spec("ProcessInboxHandlerTest", function () {
 		const mailInstanceSessionKeys = [createTestEntity(InstanceSessionKeyTypeRef), createTestEntity(InstanceSessionKeyTypeRef)]
 		when(cryptoFacade.resolveWithBucketKey(mail)).thenResolve({
 			instanceSessionKeys: mailInstanceSessionKeys,
-			resolvedSessionKeyForInstance: [0, 2, 3, 4, 2, 1, 2, 3], // decrypted mailSessionKey
+			resolvedSessionKeyForInstance: new Aes256Key([0, 2, 3, 4, 2, 1, 2, 3]), // decrypted mailSessionKey
 		})
 
 		const targetFolder = await processInboxHandler.handleIncomingMail(mail, inboxFolder, mailboxDetail, folderSystem, true)
@@ -626,7 +627,7 @@ o.spec("ProcessInboxHandlerTest", function () {
 		const mailInstanceSessionKeys = [createTestEntity(InstanceSessionKeyTypeRef), createTestEntity(InstanceSessionKeyTypeRef)]
 		when(cryptoFacade.resolveWithBucketKey(mail)).thenResolve({
 			instanceSessionKeys: mailInstanceSessionKeys,
-			resolvedSessionKeyForInstance: [0, 2, 3, 4, 2, 1, 2, 3], // decrypted mailSessionKey
+			resolvedSessionKeyForInstance: new Aes256Key([0, 2, 3, 4, 2, 1, 2, 3]), // decrypted mailSessionKey
 		})
 
 		when(mailFacade.processNewMails(assertNotNull(mail._ownerGroup), [processInboxDatum])).thenDo(() => {

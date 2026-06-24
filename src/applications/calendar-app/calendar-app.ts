@@ -120,6 +120,15 @@ import("../../ui/translations/en.js")
 
 		calendarLocator.logins.addPostLoginAction(() => calendarLocator.postLoginActions())
 		calendarLocator.logins.addPostLoginAction(async () => {
+			const { setupCalendarModels } = await import("./calendar/login/SetupCalendarModels.js")
+			return await setupCalendarModels(
+				calendarLocator.calendarModel,
+				calendarLocator.entityClient,
+				calendarLocator.calendarEventUpdateCoordinator,
+				calendarLocator.syncTracker,
+			)
+		})
+		calendarLocator.logins.addPostLoginAction(async () => {
 			return {
 				async onPartialLoginSuccess() {
 					if (isApp()) {
@@ -210,8 +219,8 @@ import("../../ui/translations/en.js")
 				{
 					prepareRoute: async () => {
 						const { MobileSettingsView } = await import("../common/settings/MobileSettingsView.js")
-						const { makeCalendarSettings } = await import("./calendar/settings/CalendarSettingsView.js")
-						const settingSections = makeCalendarSettings(
+						const { makeCalendarAppSettings } = await import("./calendar/settings/CalendarAppSettings.js")
+						const settingSections = makeCalendarAppSettings(
 							calendarLocator.credentialsProvider,
 							calendarLocator.systemFacade,
 							calendarLocator.entityClient,

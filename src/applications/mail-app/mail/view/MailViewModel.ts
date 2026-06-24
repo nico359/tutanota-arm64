@@ -1,6 +1,6 @@
 import { MailboxDetail, MailboxModel } from "../../../common/mailFunctionality/MailboxModel.js"
 import { EntityClient } from "../../../../platform-kit/network/EntityClient.js"
-import { $Promisable, assertNotNull, count, debounce, isEmpty, lazyMemoized, mapWith, mapWithout, ofClass } from "../../../../platform-kit/utils"
+import { assertNotNull, count, debounce, isEmpty, lazyMemoized, mapWith, mapWithout, ofClass, settledThen } from "@tutao/utils"
 import { ListLoadingState, ListState } from "../../../../ui/base/List.js"
 import { ConversationPrefProvider, ConversationViewModel, ConversationViewModelFactory } from "./ConversationViewModel.js"
 import { CreateMailViewerOptions } from "./MailViewer.js"
@@ -27,13 +27,14 @@ import { UndoModel } from "../../UndoModel"
 import { SyncDonePriority, SyncTracker } from "../../../common/api/main/SyncTracker"
 import { ExposedCacheStorage } from "../../../../app-kit/local-store/CacheStorage"
 import { WsConnectionState } from "../../../../platform-kit/network/Constants"
-import { CacheMode } from "../../../../platform-kit/network/EntityRestClient"
-import { ImportMailStateTypeRef, Mail, MailBox, MailSet, MailSetEntryTypeRef, MailTypeRef } from "@tutao/entities/tutanota"
+import { ImportFileMailStateTypeRef, Mail, MailBox, MailSet, MailSetEntryTypeRef, MailTypeRef } from "@tutao/entities/tutanota"
 import { MailSetKind, SystemFolderType } from "../../../../entities/tutanota/Utils"
 import { elementIdPart, getElementId, isSameId, OperationType } from "../../../../platform-kit/meta"
 import { EntityUpdateData, isUpdateForTypeRef, OnEntityUpdateReceivedPriority } from "../../../../platform-kit/instance-pipeline/utils/EntityUpdateUtils"
 import { getMailSetKind, isPermanentDeleteAllowedForFolder } from "../MailUtils"
 import { ProgrammingError } from "../../../../platform-kit/app-env"
+import { $Promisable } from "../../workerUtils/index/IndexerPromiseUtils"
+import { CacheMode, DEFAULT_ENTITY_RESTCLIENT_LOAD_OPTIONS } from "../../../../platform-kit/instance-pipeline/RestClientOptions"
 
 export interface MailOpenedListener {
 	onEmailOpened(mail: Mail): unknown
@@ -82,7 +83,7 @@ export class MailViewModel {
 	/* We only attempt counter fixup once after switching mailSets and loading the list fully. */
 	private shouldAttemptCounterFixup: boolean = true
 
-	private listModelReloadPromise: Promise<void> = Promise.resolve()
+	private listModelReloadPromise: Promise<unknown> = Promise.resolve()
 
 	constructor(
 		private readonly mailboxModel: MailboxModel,
@@ -266,7 +267,7 @@ export class MailViewModel {
 
 		let mail: Mail | null
 		try {
-			mail = await this.entityClient.load(MailTypeRef, [listId, mailId], { cacheMode: CacheMode.WriteOnly })
+			mail = await this.entityClient.load(MailTypeRef, [listId, mailId], { ...DEFAULT_ENTITY_RESTCLIENT_LOAD_OPTIONS, cacheMode: CacheMode.WriteOnly })
 		} catch (e) {
 			if (isOfflineError(e)) {
 				return
@@ -437,7 +438,10 @@ export class MailViewModel {
 		this.syncTracker.addSyncDoneListener({
 			onSyncDone: async () => {
 				if (this.listModel) {
-					this.listModelReloadPromise = this.listModel?.reload()
+					// chain reloads to prevent race conditions when sync is marked as done before an ongoing reload is settled
+					this.listModelReloadPromise = settledThen(this.listModelReloadPromise, async () => {
+						await this.listModel?.reload()
+					})
 				} else {
 					this.updateListModel()
 				}
@@ -715,7 +719,7 @@ export class MailViewModel {
 		}
 
 		for (const update of updates) {
-			if (update.operation === OperationType.CREATE && isUpdateForTypeRef(ImportMailStateTypeRef, update)) {
+			if (update.operation === OperationType.CREATE && isUpdateForTypeRef(ImportFileMailStateTypeRef, update)) {
 				await this.deleteMailSetEntryRangeForImportTargetFolder(update)
 			} else if (update.operation === OperationType.UPDATE) {
 				if (isUpdateForTypeRef(MailTypeRef, update) && isSameId(this.stickyMailId, [update.instanceListId, update.instanceId])) {
@@ -725,7 +729,7 @@ export class MailViewModel {
 					if (folderForMail && !this.didStickyMailChange(mailId, "after loading mail from cache on entity update")) {
 						this.setListId(folderForMail)
 					}
-				} else if (isUpdateForTypeRef(ImportMailStateTypeRef, update)) {
+				} else if (isUpdateForTypeRef(ImportFileMailStateTypeRef, update)) {
 					await this.deleteMailSetEntryRangeForImportTargetFolder(update)
 				}
 			}
@@ -742,7 +746,7 @@ export class MailViewModel {
 		// This makes sure, that we keep already downloaded MailSetEntries in cache, but still show all mails inside the targetFolder correctly.
 		// The MailIndexer is downloading the MailSetEntries and Mails corresponding to this import in background
 		// and ensures that all imported mails are searchable immediately.
-		const importMailState = await this.entityClient.load(ImportMailStateTypeRef, [update.instanceListId!, update.instanceId])
+		const importMailState = await this.entityClient.load(ImportFileMailStateTypeRef, [update.instanceListId!, update.instanceId])
 		const targetFolder = await this.mailModel.getMailSetById(elementIdPart(importMailState.targetFolder))
 		if (targetFolder) {
 			const targetFolderEntriesListId = targetFolder.entries

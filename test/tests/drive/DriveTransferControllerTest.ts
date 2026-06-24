@@ -1,16 +1,11 @@
 import o, { verify } from "@tutao/otest"
-import {
-	DriveTransferController,
-	DriveTransferState,
-	FINISHED_TRANSFER_RETAIN_TIMEOUT_MS,
-} from "../../../src/applications/drive-app/drive/view/DriveTransferController"
+import { DriveTransferController, DriveTransferState } from "../../../src/applications/drive-app/drive/view/DriveTransferController"
 import { DriveFacade } from "../../../src/applications/common/api/worker/facades/lazy/DriveFacade"
 import { BlobFacade } from "../../../src/applications/common/api/worker/facades/lazy/BlobFacade"
 import { FileController } from "../../../src/applications/common/file/FileController"
 import { defer, DeferredObject } from "../../../src/platform-kit/utils"
 import { matchers, object, when } from "testdouble"
-import { createTestEntity, SchedulerMock } from "../TestUtils"
-
+import { createTestEntity } from "../TestUtils"
 import { CancelledError } from "../../../src/platform-kit/app-env"
 import * as restError from "../../../src/platform-kit/rest-client/error"
 import { WebFile } from "../../../src/entities/tutanota/Utils"
@@ -23,7 +18,6 @@ o.spec("DriveTransferController", function () {
 	let driveFacade: DriveFacade
 	let blobFacade: BlobFacade
 	let fileController: FileController
-	let scheduler: SchedulerMock
 	let uiUpdate: DeferredObject<void>
 
 	function waitForUiUpdate() {
@@ -34,7 +28,6 @@ o.spec("DriveTransferController", function () {
 		driveFacade = object()
 		blobFacade = object()
 		fileController = object()
-		scheduler = new SchedulerMock()
 
 		uiUpdate = defer()
 		function updateUi() {
@@ -42,7 +35,7 @@ o.spec("DriveTransferController", function () {
 			uiUpdate = defer()
 		}
 
-		transferController = new DriveTransferController(driveFacade, blobFacade, updateUi, fileController, scheduler)
+		transferController = new DriveTransferController(driveFacade, blobFacade, updateUi, fileController)
 	})
 	o.spec("uploads", function () {
 		o.test("when uploading a single file, it is uploaded immediately", async function () {
@@ -57,7 +50,7 @@ o.spec("DriveTransferController", function () {
 			} as WebFile
 			await transferController.upload(file, "uploadFile", ["listId", "folderElementId"])
 			verify(driveFacade.uploadFile(file, fileId, "uploadFile", ["listId", "folderElementId"]))
-			o.check(transferController.state).deepEquals([
+			o.check(transferController.state.allTransfers).deepEquals([
 				{ id: fileId, type: "upload", filename: "uploadFile", state: "finished", transferredSize: 0, totalSize: 1024 },
 			])
 		})
@@ -88,7 +81,7 @@ o.spec("DriveTransferController", function () {
 			when(driveFacade.uploadFile(file2, fileId2, "uploadFile2", ["listId", "elementId"])).thenReturn(uploadDeferred2.promise)
 			await transferController.upload(file1, "uploadFile1", ["listId", "elementId"])
 			await transferController.upload(file2, "uploadFile2", ["listId", "elementId"])
-			o.check(transferController.state).deepEquals([
+			o.check(transferController.state.allTransfers).deepEquals([
 				{
 					id: fileId1,
 					type: "upload",
@@ -108,7 +101,7 @@ o.spec("DriveTransferController", function () {
 			])
 			uploadDeferred1.reject(new CancelledError("upload failed"))
 			await waitForUiUpdate()
-			o.check(transferController.state).deepEquals([
+			o.check(transferController.state.allTransfers).deepEquals([
 				{
 					id: fileId2,
 					type: "upload",
@@ -120,7 +113,7 @@ o.spec("DriveTransferController", function () {
 			])
 			uploadDeferred2.resolve(createTestEntity(DriveFileTypeRef))
 			await waitForUiUpdate()
-			o.check(transferController.state).deepEquals([
+			o.check(transferController.state.allTransfers).deepEquals([
 				{
 					id: fileId2,
 					type: "upload",
@@ -156,7 +149,7 @@ o.spec("DriveTransferController", function () {
 			when(driveFacade.uploadFile(file2, fileId2, "uploadFile2", ["listId", "elementId"])).thenReturn(uploadDeferred2.promise)
 			await transferController.upload(file1, "uploadFile1", ["listId", "elementId"])
 			await transferController.upload(file2, "uploadFile2", ["listId", "elementId"])
-			o.check(transferController.state).deepEquals([
+			o.check(transferController.state.allTransfers).deepEquals([
 				{
 					id: fileId1,
 					type: "upload",
@@ -176,7 +169,7 @@ o.spec("DriveTransferController", function () {
 			])
 			uploadDeferred1.reject(new restError.ConnectionError("upload failed"))
 			await waitForUiUpdate()
-			o.check(transferController.state).deepEquals([
+			o.check(transferController.state.allTransfers).deepEquals([
 				{
 					id: fileId1,
 					type: "upload",
@@ -194,21 +187,18 @@ o.spec("DriveTransferController", function () {
 					transferredSize: 0,
 				},
 			])
-			scheduler.getThunkAfter(FINISHED_TRANSFER_RETAIN_TIMEOUT_MS)()
-			o.check(transferController.state).deepEquals([
-				{
-					id: fileId2,
-					type: "upload",
-					state: "active",
-					totalSize: 1024,
-					filename: "uploadFile2",
-					transferredSize: 0,
-				},
-			])
 
 			uploadDeferred2.resolve(createTestEntity(DriveFileTypeRef))
 			await waitForUiUpdate()
-			o.check(transferController.state).deepEquals([
+			o.check(transferController.state.allTransfers).deepEquals([
+				{
+					id: fileId1,
+					type: "upload",
+					state: "failed",
+					totalSize: 1024,
+					filename: "uploadFile1",
+					transferredSize: 0,
+				},
 				{
 					id: fileId2,
 					type: "upload",
@@ -246,7 +236,7 @@ o.spec("DriveTransferController", function () {
 			await transferController.upload(file1, "file1.txt", ["listId1", "elementId1"])
 			await transferController.upload(file2, "file2.txt", ["listId2", "elementId2"])
 
-			o.check(transferController.state).deepEquals([
+			o.check(transferController.state.allTransfers).deepEquals([
 				{
 					id: fileId1,
 					type: "upload",
@@ -268,7 +258,7 @@ o.spec("DriveTransferController", function () {
 			deferredUpload1.resolve(createTestEntity(DriveFileTypeRef))
 			await waitForUiUpdate()
 
-			o.check(transferController.state).deepEquals([
+			o.check(transferController.state.allTransfers).deepEquals([
 				{
 					id: fileId1,
 					type: "upload",
@@ -287,24 +277,19 @@ o.spec("DriveTransferController", function () {
 				},
 			])
 
-			scheduler.getThunkAfter(FINISHED_TRANSFER_RETAIN_TIMEOUT_MS)()
-
-			o.check(transferController.state).deepEquals([
-				{
-					id: fileId2,
-					type: "upload",
-					state: "active",
-					totalSize: file2.file.size,
-					transferredSize: 0,
-					filename: "file2.txt",
-				},
-			])
-
 			deferredUpload2.resolve(createTestEntity(DriveFileTypeRef))
 
 			await waitForUiUpdate()
 
-			o.check(transferController.state).deepEquals([
+			o.check(transferController.state.allTransfers).deepEquals([
+				{
+					id: fileId1,
+					type: "upload",
+					state: "finished",
+					totalSize: file1.file.size,
+					transferredSize: 0,
+					filename: "file1.txt",
+				},
 				{
 					id: fileId2,
 					type: "upload",
@@ -314,9 +299,6 @@ o.spec("DriveTransferController", function () {
 					filename: "file2.txt",
 				},
 			])
-
-			scheduler.getThunkAfter(FINISHED_TRANSFER_RETAIN_TIMEOUT_MS)()
-			o.check(transferController.state).deepEquals([])
 		})
 
 		o.test("cancel cancels active upload", async function () {
@@ -364,7 +346,7 @@ o.spec("DriveTransferController", function () {
 			await transferController.upload(file2, "file2.txt", ["listId2", "elementId2"])
 
 			await transferController.cancelTransfer(fileId2)
-			o.check(transferController.state).deepEquals([
+			o.check(transferController.state.allTransfers).deepEquals([
 				{
 					id: fileId1,
 					type: "upload",
@@ -401,7 +383,7 @@ o.spec("DriveTransferController", function () {
 			}
 			deferredDownload.resolve()
 			await waitForUiUpdate()
-			o.check(transferController.state).deepEquals([expectedTransferState])
+			o.check(transferController.state.allTransfers).deepEquals([expectedTransferState])
 		})
 		o.test("when a download is cancelled, it is taken out from the queue and the next download is processed", async function () {
 			const transferId1 = "transfer id 1" as TransferId
@@ -424,7 +406,7 @@ o.spec("DriveTransferController", function () {
 			await transferController.download(file2, "open")
 			deferredDownload1.reject(new CancelledError("download failed"))
 			await waitForUiUpdate()
-			o.check(transferController.state).deepEquals([
+			o.check(transferController.state.allTransfers).deepEquals([
 				{
 					id: transferId2,
 					type: "download",
@@ -436,7 +418,7 @@ o.spec("DriveTransferController", function () {
 			])
 			deferredDownload2.resolve()
 			await waitForUiUpdate()
-			o.check(transferController.state).deepEquals([
+			o.check(transferController.state.allTransfers).deepEquals([
 				{
 					id: transferId2,
 					type: "download",
@@ -468,7 +450,7 @@ o.spec("DriveTransferController", function () {
 			await transferController.download(file2, "open")
 			deferredDownload1.reject(new restError.ConnectionError("download failed"))
 			await waitForUiUpdate()
-			o.check(transferController.state).deepEquals([
+			o.check(transferController.state.allTransfers).deepEquals([
 				{
 					id: transferId1,
 					type: "download",
@@ -486,21 +468,18 @@ o.spec("DriveTransferController", function () {
 					totalSize: 1024,
 				},
 			])
-			scheduler.getThunkAfter(FINISHED_TRANSFER_RETAIN_TIMEOUT_MS)()
 
-			o.check(transferController.state).deepEquals([
+			deferredDownload2.resolve()
+			await waitForUiUpdate()
+			o.check(transferController.state.allTransfers).deepEquals([
 				{
-					id: transferId2,
+					id: transferId1,
 					type: "download",
-					filename: "downloadFile2",
-					state: "active",
+					filename: "downloadFile1",
+					state: "failed",
 					transferredSize: 0,
 					totalSize: 1024,
 				},
-			])
-			deferredDownload2.resolve()
-			await waitForUiUpdate()
-			o.check(transferController.state).deepEquals([
 				{
 					id: transferId2,
 					type: "download",
@@ -531,7 +510,7 @@ o.spec("DriveTransferController", function () {
 
 			await transferController.download(file1, "open")
 			await transferController.download(file2, "open")
-			o.check(transferController.state).deepEquals([
+			o.check(transferController.state.allTransfers).deepEquals([
 				{
 					id: transferId1,
 					type: "download",
@@ -551,7 +530,7 @@ o.spec("DriveTransferController", function () {
 			])
 			deferredDownload1.resolve()
 			await waitForUiUpdate()
-			o.check(transferController.state).deepEquals([
+			o.check(transferController.state.allTransfers).deepEquals([
 				{
 					id: transferId1,
 					type: "download",
@@ -569,20 +548,18 @@ o.spec("DriveTransferController", function () {
 					totalSize: 1024,
 				},
 			])
-			scheduler.getThunkAfter(FINISHED_TRANSFER_RETAIN_TIMEOUT_MS)()
-			o.check(transferController.state).deepEquals([
+
+			deferredDownload2.resolve()
+			await waitForUiUpdate()
+			o.check(transferController.state.allTransfers).deepEquals([
 				{
-					id: transferId2,
+					id: transferId1,
 					type: "download",
-					filename: "downloadFile2",
-					state: "active",
+					filename: "downloadFile1",
+					state: "finished",
 					transferredSize: 0,
 					totalSize: 1024,
 				},
-			])
-			deferredDownload2.resolve()
-			await waitForUiUpdate()
-			o.check(transferController.state).deepEquals([
 				{
 					id: transferId2,
 					type: "download",
@@ -592,8 +569,6 @@ o.spec("DriveTransferController", function () {
 					totalSize: 1024,
 				},
 			])
-			scheduler.getThunkAfter(FINISHED_TRANSFER_RETAIN_TIMEOUT_MS)()
-			o.check(transferController.state).deepEquals([])
 		})
 		o.test("cancel download cancels active download", async function () {
 			const transferId1 = "transfer id 1" as TransferId
@@ -641,7 +616,7 @@ o.spec("DriveTransferController", function () {
 			await transferController.download(file2, "open")
 
 			await transferController.cancelTransfer(transferId2)
-			o.check(transferController.state).deepEquals([
+			o.check(transferController.state.allTransfers).deepEquals([
 				{
 					id: transferId1,
 					type: "download",

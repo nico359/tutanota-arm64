@@ -197,6 +197,7 @@ export class MailView extends BaseTopLevelView implements TopLevelView<MailViewA
 											await this.moveMailsToTrash(ownerGroup, mails)
 										},
 										onMoveSwipe: async (targetFolderType, mails) => {
+											this.mailViewModel.clearStickyMail()
 											return await moveMailsToSystemFolder({
 												mailboxModel: locator.mailboxModel,
 												mailModel: mailLocator.mailModel,
@@ -1511,7 +1512,7 @@ export class MailView extends BaseTopLevelView implements TopLevelView<MailViewA
 											icon: Icons.More,
 											title: "more_label",
 										},
-										childAttrs: () => [
+										childAttrs: async () => [
 											{
 												label: "edit_action",
 												icon: Icons.PenFilled,

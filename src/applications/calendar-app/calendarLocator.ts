@@ -43,7 +43,7 @@ import { UsageTestController } from "@tutao/usagetests"
 import { EphemeralUsageTestStorage, StorageBehavior, UsageTestModel } from "../common/misc/UsageTestModel.js"
 import { NewsModel } from "../common/misc/news/NewsModel.js"
 import { IServiceExecutor } from "../../platform-kit/network/ServiceRequest.js"
-import { CryptoFacade } from "../../platform-kit/base/crypto/CryptoFacade.js"
+import { CryptoFacade } from "../../platform-kit/base/base-crypto/CryptoFacade.js"
 import {
 	CommonSystemFacade,
 	ContactSuggestion,
@@ -69,7 +69,7 @@ import { NativeInterfaces } from "../common/native/NativeInterfaceFactory.js"
 import { EntropyFacade } from "../../platform-kit/base/facades/EntropyFacade.js"
 import { assertNotNull, defer, DeferredObject, lazy, lazyAsync, LazyLoaded, lazyMemoized, noOp } from "../../platform-kit/utils"
 import { RecipientsModel } from "../common/api/main/RecipientsModel.js"
-import { NoZoneDateProvider } from "../common/api/common/utils/NoZoneDateProvider.js"
+import { NoZoneDateProvider } from "../../platform-kit/utils/NoZoneDateProvider.js"
 import { SendMailModel } from "../common/mailFunctionality/SendMailModel.js"
 import { OfflineIndicatorViewModel } from "../common/gui/base/OfflineIndicatorViewModel.js"
 import { Router, ScopedRouter, ThrottledRouter } from "../../ui/ScopedRouter.js"
@@ -115,27 +115,27 @@ import type { CalendarContactPreviewViewModel } from "./calendar/gui/eventpopup/
 import { SyncTracker } from "../common/api/main/SyncTracker.js"
 import { KeyVerificationFacade } from "../../platform-kit/base/facades/lazy/KeyVerificationFacade"
 import { getEventWithDefaultTimes, setNextHalfHour } from "../common/api/common/utils/CommonCalendarUtils.js"
-import PublicEncryptionKeyProvider from "../../platform-kit/base/crypto/PublicEncryptionKeyProvider"
+import PublicEncryptionKeyProvider from "../../platform-kit/base/base-crypto/PublicEncryptionKeyProvider"
 import { CommonLocator } from "../common/api/main/CommonLocator"
 import { SearchToken } from "../../ui/utils/QueryTokenUtils"
 import { GroupSettingsModel } from "../common/sharing/model/GroupSettingsModel"
-import { IdentityKeyCreator } from "../../platform-kit/base/crypto/IdentityKeyCreator"
-import { PublicIdentityKeyProvider } from "../../platform-kit/base/crypto/PublicIdentityKeyProvider"
+import { IdentityKeyCreator } from "../../platform-kit/base/base-crypto/IdentityKeyCreator"
+import { PublicIdentityKeyProvider } from "../../platform-kit/base/base-crypto/PublicIdentityKeyProvider"
 import { WhitelabelThemeGenerator } from "../../ui/WhitelabelThemeGenerator"
 import type { AutosaveFacade, LocalAutosavedDraftData } from "../common/api/worker/facades/lazy/AutosaveFacade"
 import { lang } from "../../ui/utils/LanguageViewModel.js"
 import { DriveFacade } from "../common/api/worker/facades/lazy/DriveFacade"
 import { TransferProgressDispatcher } from "../common/api/main/TransferProgressDispatcher"
 import { CalendarEventUpdateCoordinator } from "./calendar/model/CalendarEventUpdateCoordinator"
-import { ParsedEvent } from "../common/calendar/gui/ImportExportUtils"
 import { WebMobileFacade } from "../common/native/WebMobileFacade"
 import { SystemPermissionHandler } from "../common/native/SystemPermissionHandler"
 import { ExposedCacheStorage } from "../../app-kit/local-store/CacheStorage"
 import { CALENDAR_MIME_TYPE } from "../../platform-kit/utils/FileConstants"
 import { CalendarEvent, CalendarEventAttendee, Contact, Mail, MailboxProperties } from "@tutao/entities/tutanota"
-import { ClientModelInfo } from "../../platform-kit/instance-pipeline"
+import { ClientModelInfo } from "@tutao/instance-pipeline"
 import { GroupType, ShareableGroupType } from "../../entities/sys/Utils"
-import { KdfType } from "../../platform-kit/base/crypto/Constants"
+import { KdfType } from "../../platform-kit/base/base-crypto/Constants"
+import { ParsedEventAlarmTuple } from "./calendar/export/CalendarParser"
 
 assertMainOrNode()
 
@@ -302,6 +302,7 @@ class CalendarLocator implements CommonLocator {
 			this.mailboxModel,
 			this.contactModel,
 			this.groupSettingsModel,
+			this.operationProgressTracker,
 		)
 	})
 
@@ -698,7 +699,11 @@ class CalendarLocator implements CommonLocator {
 			this.webMobileFacade = new WebMobileFacade(this.connectivityModel, CALENDAR_PREFIX)
 			this.nativeInterfaces = createNativeInterfaces(
 				this.webMobileFacade,
-				new WebDesktopFacade(this.logins, async () => this.native, this.desktopSettingsFacade),
+				new WebDesktopFacade(
+					this.logins,
+					async () => this.native,
+					() => this.desktopSettingsFacade,
+				),
 				new WebInterWindowEventFacade(this.logins, windowFacade, deviceConfig),
 				new WebCommonNativeFacade(
 					this.logins,
@@ -835,9 +840,22 @@ class CalendarLocator implements CommonLocator {
 		const files = await this.fileApp.getFilesMetaData(filesUris)
 		const areAllICSFiles = files.every((file) => file.mimeType === CALENDAR_MIME_TYPE)
 		if (areAllICSFiles) {
-			const { importCalendarFile, parseCalendarFile } = await import("../common/calendar/gui/CalendarImporter.js")
-
-			let parsedEvents: ParsedEvent[] = []
+			const [
+				{ parseCalendarFile },
+				{ CalendarImporter },
+				{ importCalendarFile },
+				{ EventSeriesResolver },
+				{ ImportInteractionHandler },
+				{ DefaultDateProvider },
+			] = await Promise.all([
+				import("../calendar-app/calendar/export/CalendarParser"),
+				import("../common/calendar/import/CalendarImporter"),
+				import("../common/calendar/gui/CalendarImporterDialog"),
+				import("../common/calendar/import/EventSeriesResolver"),
+				import("../common/calendar/gui/ImportInteractionHandler"),
+				import("../common/calendar/date/CalendarUtils"),
+			])
+			let parsedEvents: ParsedEventAlarmTuple[] = []
 			for (const fileRef of files) {
 				const dataFile = await this.fileApp.readDataFile(fileRef.location)
 				if (dataFile == null) continue
@@ -845,8 +863,21 @@ class CalendarLocator implements CommonLocator {
 				const data = parseCalendarFile(dataFile)
 				parsedEvents.push(...data.contents)
 			}
+			const calendarModel = await this.calendarModel()
 
-			await importCalendarFile(await this.calendarModel(), this.logins.getUserController(), parsedEvents)
+			const defaultDateProvider = new DefaultDateProvider()
+			await importCalendarFile(
+				calendarModel,
+				this.logins.getUserController(),
+				parsedEvents,
+				new CalendarImporter(
+					calendarModel,
+					new ImportInteractionHandler(),
+					this.operationProgressTracker,
+					new EventSeriesResolver(calendarModel, defaultDateProvider),
+					defaultDateProvider.timeZone(),
+				),
+			)
 		}
 	}
 
@@ -932,7 +963,10 @@ class CalendarLocator implements CommonLocator {
 		const ownAttendee: CalendarEventAttendee | null = findAttendeeInAddresses(selectedEvent.attendees, ownMailAddresses)
 		const eventType = getEventType(selectedEvent, calendars, ownMailAddresses, userController)
 		const hasBusinessFeature = isCustomizationEnabledForCustomer(customer, FeatureType.BusinessFeatureEnabled) || (await userController.isNewPaidPlan())
-		const lazyIndexEntry = async () => (selectedEvent.uid != null ? this.calendarFacade.getEventsByUid(selectedEvent.uid) : null)
+		const lazyIndexEntry = async () =>
+			selectedEvent.uid != null && selectedEvent._ownerGroup != null
+				? this.calendarFacade.getEventsByUid(selectedEvent.uid, selectedEvent._ownerGroup)
+				: null
 		const popupModel = new CalendarEventPreviewViewModel(
 			selectedEvent,
 			await this.calendarModel(),
