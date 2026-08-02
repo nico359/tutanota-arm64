@@ -25,7 +25,7 @@ import { LateInitializedCacheStorageImpl } from "../../../../app-kit/local-store
 import type { BookingFacade } from "../../../common/api/worker/facades/lazy/BookingFacade.js"
 import type { BlobFacade } from "../../../common/api/worker/facades/lazy/BlobFacade.js"
 import { OfflineStorage } from "../../../../app-kit/local-store/OfflineStorage.js"
-import { LocalIdentityKeyTrustDatabase, KeyVerificationTableDefinitions } from "../../../../app-kit/local-store/LocalIdentityKeyTrustDatabase.js"
+import { KeyVerificationTableDefinitions, LocalIdentityKeyTrustDatabase } from "../../../../app-kit/local-store/LocalIdentityKeyTrustDatabase.js"
 import {
 	ExportFacadeSendDispatcher,
 	FileFacadeSendDispatcher,
@@ -44,7 +44,6 @@ import type { ConfigurationDatabase } from "../../../common/api/worker/facades/l
 import { ContactFacade } from "../../../common/api/worker/facades/lazy/ContactFacade.js"
 import { CacheManagementFacade } from "../../../common/api/worker/facades/lazy/CacheManagementFacade.js"
 import { CalendarWorkerImpl } from "../worker/CalendarWorkerImpl.js"
-import { CalendarOfflineCleaner } from "../offline/CalendarOfflineCleaner.js"
 import { DriveFacade } from "../../../common/api/worker/facades/lazy/DriveFacade"
 import {
 	NoOpLastProcessedEventBatchStorageFacade,
@@ -60,7 +59,6 @@ import { PdfWriter } from "../../../common/api/worker/pdf/PdfWriter.js"
 import { AlarmFacade } from "../../../common/api/worker/facades/lazy/AlarmFacade"
 import { BrowserData } from "../../../../platform-kit/app-env/boot/ClientConstants"
 import { NamedClientModel } from "../../../../platform-kit/instance-pipeline"
-import { random } from "../../../../platform-kit/crypto"
 import { createOfflineStorageMigrations, OfflineStorageMigrator } from "../../../../app-kit/local-store/OfflineStorageMigrator.js"
 import { CustomCacheHandlerMap } from "../../../../app-kit/local-store/CustomCacheHandler"
 import { CustomUserCacheHandler } from "../../../common/api/worker/rest/CustomUserCacheHandler"
@@ -72,6 +70,8 @@ import { createBaseLocator } from "../../../../platform-kit/base/BaseLocator"
 import { createRsaImplementation } from "../../../../app-kit/native-bridge/worker/RsaImplementation.js"
 import { TutanotaEntityMigrator } from "../../../common/api/worker/TutanotaEntityMigrator.js"
 import { initClientModels } from "../../../common/api/common/ClientModelInfoInitializer"
+import { OfflineMapper } from "../../../../platform-kit/instance-pipeline/OfflineMapper"
+import { CachingOfflineStorage } from "../../../../app-kit/local-store/CachingOfflineStorage"
 
 assertWorkerOrNode()
 
@@ -138,24 +138,26 @@ export async function initLocator(worker: CalendarWorkerImpl, browserData: Brows
 	}
 
 	// offlineStorageProvider and ephemeralStorageProvider reference locator.base.* lazily — only called during login init
-	let offlineStorageProvider: () => Promise<OfflineStorage | null>
+	let offlineStorageProvider: () => Promise<CachingOfflineStorage | null>
 	if (!isBrowser() && !isAdminClient()) {
 		offlineStorageProvider = async () => {
 			const customCacheHandler = new CustomCacheHandlerMap({
 				ref: CalendarEventTypeRef,
 				handler: new CustomCalendarEventCacheHandler(locator.base.entityRestClient, locator.base.typeModelResolver),
 			})
-			return new OfflineStorage(
+			const offlineMapper = new OfflineMapper(locator.base.typeModelResolver)
+			const fastCache = new EphemeralCacheStorage(locator.base.instancePipeline.modelMapper, locator.base.typeModelResolver, new CustomCacheHandlerMap())
+			const offlineStorage = new OfflineStorage(
 				locator.sqlCipherFacade,
 				new InterWindowEventFacadeSendDispatcher(worker),
-				dateProvider,
 				new OfflineStorageMigrator(createOfflineStorageMigrations(locator.sqlCipherFacade, locator.base.applicationTypesFacade)),
-				new CalendarOfflineCleaner(),
 				locator.base.instancePipeline.modelMapper,
 				locator.base.typeModelResolver,
+				offlineMapper,
 				customCacheHandler,
 				KeyVerificationTableDefinitions,
 			)
+			return new CachingOfflineStorage(offlineStorage, fastCache, locator.base.instancePipeline.modelMapper)
 		}
 	} else {
 		offlineStorageProvider = async () => null
@@ -291,6 +293,7 @@ export async function initLocator(worker: CalendarWorkerImpl, browserData: Brows
 			locator.base.crypto,
 			locator.base.blobAccessToken,
 			mainInterface.uploadProgressListener,
+			locator.base.typeModelResolver,
 		)
 	})
 
@@ -358,6 +361,7 @@ export async function initLocator(worker: CalendarWorkerImpl, browserData: Brows
 
 	const eventBusCoordinator = new EventBusEventCoordinator(
 		locator.mail,
+		null,
 		locator.base.user,
 		locator.base.cachingEntityClient,
 		mainInterface.eventController,
@@ -420,11 +424,4 @@ export async function resetLocator(): Promise<void> {
 
 if (typeof self !== "undefined") {
 	;(self as unknown as WorkerGlobalScope).locator = locator // export in worker scope
-}
-
-/*
- * @returns true if webassembly is supported
- */
-export function isWebAssemblySupported() {
-	return typeof WebAssembly === "object" && typeof WebAssembly.instantiate === "function"
 }

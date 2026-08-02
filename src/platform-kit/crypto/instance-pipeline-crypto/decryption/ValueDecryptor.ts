@@ -1,5 +1,5 @@
 import { KeyVersion, Nullable } from "@tutao/utils"
-import { AesKey, KdfNonce } from "../../encryption/symmetric/SymmetricCipherUtils"
+import { KdfNonce } from "../../encryption/symmetric/SymmetricCipherUtils"
 import { AesCbcFacade, PaddingStandard } from "../../encryption/symmetric/AesCbcFacade"
 import { AeadSubKeys, AesCbcSubKeys, InstanceTypeId, SymmetricKeyDeriver } from "../../encryption/symmetric/SymmetricKeyDeriver"
 import { AeadFacade } from "../../encryption/symmetric/AeadFacade"
@@ -7,6 +7,7 @@ import { ParsedCiphertextAeadWithGroupKey, ParsedCiphertextAeadWithSessionKey, P
 import { CryptoError } from "@tutao/crypto/error"
 import { InstanceSubKeyCache } from "./SubKeyCache"
 import { SymmetricCipherVersion } from "../../encryption/symmetric/SymmetricCipherVersion"
+import { AesKey } from "@tutao/crypto"
 
 /**`
  * Decrypts one attribute of one given instance.
@@ -26,13 +27,14 @@ export class AesCbcDecryptor implements ValueDecryptor {
 		private readonly symmetricKeyDeriver: SymmetricKeyDeriver,
 	) {}
 	getValue(): Uint8Array {
+		const cipherVersion = this.parsedCiphertext.cipherVersion
 		const instanceAesSubKeyCacheKey = {
-			cipherVersion: this.parsedCiphertext.cipherVersion,
+			cipherVersion,
 			aesKey: this.sessionKey,
 		}
 		let subKeys = this.instanceAesSubKeyCache.get(instanceAesSubKeyCacheKey)
 		if (subKeys == null) {
-			subKeys = this.symmetricKeyDeriver.deriveSubKeysAesCbcHmac(this.sessionKey)
+			subKeys = this.symmetricKeyDeriver.deriveSubKeysAesCbc(this.sessionKey, cipherVersion)
 			this.instanceAesSubKeyCache.set(instanceAesSubKeyCacheKey, subKeys)
 		}
 		return this.aesCbcFacade.decrypt(subKeys, this.parsedCiphertext, PaddingStandard.Pkcs5)

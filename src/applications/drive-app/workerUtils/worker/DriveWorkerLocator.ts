@@ -19,7 +19,6 @@ import {
 	OfflineStorageLastProcessedEventBatchStorageFacade,
 } from "../../../common/api/worker/LastProcessedEventBatchStorageFacade"
 import { DriveWorkerImpl } from "./DriveWorkerImpl"
-import { DriveOfflineCleanerStub } from "../offline/DriveOfflineCleanerStub"
 import { KeyVerificationTableDefinitions, LocalIdentityKeyTrustDatabase } from "../../../../app-kit/local-store/LocalIdentityKeyTrustDatabase"
 import { NativeInterface } from "../../../../app-kit/native-bridge/common/NativeInterface"
 import { SqlCipherFacade } from "@tutao/native-bridge/generatedIpc/types"
@@ -57,6 +56,8 @@ import { createRsaImplementation } from "../../../../app-kit/native-bridge/worke
 import { TutanotaEntityMigrator } from "../../../common/api/worker/TutanotaEntityMigrator.js"
 import { initClientModels } from "../../../common/api/common/ClientModelInfoInitializer"
 import { MailAddressFacade } from "../../../common/api/worker/facades/lazy/MailAddressFacade"
+import { OfflineMapper } from "../../../../platform-kit/instance-pipeline/OfflineMapper"
+import { CachingOfflineStorage } from "../../../../app-kit/local-store/CachingOfflineStorage"
 
 assertWorkerOrNode()
 
@@ -119,24 +120,25 @@ export async function initLocator(worker: DriveWorkerImpl, browserData: BrowserD
 	}
 
 	// offlineStorageProvider and ephemeralStorageProvider reference locator.base.* lazily — only called during login init
-	let offlineStorageProvider: () => Promise<OfflineStorage | null>
+	let offlineStorageProvider: () => Promise<CachingOfflineStorage | null>
 	if (!isBrowser() && !(env.mode === Mode.Admin)) {
 		offlineStorageProvider = async () => {
 			const customCacheHandler = new CustomCacheHandlerMap({
 				ref: CalendarEventTypeRef,
 				handler: new CustomCalendarEventCacheHandler(locator.base.entityRestClient, locator.base.typeModelResolver),
 			})
-			return new OfflineStorage(
+			const fastCache = new EphemeralCacheStorage(locator.base.instancePipeline.modelMapper, locator.base.typeModelResolver, new CustomCacheHandlerMap())
+			const offlineStorage = new OfflineStorage(
 				locator.sqlCipherFacade,
 				new InterWindowEventFacadeSendDispatcher(worker),
-				dateProvider,
 				new OfflineStorageMigrator(createOfflineStorageMigrations(locator.sqlCipherFacade, locator.base.applicationTypesFacade)),
-				new DriveOfflineCleanerStub(),
 				locator.base.instancePipeline.modelMapper,
 				locator.base.typeModelResolver,
+				new OfflineMapper(locator.base.typeModelResolver),
 				customCacheHandler,
 				KeyVerificationTableDefinitions,
 			)
+			return new CachingOfflineStorage(offlineStorage, fastCache, locator.base.instancePipeline.modelMapper)
 		}
 	} else {
 		offlineStorageProvider = async () => null
@@ -273,6 +275,7 @@ export async function initLocator(worker: DriveWorkerImpl, browserData: BrowserD
 			locator.base.crypto,
 			locator.base.blobAccessToken,
 			mainInterface.uploadProgressListener,
+			locator.base.typeModelResolver,
 		)
 	})
 
@@ -294,6 +297,7 @@ export async function initLocator(worker: DriveWorkerImpl, browserData: BrowserD
 	})
 
 	const eventBusCoordinator = new EventBusEventCoordinator(
+		null,
 		null,
 		locator.base.user,
 		locator.base.cachingEntityClient,

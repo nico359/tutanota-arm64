@@ -1,3 +1,5 @@
+import { ProgrammingError } from "@tutao/app-env"
+
 export interface ErrorInfo {
 	readonly name: string | null
 	readonly message: string | null
@@ -48,7 +50,7 @@ export function freshVersioned<T>(object: T): Versioned<T> {
 export type Require<K extends keyof T, T> = T & { [P in K]-?: NonNullable<T[P]> }
 
 export type DeferredObject<T> = {
-	resolve: (arg0: T | PromiseLike<T>) => void
+	resolve: (arg0: T) => void
 	reject: (arg0: Error) => void
 	promise: Promise<T>
 }
@@ -135,6 +137,13 @@ export function assertNotNull<T>(value: T | null, message: string = "null"): Non
 	}
 
 	return value
+}
+
+export function assertNotNaN(number: number, message: string = "Found NaN when valid number is expected"): number {
+	if (isNaN(number)) {
+		throw new ProgrammingError(message)
+	}
+	return number
 }
 
 /**
@@ -365,12 +374,17 @@ export function errorToString(error: ErrorInfo): string {
 }
 
 export function errorsToString(errors: Array<ErrorInfo>): string {
-	return errors.join("\n--- next error ---\n")
+	return errors.map(errorToString).join("\n--- next error ---\n")
+}
+
+export interface DeepEquals {
+	deepEquals(other: this): boolean
 }
 
 /**
  * modified deepEquals from ospec is only needed as long as we use custom classes (TypeRef) and Date is not properly handled
  */
+
 export function deepEqual(a: any, b: any): boolean {
 	if (a === b) return true
 	if (xor(a === null, b === null) || xor(a === undefined, b === undefined)) return false
@@ -391,6 +405,15 @@ export function deepEqual(a: any, b: any): boolean {
 			return true
 		}
 
+		if (a instanceof Uint8Array && b instanceof Uint8Array) {
+			if (a.length !== b.length) return false
+			for (let i = 0; i < a.length; i++) {
+				if (a[i] !== b[i]) return false
+			}
+
+			return true
+		}
+
 		if (a instanceof Date && b instanceof Date) return a.getTime() === b.getTime()
 
 		// for (let .. in ..) doesn't work with maps
@@ -404,6 +427,11 @@ export function deepEqual(a: any, b: any): boolean {
 			}
 
 			return true
+		}
+
+		// See: DeepEquals interface
+		if (typeof (a as DeepEquals).deepEquals === "function" && typeof (b as DeepEquals).deepEquals === "function") {
+			return a.deepEquals(b)
 		}
 
 		if (a instanceof Object && b instanceof Object && !aIsArgs && !bIsArgs) {
@@ -439,12 +467,13 @@ function xor(a: boolean, b: boolean): boolean {
 	return (aBool && !bBool) || (bBool && !aBool)
 }
 
-function isArguments(a: any) {
+function isArguments(a: any): boolean {
 	if ("callee" in a) {
 		for (let i in a) if (i === "callee") return false
 
 		return true
 	}
+	return false
 }
 
 const hasOwn = {}.hasOwnProperty
@@ -560,7 +589,7 @@ export function mapNullable<T, U>(val: T | null, action: (arg0: NonNullable<T>) 
 /** Helper to take instead of `typeof setTimeout` which is hellish to reproduce */
 export type TimeoutSetter = (fn: () => unknown, arg1: number) => ReturnType<typeof setTimeout>
 
-export function mapObject<K extends string | number | symbol, V, R>(mapper: (arg0: V) => R, obj: Record<K, V>): Record<K, R> {
+export function mapObject<K extends string, V, R>(mapper: (arg0: V) => R, obj: Record<K, V>): Record<K, R> {
 	const newObj = {} as Record<K, R>
 
 	for (const key of Object.keys(obj)) {
@@ -627,8 +656,10 @@ export type Nullable<T> = T | null
 /**
  * Factory method to allow tracing unresolved promises.
  */
-export function newPromise<T>(executor: (resolve: (value: T | PromiseLike<T>) => void, reject: (reason?: any) => void) => void, tag?: string) {
-	const promise = new Promise(executor)
+export function newPromise<T>(executor: (resolve: (value: T) => void, reject: (reason?: any) => void) => void, tag?: string): Promise<T> {
+	const promise = new Promise<T>((resolve, reject) => {
+		executor(resolve, reject)
+	})
 
 	// only to be enabled for local debugging purposes
 	// traceUnresolvedPromises(promise, tag)

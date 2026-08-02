@@ -3,15 +3,15 @@ import {
 	assertMainOrNode,
 	Const,
 	FeatureType,
-	FREE_OFFLINE_STORAGE_DEFAULT_TIME_RANGE_DAYS,
 	isApp,
 	isBrowser,
+	isOfflineStorageAvailable,
 	UNDO_SEND_TIMEOUT_SECONDS,
 	UpgradePromptType,
 } from "../../../platform-kit/app-env"
-import { lang, type MaybeTranslation } from "../../../ui/utils/LanguageViewModel"
+import { lang } from "../../../ui/utils/LanguageViewModel"
 import { elementIdPart, isSameId, OperationType } from "../../../platform-kit/meta"
-import { assertNotNull, defer, isEmpty, LazyLoaded, noOp, ofClass, promiseMap, splitInChunks } from "../../../platform-kit/utils"
+import { assertNotNull, isEmpty, LazyLoaded, noOp, ofClass, promiseMap, splitInChunks } from "../../../platform-kit/utils"
 import { getInboxRuleTypeName } from "../mail/model/InboxRuleHandler"
 import { MailAddressTable } from "../../common/settings/mailaddress/MailAddressTable.js"
 import { Dialog } from "../../../ui/base/Dialog"
@@ -41,14 +41,11 @@ import { ButtonSize } from "../../../ui/base/ButtonSize.js"
 import { getReportMovedMailsType } from "../../common/misc/MailboxPropertiesUtils.js"
 import { MailAddressTableModel } from "../../common/settings/mailaddress/MailAddressTableModel.js"
 import { getEnabledMailAddressesForGroupInfo } from "../../../platform-kit/network/GroupUtils.js"
-import { formatDate, formatStorageSize } from "../../../ui/utils/Formatter.js"
+import { formatStorageSize } from "../../../ui/utils/Formatter.js"
 import { getDefaultSenderFromUser, getMailAddressDisplayText } from "../../common/mailFunctionality/SharedMailUtils.js"
 import { UpdatableSettingsViewer } from "../../common/settings/Interfaces.js"
 import { mailLocator } from "../mailLocator.js"
 import { getFolderName } from "../mail/model/MailUtils.js"
-import { DatePicker, DatePickerAttrs } from "../../calendar-app/calendar/gui/pickers/DatePicker"
-import { OfflineStorageSettingsModel } from "../../common/offline/OfflineStorageSettingsModel"
-import { client } from "../../../platform-kit/app-env/boot/ClientDetector"
 import { resolveMailSetEntries } from "../mail/model/MailSetListModel"
 import { MoveMode } from "../mail/model/MailModel"
 import { ProgressBar, ProgressBarType } from "../../../ui/base/ProgressBar"
@@ -70,6 +67,7 @@ import { InboxRuleType, MailSetKind, MAX_NBR_OF_MAILS_SYNC_OPERATION, ReportMove
 import { CustomerInfo } from "@tutao/entities/sys"
 import { ButtonType } from "../../../ui/base/Button"
 import { EntityUpdateData, isUpdateForTypeRef } from "../../../platform-kit/instance-pipeline/utils/EntityUpdateUtils"
+import { windowFacade } from "../../common/misc/WindowFacade"
 
 assertMainOrNode()
 
@@ -93,7 +91,6 @@ export class MailSettingsViewer implements UpdatableSettingsViewer {
 	private customerInfo: CustomerInfo | null
 	private mailAddressTableModel: MailAddressTableModel | null = null
 	private mailAddressTableExpanded: boolean
-	private offlineStorageSettings = new OfflineStorageSettingsModel(mailLocator.logins.getUserController(), deviceConfig)
 
 	constructor() {
 		this._defaultSender = getDefaultSenderFromUser(mailLocator.logins.getUserController())
@@ -130,8 +127,6 @@ export class MailSettingsViewer implements UpdatableSettingsViewer {
 
 		this.customerInfo = null
 		this._storageFieldValue = stream("")
-
-		this.offlineStorageSettings.init().then(() => m.redraw())
 	}
 
 	async oninit(): Promise<void> {
@@ -546,34 +541,11 @@ export class MailSettingsViewer implements UpdatableSettingsViewer {
 	}
 
 	private renderLocalDataSection(): Children {
-		if (!this.offlineStorageSettings.available()) {
+		if (isOfflineStorageAvailable()) {
+			return [m(".h4.mt-32#localdata", lang.get("localDataSection_label")), this.renderRebuildSearchIndex(), this.renderClearCacheButton()]
+		} else {
 			return null
 		}
-		// Even if it is tracked by a date internally, for some users there is a fixed amount of days that they
-		// can have stored, so it makes sense to show them the number of days.
-		const textFieldValue = this.offlineStorageSettings.isFixedDays()
-			? lang.get("storedDataTimeRange_label", { "{numDays}": FREE_OFFLINE_STORAGE_DEFAULT_TIME_RANGE_DAYS })
-			: lang.get("storedDataDate_label", { "{date}": formatDate(this.offlineStorageSettings.getTimeRange()) })
-		return [
-			m(".h4.mt-32#localdata", lang.get("localDataSection_label")),
-			m(LegacyTextField, {
-				label: "emptyString_msg",
-				// Negative upper margin to make up for no label
-				class: "mt-negative-8",
-				value: textFieldValue,
-				isReadOnly: true,
-				helpLabel: () => lang.get("localDataSection_msg"),
-				injectionsRight: () => [
-					m(IconButton, {
-						title: "edit_action",
-						click: () => this.onEditStoredDataTimeRangeClicked(),
-						icon: Icons.PenFilled,
-						size: ButtonSize.Compact,
-					}),
-				],
-			}),
-			this.renderRebuildSearchIndex(),
-		]
 	}
 
 	private renderRebuildSearchIndex() {
@@ -597,7 +569,7 @@ export class MailSettingsViewer implements UpdatableSettingsViewer {
 							m(PrimaryButton, {
 								width: "flex",
 								label: "rebuildSearchIndex_action",
-								onclick: () => this.confirmClearData(),
+								onclick: () => this.confirmRebuildSearchIndex(),
 							}),
 						),
 						m("small.mt-12", lang.getTranslationText("reIndexLocalData_msg")),
@@ -605,7 +577,7 @@ export class MailSettingsViewer implements UpdatableSettingsViewer {
 		)
 	}
 
-	private async confirmClearData(): Promise<void> {
+	private async confirmRebuildSearchIndex(): Promise<void> {
 		const confirm = await Dialog.confirm(
 			lang.makeTranslation(
 				"reIndexLocalData_msg",
@@ -617,12 +589,33 @@ export class MailSettingsViewer implements UpdatableSettingsViewer {
 		}
 	}
 
-	private async onEditStoredDataTimeRangeClicked() {
-		if (mailLocator.logins.getUserController().isFreeAccount()) {
-			showNotAvailableForFreeDialog(UpgradePromptType.EXTEND_OFFLINE_DATA_RANGE)
-		} else {
-			await showEditStoredDataTimeRangeDialog(this.offlineStorageSettings)
-			m.redraw()
+	private renderClearCacheButton() {
+		return m("", [
+			m(
+				".mt-16",
+				m(PrimaryButton, {
+					width: "flex",
+					label: "clearCache_action",
+					onclick: () => this.confirmClearCache(),
+				}),
+			),
+			m("small.mt-12", lang.getTranslationText("clearCache_msg")),
+		])
+	}
+
+	private async confirmClearCache(): Promise<void> {
+		const confirm = await Dialog.confirm(lang.getTranslation("clearCacheConfirm_msg"))
+		if (confirm) {
+			await showProgressDialog(
+				"clearCache_action",
+				Promise.resolve().then(async () => {
+					await mailLocator.cacheStorage.purgeStorage()
+
+					// we need to reload the page, as purging storage will put the client in a broken state
+					await mailLocator.logins.logout(false)
+					await windowFacade.reload({})
+				}),
+			)
 		}
 	}
 
@@ -758,48 +751,4 @@ export class MailSettingsViewer implements UpdatableSettingsViewer {
 			dropdownWidth: 250,
 		}
 	}
-}
-
-async function showEditStoredDataTimeRangeDialog(settings: OfflineStorageSettingsModel) {
-	const initialTimeRange = settings.getTimeRange()
-	let timeRange = initialTimeRange
-
-	const newTimeRangeDeferred = defer<number>()
-	const dialog = Dialog.showActionDialog({
-		title: "emptyString_msg",
-		child: () => {
-			const helpText: MaybeTranslation | undefined = settings.isValidDate(timeRange) ? undefined : "invalidDate_msg"
-
-			return m("", [
-				m(DatePicker, {
-					date: timeRange,
-					onDateSelected: (date) => {
-						timeRange = date
-					},
-					startOfTheWeekOffset: settings.getStartOfTheWeekOffset(),
-					label: "dateFrom_label",
-					nullSelectionText: helpText,
-					rightAlignDropdown: false,
-				} satisfies DatePickerAttrs),
-				m(".mt-16", lang.get("storedDataTimeRangeHelpText_msg")),
-			])
-		},
-		okAction: async () => {
-			if (!settings.isValidDate(timeRange)) {
-				return
-			}
-			try {
-				if (initialTimeRange !== timeRange) {
-					await settings.setTimeRange(timeRange)
-				}
-			} finally {
-				dialog.close()
-			}
-		},
-	})
-	if (client.isMobileDevice()) {
-		// Prevent focusing text field automatically on mobile. It opens keyboard and you don't see all details.
-		dialog.setFocusOnLoadFunction(noOp)
-	}
-	return newTimeRangeDeferred.promise
 }

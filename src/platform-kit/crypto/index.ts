@@ -22,6 +22,7 @@ import {
 	type EncodedEd25519Signature,
 	generateEd25519KeyPair,
 	initEd25519,
+	initEd25519ForTesting,
 	type SigningPublicKey,
 	signWithEd25519,
 	verifyEd25519Signature,
@@ -38,6 +39,7 @@ export {
 	signWithEd25519,
 	verifyEd25519Signature,
 	initEd25519,
+	initEd25519ForTesting,
 	bytesToEd25519PublicKey,
 	ed25519PublicKeyToBytes,
 	bytesToEd25519PrivateKey,
@@ -122,10 +124,6 @@ export {
 	bitArrayToUint8Array,
 	createAuthVerifierAsBase64Url,
 	createAuthVerifier,
-	type BitArray,
-	AesKey,
-	Aes128Key,
-	Aes256Key,
 	INITIALIZATION_VECTOR_LENGTH_BYTES,
 	FIXED_INITIALIZATION_VECTOR,
 	type InitializationVector,
@@ -135,7 +133,7 @@ export {
 	validateInitializationVectorLength,
 	validateKdfNonceLength,
 } from "./encryption/symmetric/SymmetricCipherUtils.js"
-export { AesKeyLength, getKeyLengthInBytes, assert256BitKey } from "./encryption/symmetric/AesKeyLength.js"
+export { AesKey, Aes256Key, Aes128Key, BitArray, AesKeyLength, getKeyLengthInBytes, assert256BitKey } from "./encryption/symmetric/AesKey.js"
 export { blake3Hash, blake3Mac, blake3MacVerify, blake3Kdf } from "./hashes/Blake3.js"
 export { PADDING_BYTE } from "./encryption/symmetric/AeadFacade.js"
 export * as cryptoUtils from "./CryptoUtils.js"
@@ -160,3 +158,4 @@ export * from "./instance-pipeline-crypto/SymmetricCipherFacade.js"
 export * from "./instance-pipeline-crypto/decryption/InstanceDecryptor.js"
 export * from "./instance-pipeline-crypto/encryption/SubKeyProvider.js"
 export { RsaImplementation } from "./encryption/RsaImplementation.js"
+export { EncryptedKeyPairs, EncryptedRsaX25519KeyPairs, EncryptedRsaKeyPairs, EncryptedPqKeyPairs } from "./encryption/EncryptedKeyPairs"

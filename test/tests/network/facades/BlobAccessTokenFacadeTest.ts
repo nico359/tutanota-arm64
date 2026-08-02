@@ -1,7 +1,7 @@
 import o from "@tutao/otest"
 import { ServiceExecutor } from "../../../../src/platform-kit/network/ServiceExecutor"
 import { matchers, object, verify, when } from "testdouble"
-import { getElementId, getEtId, getListId } from "../../../../src/platform-kit/meta"
+import { elementIdToId, getElementId, getEtId, getListId, idToElementId } from "../../../../src/platform-kit/meta"
 import { BlobAccessTokenFacade } from "../../../../src/platform-kit/network/BlobAccessTokenFacade.js"
 import { DateTime } from "luxon"
 import { clientInitializedTypeModelResolver, createTestEntity } from "../../TestUtils.js"
@@ -16,11 +16,9 @@ import {
 	createBlobWriteData,
 	createInstanceId,
 } from "@tutao/entities/storage"
-
 import { BlobTypeRef } from "@tutao/entities/sys"
 import { ArchiveDataType, BlobAccessTokenKind } from "../../../../src/entities/sys/Utils"
 import { BlobReferencingInstance } from "../../../../src/entities/storage/BlobUtils"
-
 import { DEFAULT_EXTRA_SERVICE_PARAMS } from "../../../../src/platform-kit/instance-pipeline/RestClientOptions"
 
 const { anything, captor } = matchers
@@ -162,7 +160,7 @@ o.spec("BlobAccessTokenFacade", function () {
 			})
 
 			o("read token ET", async function () {
-				const mailBox = createTestEntity(MailBoxTypeRef, { _id: "elementId" })
+				const mailBox = createTestEntity(MailBoxTypeRef, { _id: idToElementId("elementId") })
 				const expectedToken = createTestEntity(BlobAccessTokenPostOutTypeRef, {
 					blobAccessInfo: createTestEntity(BlobServerAccessInfoTypeRef, {
 						blobAccessToken: "123",
@@ -176,7 +174,7 @@ o.spec("BlobAccessTokenFacade", function () {
 					blobs,
 					entity: mailBox,
 					listId: null,
-					elementId: mailBox._id,
+					elementId: elementIdToId(mailBox._id),
 				}
 
 				const readToken = await blobAccessTokenFacade.requestReadTokenBlobs(archiveDataType, referencingInstance, loadOptions)
@@ -255,12 +253,12 @@ o.spec("BlobAccessTokenFacade", function () {
 			const blobLoadOptions = DEFAULT_EXTRA_SERVICE_PARAMS
 			const expectedToken = createTestEntity(BlobAccessTokenPostOutTypeRef, { blobAccessInfo })
 			when(serviceMock.post(BlobAccessTokenService, anything(), blobLoadOptions)).thenResolve(expectedToken)
-			const mailBox = createTestEntity(MailBoxTypeRef, { _id: "elementId" })
+			const mailBox = createTestEntity(MailBoxTypeRef, { _id: idToElementId("elementId") })
 			const referencingInstance: BlobReferencingInstance = {
 				blobs,
 				entity: mailBox,
 				listId: null,
-				elementId: mailBox._id,
+				elementId: elementIdToId(mailBox._id),
 			}
 
 			await blobAccessTokenFacade.requestReadTokenBlobs(ArchiveDataType.Attachments, referencingInstance, blobLoadOptions)
@@ -281,19 +279,19 @@ o.spec("BlobAccessTokenFacade", function () {
 			const blobLoadOptions = DEFAULT_EXTRA_SERVICE_PARAMS
 			const expectedToken = createTestEntity(BlobAccessTokenPostOutTypeRef, { blobAccessInfo })
 			when(serviceMock.post(BlobAccessTokenService, anything(), blobLoadOptions)).thenResolve(expectedToken)
-			const mailBox1 = createTestEntity(MailBoxTypeRef, { _id: "elementId1" })
-			const mailBox2 = createTestEntity(MailBoxTypeRef, { _id: "elementId2" })
+			const mailBox1 = createTestEntity(MailBoxTypeRef, { _id: idToElementId("elementId1") })
+			const mailBox2 = createTestEntity(MailBoxTypeRef, { _id: idToElementId("elementId2") })
 			const referencingInstance1: BlobReferencingInstance = {
 				blobs,
 				entity: mailBox1,
 				listId: null,
-				elementId: mailBox1._id,
+				elementId: elementIdToId(mailBox1._id),
 			}
 			const referencingInstance2: BlobReferencingInstance = {
 				blobs,
 				entity: mailBox2,
 				listId: null,
-				elementId: mailBox2._id,
+				elementId: elementIdToId(mailBox2._id),
 			}
 
 			await blobAccessTokenFacade.requestReadTokenMultipleInstances(
@@ -326,19 +324,19 @@ o.spec("BlobAccessTokenFacade", function () {
 			})
 			const newToken = createTestEntity(BlobAccessTokenPostOutTypeRef, { blobAccessInfo: newAccessInfo })
 			when(serviceMock.post(BlobAccessTokenService, anything(), blobLoadOptions)).thenResolve(expiredToken)
-			const mailBox1 = createTestEntity(MailBoxTypeRef, { _id: "elementId1" })
-			const mailBox2 = createTestEntity(MailBoxTypeRef, { _id: "elementId2" })
+			const mailBox1 = createTestEntity(MailBoxTypeRef, { _id: idToElementId("elementId1") })
+			const mailBox2 = createTestEntity(MailBoxTypeRef, { _id: idToElementId("elementId2") })
 			const referencingInstance1: BlobReferencingInstance = {
 				blobs,
 				entity: mailBox1,
 				listId: null,
-				elementId: mailBox1._id,
+				elementId: elementIdToId(mailBox1._id),
 			}
 			const referencingInstance2: BlobReferencingInstance = {
 				blobs,
 				entity: mailBox2,
 				listId: null,
-				elementId: mailBox2._id,
+				elementId: elementIdToId(mailBox2._id),
 			}
 
 			await blobAccessTokenFacade.requestReadTokenMultipleInstances(
@@ -374,13 +372,13 @@ o.spec("BlobAccessTokenFacade", function () {
 			})
 			const newToken = createTestEntity(BlobAccessTokenPostOutTypeRef, { blobAccessInfo: newAccessInfo })
 			when(serviceMock.post(BlobAccessTokenService, anything(), null)).thenResolve(expiredToken)
-			const mailBox1 = createTestEntity(MailBoxTypeRef, { _id: "elementId1" })
+			const mailBox1 = createTestEntity(MailBoxTypeRef, { _id: idToElementId("elementId1") })
 
 			const referencingInstance: BlobReferencingInstance = {
 				blobs,
 				entity: mailBox1,
 				listId: null,
-				elementId: mailBox1._id,
+				elementId: elementIdToId(mailBox1._id),
 			}
 
 			await blobAccessTokenFacade.requestReadTokenArchive(archiveId)

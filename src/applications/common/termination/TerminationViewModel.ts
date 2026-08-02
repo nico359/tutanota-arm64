@@ -1,4 +1,3 @@
-import { SessionType } from "../../../platform-kit/app-env/SessionType.js"
 import { LoginState } from "../login/LoginViewModel.js"
 import { InfoLink, lang, MaybeTranslation } from "../../../ui/utils/LanguageViewModel.js"
 import { LoginController } from "../api/main/LoginController.js"
@@ -16,6 +15,7 @@ import {
 	CustomerAccountTerminationService,
 	SurveyData,
 } from "@tutao/entities/sys"
+import type { NewSessionData } from "../../../platform-kit/base/facades/LoginFacade"
 
 export class TerminationViewModel {
 	mailAddress: string
@@ -25,6 +25,7 @@ export class TerminationViewModel {
 	acceptedTerminationRequest: CustomerAccountTerminationRequest | null
 	helpText: MaybeTranslation
 	loginState: LoginState
+	private temporarySession: NewSessionData | null
 
 	constructor(
 		private readonly loginController: LoginController,
@@ -39,6 +40,7 @@ export class TerminationViewModel {
 		this.terminationPeriodOption = TerminationPeriodOptions.EndOfCurrentPeriod
 		this.helpText = "emptyString_msg"
 		this.loginState = LoginState.NotAuthenticated
+		this.temporarySession = null
 	}
 
 	async createAccountTerminationRequest(surveyData: SurveyData | null = null): Promise<void> {
@@ -73,7 +75,7 @@ export class TerminationViewModel {
 						break
 					case "hasAppStoreSubscription":
 						this.onTerminationRequestFailed(
-							lang.getTranslation("deleteAccountWithAppStoreSubscription_msg", { "{AppStorePayment}": InfoLink.AppStorePayment }),
+							lang.getTranslation("revokeSubscriptionWithAppStoreSubscription_msg", { "{AppStorePayment}": InfoLink.AppStorePayment }),
 						)
 						break
 					default:
@@ -83,7 +85,16 @@ export class TerminationViewModel {
 				throw e
 			}
 		} finally {
-			await this.loginController.logout(false)
+			try {
+				if (this.temporarySession != null) {
+					await this.loginController
+						.deleteSession(this.temporarySession.credentials.accessToken)
+						.catch((e) => console.log("Error ignored on Logout:", e))
+				}
+			} finally {
+				this.temporarySession = null
+				await this.loginController.logout(false)
+			}
 			this.loginState = LoginState.NotAuthenticated
 		}
 	}
@@ -119,7 +130,7 @@ export class TerminationViewModel {
 		}
 		this.helpText = "emptyString_msg"
 		try {
-			await this.loginController.createSession(mailAddress, password, SessionType.Temporary)
+			this.temporarySession = await this.loginController.createTemporarySessionOnly(mailAddress, password)
 			this.onAuthentication()
 		} catch (e) {
 			const { errorMessage, state } = getLoginErrorStateAndMessage(e)

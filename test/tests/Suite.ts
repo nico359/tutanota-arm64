@@ -10,6 +10,14 @@ import "./typerefs/EntityFunctionsTest.js"
 import "./api/common/utils/FileUtilsTest.js"
 import "./api/common/utils/LoggerTest.js"
 import "./api/common/utils/PlainTextSearchTest.js"
+import "./api/common/utils/imapImportUtils/ImapImportUtilsTest.js"
+import "./api/common/utils/PlainTextToHtmlConverterTest.js"
+import "./api/worker/facades/ImapFacadeTest.js"
+import "./api/worker/facades/ImportMailFacadeTest.js"
+import "./api/worker/utils/imapImport/ImapImporterTest"
+import "./settings/imapimport/ImapMaiImportControllerTest.js"
+import "./settings/imapimport/oauth/OAuthHandlerTest.js"
+import "./settings/imapimport/oauth/OAuthErrorHandlerTest.js"
 import "./api/main/EntropyCollectorTest.js"
 import "./api/main/SyncTrackerTest.js"
 import "./instance-pipeline/CompressionTest.js"
@@ -20,10 +28,12 @@ import "./api/worker/UrlifierTest.js"
 import "./network/crypto/AsymmetricCryptoFacadeTest.js"
 import "./api/worker/crypto/CompatibilityTest.js"
 import "./instance-pipeline/CryptoMapperTest.js"
+import "./instance-pipeline/InstancePipelineTest.js"
 import "./network/crypto/CryptoFacadeTest.js"
 import "./instance-pipeline/CryptoWrapperTest.js"
 import "./instance-pipeline/EntityAdapterTest.js"
 import "./instance-pipeline/ModelMapperTest.js"
+import "./instance-pipeline/EntityUtilsTest.js"
 import "./instance-pipeline/ModelMapperTransformationsTest.js"
 import "./instance-pipeline/TypeMapperTest.js"
 import "./instance-pipeline/ApplicationTypesFacadeTest.js"
@@ -71,7 +81,9 @@ import "./network/offline/CustomCacheHandlerTest.js"
 import "./api/worker/rest/EntityRestCacheTest.js"
 import "./network/EntityRestClientTest.js"
 import "./api/worker/rest/EphemeralCacheStorageTest.js"
-import "./typerefs/PatchGeneratorTest.js"
+import "./network/offline/CachingOfflineStorageTest.js"
+import "./instance-pipeline/PatchGeneratorTest.js"
+import "./instance-pipeline/ParsedValueTest.js"
 import "./network/ServiceExecutorTest.js"
 import "./api/worker/search/BulkMailLoaderTest.js"
 import "./api/worker/search/ContactIndexerTest.js"
@@ -80,6 +92,8 @@ import "./api/worker/search/IndexUtilsTest.js"
 import "./api/worker/search/IndexerCoreTest.js"
 import "./api/worker/search/IndexerPromiseUtilsTest.js"
 import "./api/worker/search/IndexedDbIndexerTest.js"
+import "./api/worker/search/WebMailIndexerTest.js"
+import "./api/worker/search/OfflineMailIndexerTest.js"
 import "./api/worker/search/MailIndexerTest.js"
 import "./api/worker/search/IndexedDbMailIndexerBackendTest.js"
 import "./api/worker/search/IndexedDbSearchFacadeTest.js"
@@ -94,13 +108,13 @@ import "./api/worker/utils/spamClassification/PreprocessPatternsTest.js"
 import "./calendar/AlarmSchedulerTest.js"
 import "./calendar/CalendarAgendaViewTest.js"
 import "./calendar/CalendarGuiUtilsTest.js"
-import "./calendar/import/CalendarExporterTest.js"
-import "./calendar/import/CalendarImporterTest.js"
+import "./calendar/ics-export/CalendarExporterTest.js"
+import "./calendar/ics-import/CalendarImporterTest.js"
+import "./calendar/ics-import/ImportExportUtilsTest.js"
+import "./calendar/ics-import/EventSeriesResolverTest.js"
 import "./calendar/CalendarInvitesTest.js"
 import "./calendar/CalendarModelTest.js"
 import "./calendar/CalendarEventUpdateCoordinatorTest.js"
-import "./calendar/import/ImportExportUtilsTest.js"
-import "./calendar/CalendarParserTest.js"
 import "./calendar/CalendarUtilsTest.js"
 import "./calendar/CalendarViewModelTest.js"
 import "./calendar/EventDragHandlerTest.js"
@@ -110,7 +124,8 @@ import "./calendar/eventeditor/CalendarEventWhenModelTest.js"
 import "./calendar/eventeditor/CalendarEventWhoModelTest.js"
 import "./calendar/eventeditor/CalendarNotificationModelTest.js"
 import "./calendar/CalendarEventsRepositoryTest.js"
-import "./calendar/import/EventSeriesResolverTest.js"
+import "./calendar/DateTimeTextFormatterUtilsTest.js"
+import "./calendar/ics-import/CalendarParserTest"
 import "./contacts/ContactListEditorTest.js"
 import "./contacts/ContactMergeUtilsTest.js"
 import "./contacts/ContactUtilsTest.js"
@@ -203,6 +218,7 @@ import "./drive/DriveTransferControllerTest.js"
 import "./api/worker/IndexedDbLastProcessedEventBatchStorageFacadeTest.js"
 import "./licc/ParserTest.js"
 import "./crypto/AesTest.js"
+import "./crypto/AesKeyTest.js"
 import "./crypto/BcryptTest.js"
 import "./crypto/Argon2idTest.js"
 import "./crypto/SymmetricCipherUtilsTest.js"
@@ -239,10 +255,9 @@ import "./app-env/TimeConstants.js"
 import "./crypto/InstanceDecryptorTest.js"
 import "./crypto/ParsedCiphertextTest.js"
 import "./crypto/ValueDecryptorTest.js"
-import "./crypto/SubKeyProviderTest.js"
+import "./drive/DriveFilePickerTests.js"
 
 import * as td from "testdouble"
-import { Mode } from "../../src/platform-kit/app-env"
 import { EntropySource } from "../../src/platform-kit/crypto"
 
 export async function run({ integration, filter, regexp, exclude }: { integration?: boolean; filter?: string; regexp?: string; exclude?: string } = {}) {
@@ -277,6 +292,8 @@ async function setupSuite({ integration }: { integration?: boolean }) {
 		await import("./api/worker/utils/spamClassification/SpamMailProcessorTest.js")
 		await import("./api/worker/utils/spamClassification/SpamClassifierTest.js")
 		await import("./network/offline/OfflineStorageMigratorTest.js")
+		await import("./network/offline/migrations/offline-v14.js")
+		await import("./network/offline/migrations/offline-v15.js")
 		await import("./network/offline/OfflineStorageTest.js")
 		await import("./desktop/ApplicationWindowTest.js")
 		await import("./desktop/DesktopContextMenuTest.js")
@@ -299,6 +316,13 @@ async function setupSuite({ integration }: { integration?: boolean }) {
 		await import("./desktop/db/OfflineDbFacadeTest.js")
 		await import("./desktop/export/DesktopExportFacadeTest.js")
 		await import("./desktop/files/DesktopFileFacadeTest.js")
+		await import("./desktop/imapimport/DesktopImapSyncSystemFacadeTest.js")
+		await import("./desktop/imapimport/imapsync/imapmail/ImapParserUtilsTest.js")
+		await import("./desktop/DesktopOauthWindowFacadeTest.js")
+		await import("./desktop/imapimport/imapsync/ImapSyncTest.js")
+		await import("./desktop/imapimport/imapsync/ImapSyncSessionTest.js")
+		await import("./desktop/imapimport/imapsync/DifferentialUidLoaderTest.js")
+		await import("./desktop/imapimport/imapsync/ImapSyncSessionProcessTest.js")
 		await import("./desktop/files/TempFsTest.js")
 		await import("./desktop/files/TempFsTest.js")
 		await import("./desktop/integration/DesktopIntegratorTest.js")
@@ -310,7 +334,6 @@ async function setupSuite({ integration }: { integration?: boolean }) {
 		await import("./desktop/sse/SseClientTest.js")
 		await import("./desktop/sse/TutaNotificationHandlerTest.js")
 		await import("./desktop/sse/TutaSseFacadeTest.js")
-		await import("./api/worker/search/OfflineStorageMailIndexerBackendTest.js")
 		await import("./api/worker/search/OfflineStoragePersistenceTest.js")
 		await import("./api/worker/search/OfflineStorageSearchFacadeTest.js")
 		await import("./api/worker/facades/OfflineStorageAutosaveFacadeTest.js")
@@ -323,6 +346,8 @@ async function setupSuite({ integration }: { integration?: boolean }) {
 	td.config({
 		ignoreWarnings: true,
 	})
+
+	const originalEnv = structuredClone(env)
 	o.before(async function () {
 		// setup the Entropy for all testcases
 		await random.addEntropy([{ data: 36, entropy: 256, source: EntropySource.Key }])
@@ -330,8 +355,7 @@ async function setupSuite({ integration }: { integration?: boolean }) {
 
 	o.afterEach(function () {
 		td.reset()
-
-		// Reset env.mode in case any tests have fiddled with it
-		env.mode = Mode.Test
+		// Reset env in case any tests have fiddled with it
+		env = originalEnv
 	})
 }

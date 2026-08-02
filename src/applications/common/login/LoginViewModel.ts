@@ -19,6 +19,7 @@ import { credentialsToUnencrypted } from "../misc/credentials/Credentials.js"
 import { AppLock } from "./AppLock.js"
 import { AppLockAuthenticationError } from "../api/common/error/AppLockAuthenticationError"
 import { getWhitelabelRegistrationDomains } from "../../../ui/utils/WhitelabelUtils"
+import { ResumeSessionState } from "../../../platform-kit/base/facades/LoginFacade"
 
 assertMainOrNode()
 
@@ -327,9 +328,8 @@ export class LoginViewModel implements ILoginViewModel {
 				credentials = await this.unlockAppAndGetCredentials(this.autoLoginCredentials.userId)
 
 				if (credentials) {
-					const offlineTimeRange = this.deviceConfig.getOfflineTimeRangeDate(this.autoLoginCredentials.userId)
-					const result = await this.loginController.resumeSession(credentials, null, offlineTimeRange)
-					if (result.type === "success") {
+					const result = await this.loginController.resumeSession(credentials, null)
+					if (result.state === ResumeSessionState.Success) {
 						await this.onLogin()
 					} else {
 						this.state = LoginState.NotAuthenticated

@@ -1,15 +1,14 @@
 import o, { assertThrows } from "@tutao/otest"
 
-import { DesktopFileFacade, getMimeTypeForFile } from "../../../../src/applications/common/desktop/files/DesktopFileFacade.js"
+import { DesktopFileFacade, getMimeTypeForFile, readStreamToBuffer } from "../../../../src/applications/common/desktop/files/DesktopFileFacade.js"
 import { ApplicationWindow } from "../../../../src/applications/common/desktop/ApplicationWindow.js"
 import { func, matchers, object, verify, when } from "testdouble"
 import { ElectronExports, FsExports, PathExports } from "../../../../src/applications/common/desktop/ElectronExportTypes.js"
 import * as restError from "../../../../src/platform-kit/rest-client/error"
 import { HttpMethod } from "../../../../src/platform-kit/rest-client/types"
 import type fs from "node:fs"
-import { stringToUtf8Uint8Array } from "../../../../src/platform-kit/utils"
+import { DateProvider, stringToUtf8Uint8Array } from "../../../../src/platform-kit/utils"
 import { DesktopConfig } from "../../../../src/applications/common/desktop/config/DesktopConfig.js"
-import { DateProvider } from "../../../../src/platform-kit/utils"
 import { TempFs } from "../../../../src/applications/common/desktop/files/TempFs.js"
 import { BuildConfigKey, DesktopConfigKey, ProgrammingError } from "../../../../src/platform-kit/app-env"
 import { FetchImpl, FetchResult } from "../../../../src/applications/common/desktop/net/NetAgent"
@@ -93,12 +92,12 @@ o.spec("DesktopFileFacade", function () {
 	o.spec("download", function () {
 		o("no error", async function () {
 			const headers = { v: "foo", accessToken: "bar" }
-			const expectedFilePath = "/tutanota/tmp/path/encrypted/nativelyDownloadedFile"
+			const expectedFileUrl = "file:///tutanota/tmp/path/encrypted/nativelyDownloadedFile"
 			const fileBody = new Uint8Array([3, 4, 6, 9])
 			const response: FetchResult = mockResponse(200, { responseBody: fileBody })
 			const ws: BufferWritableStream = mockWriteStream() satisfies stream.Writable
 			const fws = ws as unknown as fs.WriteStream
-			when(fs.createWriteStream(expectedFilePath, { emitClose: true })).thenReturn(fws)
+			when(fs.createWriteStream(urlLike(expectedFileUrl), { emitClose: true })).thenReturn(fws)
 			when(
 				fetch(urlMatches(new URL("some://url/file")), {
 					method: "GET",
@@ -110,7 +109,7 @@ o.spec("DesktopFileFacade", function () {
 
 			const downloadResult = await ff.download("some://url/file", "nativelyDownloadedFile", headers, "fileId")
 			o(downloadResult.statusCode).equals(200)
-			o(downloadResult.encryptedFileUri).equals(expectedFilePath)
+			o(downloadResult.encryptedFileUri).equals(expectedFileUrl)
 			o(ws.result()).deepEquals(fileBody)
 		})
 
@@ -223,7 +222,7 @@ o.spec("DesktopFileFacade", function () {
 
 			const e = await assertThrows(Error, () => ff.download("some://url/file", "nativelyDownloadedFile", headers, "fileId"))
 			o(e).equals(error)
-			verify(fs.promises.unlink("/tutanota/tmp/path/encrypted/nativelyDownloadedFile"), { times: 1 })
+			verify(fs.promises.unlink(urlLike("file:///tutanota/tmp/path/encrypted/nativelyDownloadedFile")), { times: 1 })
 		})
 	})
 
@@ -343,7 +342,7 @@ o.spec("DesktopFileFacade", function () {
 				when(executor.run(matchers.anything())).thenResolve({})
 				process.env!.ORIGINAL_XDG_CURRENT_DESKTOP = "original ;)"
 				process.env!.SOMETHING_ELSE = "something else!"
-				await ff.open("/some/folder/file")
+				await ff.open("file:///some/folder/file")
 
 				verify(
 					executor.run({
@@ -356,14 +355,14 @@ o.spec("DesktopFileFacade", function () {
 						},
 					}),
 				)
-				verify(tfs.assertInTmpDir("/some/folder/file"))
+				verify(tfs.assertInTmpDir("file:///some/folder/file"))
 			})
 			o.test("open on non ubuntu", async function () {
 				when(electron.shell.openPath("/some/folder/file")).thenReject(new Error("wrong function"))
 				when(executor.run(matchers.anything())).thenResolve({})
 				process.env!.ORIGINAL_XDG_CURRENT_DESKTOP = undefined
 				process.env!.SOMETHING_ELSE = "something else!"
-				await ff.open("/some/folder/file")
+				await ff.open("file:///some/folder/file")
 
 				verify(
 					executor.run({
@@ -383,7 +382,7 @@ o.spec("DesktopFileFacade", function () {
 					checkboxChecked: false,
 				}),
 			)
-			await ff.open("exec.exe")
+			await ff.open("file:///exec.exe")
 			verify(electron.shell.openPath(matchers.anything()), { times: 0 })
 		})
 	})
@@ -397,79 +396,71 @@ o.spec("DesktopFileFacade", function () {
 			when(fs.promises.readdir("/tutanota/tmp/path/unencrypted")).thenResolve(["folderContents"])
 			when(tfs.ensureUnencrytpedDir()).thenResolve("/tutanota/tmp/path/unencrypted")
 			const joinedFilePath = await ff.joinFiles("fileName.pdf", ["/file1"])
-			o(joinedFilePath).equals("/tutanota/tmp/path/unencrypted/fileName.pdf")
+			o(joinedFilePath).equals("file:///tutanota/tmp/path/unencrypted/fileName.pdf")
 			verify(tfs.assertInTmpDir("/file1"))
 		})
 	})
 
-	o.spec("splitFile", function () {
-		o("returns one slice for a small file", async function () {
-			// fs mock returns file name as the content
-			const filename = "/tutanota/tmp/path/download/small.txt"
-			const fileContent = stringToUtf8Uint8Array(filename)
-			when(fs.promises.stat(filename)).thenResolve({ size: fileContent.length })
-			when(tfs.createFileChunkUri(matchers.anything(), matchers.anything(), matchers.anything())).thenDo(
-				(path, start, length) => `tuta-chunk:${path}?start=${start}&length=${length}`,
-			)
-			const chunks = await ff.splitFile(filename, 1024)
-			o(chunks).deepEquals([`tuta-chunk:/tutanota/tmp/path/download/small.txt?start=0&length=${fileContent.length}`])("only one chunk")
+	o.spec("readStreamToBuffer", function () {
+		o.test("reads up to stream end correctly", async function () {
+			const inputBuffer = Buffer.alloc(16)
+			const stream = mockFsReadStream(inputBuffer)
+			const outputBuffer = await readStreamToBuffer(stream, 30)
+			o.check(Buffer.alloc(16) as Uint8Array).deepEquals(outputBuffer)
 		})
 
-		o("returns multiple slices for a bigger file", async function () {
-			// fs mock returns file name as the content
-			const filename = "/tutanota/tmp/path/download/big.txt"
-			// length 35
-			const fileContent = stringToUtf8Uint8Array(filename)
-			when(fs.promises.stat(filename)).thenResolve({ size: fileContent.length })
-			when(tfs.createFileChunkUri(matchers.anything(), matchers.anything(), matchers.anything())).thenDo(
-				(path, start, length) => `tuta-chunk:${path}?start=${start}&length=${length}`,
-			)
-			const chunks = await ff.splitFile(filename, 30)
-			o(chunks).deepEquals([
-				`tuta-chunk:/tutanota/tmp/path/download/big.txt?start=0&length=30`,
-				`tuta-chunk:/tutanota/tmp/path/download/big.txt?start=30&length=5`,
-			])
+		o.test("reads less than stream end correctly", async function () {
+			const inputBuffer = Buffer.alloc(32)
+			const stream = mockFsReadStream(inputBuffer)
+			const outputBuffer = await readStreamToBuffer(stream, 16)
+			o.check(Buffer.alloc(16) as Uint8Array).deepEquals(outputBuffer)
+		})
+
+		o.test("reads more than one chunk correctly", async function () {
+			const inputBuffer = Buffer.alloc(1024 * 1024 * 3)
+			const stream = mockFsReadStream(inputBuffer)
+			const outputBuffer = await readStreamToBuffer(stream, 1024 * 1024 + 256)
+			o.check(Buffer.alloc(1024 * 1024 + 256) as Uint8Array).deepEquals(outputBuffer)
 		})
 	})
 
 	o.spec("showInFileExplorer", function () {
 		o("two downloads, open two filemanagers", async function () {
-			const dir = "/path/to"
-			const p = dir + "/file.txt"
-			await ff.showInFileExplorer(p)
-			verify(electron.shell.showItemInFolder(p), { times: 1 })
+			await ff.showInFileExplorer(new URL("file:///path/to/file.txt"))
+			verify(electron.shell.showItemInFolder("/path/to/file.txt"), { times: 1 })
 		})
 
 		o("two downloads, open two filemanagers after a pause", async function () {
 			const time = 1629115820468
-			const dir = "/path/to"
-			const p = dir + "/file.txt"
-			await ff.showInFileExplorer(p)
+			await ff.showInFileExplorer(new URL("file:///path/to/file.txt"))
 			when(dp.now()).thenReturn(time)
 			when(conf.getConst(BuildConfigKey.fileManagerTimeout)).thenResolve(2)
-			verify(electron.shell.showItemInFolder(p), { times: 1 })
+			verify(electron.shell.showItemInFolder("/path/to/file.txt"), { times: 1 })
 			when(dp.now()).thenReturn(time + 10)
-			await ff.showInFileExplorer(p)
-			verify(electron.shell.showItemInFolder(p), { times: 2 })
+			await ff.showInFileExplorer(new URL("file:///path/to/file.txt"))
+			verify(electron.shell.showItemInFolder("/path/to/file.txt"), { times: 2 })
 		})
 	})
 
 	o.spec("putFileIntoDownloadsFolder", function () {
 		o("putFileIntoDownloadsFolder", async function () {
-			const src = "/path/random.pdf"
+			const src = "file:///path/random.pdf"
+			when(tfs.assertInTmpDir(src)).thenReturn(new URL(src))
 			const filename = "fileName.pdf"
-			when(conf.getVar(DesktopConfigKey.defaultDownloadPath)).thenResolve(DEFAULT_DOWNLOAD_PATH)
+			// we save the default download path as the return value of FileFacade#openFolderChooser in DesktopSettingsViewer, which returns a fileURL
+			const defaultDownloadPath = "file:///some/downloads"
+			when(conf.getVar(DesktopConfigKey.defaultDownloadPath)).thenResolve(defaultDownloadPath)
 			when(fs.promises.readdir(matchers.anything())).thenResolve([])
 			const copiedFileUri = await ff.putFileIntoDownloadsFolder(src, filename)
-			verify(fs.promises.copyFile(src, DEFAULT_DOWNLOAD_PATH + "fileName.pdf"))
-			o(copiedFileUri).equals(DEFAULT_DOWNLOAD_PATH + "fileName.pdf")
+			verify(fs.promises.copyFile(urlLike(src), urlLike("file:///some/downloads/fileName.pdf")))
+			o(copiedFileUri).equals("file:///some/downloads/fileName.pdf")
 			verify(tfs.assertInTmpDir(src))
 		})
 	})
 
 	o.spec("size", function () {
 		o("size", async function () {
-			when(fs.promises.stat(matchers.anything())).thenResolve({ size: 33 })
+			when(tfs.getFileSize("/file1")).thenResolve(33)
 			o(await ff.getSize("/file1")).equals(33)
 		})
 	})
@@ -484,15 +475,15 @@ o.spec("DesktopFileFacade", function () {
 
 	o.spec("getMimeTypeForFile", function () {
 		o.test("given lowercased four-letter extension it returns the correct mime type", async function () {
-			o.check(await getMimeTypeForFile("/tmp/picture.jpg")).equals("image/jpeg")
+			o.check(await getMimeTypeForFile(new URL("file:///tmp/picture.jpg"))).equals("image/jpeg")
 		})
 
 		o.test("given uppercased four-letter extension it returns the correct mime type", async function () {
-			o.check(await getMimeTypeForFile("/tmp/picture.JPEG")).equals("image/jpeg")
+			o.check(await getMimeTypeForFile(new URL("file:///tmp/picture.JPEG"))).equals("image/jpeg")
 		})
 
 		o.test("given nonexisting extension it returns default fallback", async function () {
-			o.check(await getMimeTypeForFile("/tmp/picture.nonsense")).equals("application/octet-stream")
+			o.check(await getMimeTypeForFile(new URL("file:///tmp/picture.nonsense"))).equals("application/octet-stream")
 		})
 	})
 
@@ -583,3 +574,10 @@ function mockResponse(
 		headers: new Headers(responseHeaders),
 	}) as FetchResult
 }
+
+const urlLike = matchers.create({
+	name: `url like`,
+	matches: (matcherArgs: any[], actual: any) => {
+		return matcherArgs[0] === actual.toString()
+	},
+})

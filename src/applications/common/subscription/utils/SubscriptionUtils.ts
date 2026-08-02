@@ -1,7 +1,7 @@
 import type { TranslationKey } from "../../../../ui/utils/LanguageViewModel"
 import { downcast, isEmpty, LazyLoaded } from "@tutao/utils"
 import { locator } from "../../api/main/CommonLocator"
-import { ApprovalStatus, CertificateType, getClientType, isIOSApp, ProgrammingError, reverse, UpgradePromptType } from "@tutao/app-env"
+import { ApprovalStatus, CertificateType, getClientType, isIOSApp, ProgrammingError, UpgradePromptType } from "@tutao/app-env"
 import { IServiceExecutor } from "../../../../platform-kit/network/ServiceRequest.js"
 import { MobilePaymentSubscriptionOwnership } from "@tutao/native-bridge/generatedIpc/enums"
 import { client } from "../../../../platform-kit/app-env/boot/ClientDetector"
@@ -34,8 +34,10 @@ import {
 	PlanName,
 	PlanType,
 } from "../../../../entities/sys/Utils"
-import { EntityUpdateData, isUpdateFor, OnEntityUpdateReceivedPriority } from "../../../../platform-kit/instance-pipeline/utils/EntityUpdateUtils"
+import { EntityUpdatesListener, EntityUpdateData, isUpdateFor, ListenerPriority } from "../../../../platform-kit/instance-pipeline/utils/EntityUpdateUtils"
 import { CacheMode, DEFAULT_ENTITY_RESTCLIENT_LOAD_OPTIONS } from "../../../../platform-kit/instance-pipeline/RestClientOptions"
+import { reverse } from "../../misc/EnumUtils"
+import { idToElementId } from "@tutao/meta"
 
 export const enum UpgradeType {
 	/**
@@ -322,7 +324,7 @@ export async function queryAppStoreSubscriptionOwnership(userIdBytes: Uint8Array
 // ordered.
 export async function waitUntilCustomerInfoPlanTypeIsCorrect(expectedPlan: PlanType, customerId: Id): Promise<boolean> {
 	const timeout_ms = 60_000
-	const customer = await locator.entityClient.load(CustomerTypeRef, customerId, {
+	const customer = await locator.entityClient.load(CustomerTypeRef, idToElementId(customerId), {
 		...DEFAULT_ENTITY_RESTCLIENT_LOAD_OPTIONS,
 		cacheMode: CacheMode.WriteOnly,
 	})
@@ -336,13 +338,14 @@ export async function waitUntilCustomerInfoPlanTypeIsCorrect(expectedPlan: PlanT
 	} else {
 		return new Promise<boolean>((resolve) => {
 			try {
-				const customerInfoUpdateListener = {
+				const entityUpdatesListener: EntityUpdatesListener = {
+					id: "SubscriptionUtils",
 					onEntityUpdatesReceived: async (updates: ReadonlyArray<EntityUpdateData>) => {
 						for (const update of updates) {
 							if (isUpdateFor(customerInfo, update)) {
 								// since we're waiting for an account upgrade, the customerInfo moves between the free and the paid list.
 								// we need to load the customer to find the new location.
-								const customer = await locator.entityClient.load(CustomerTypeRef, customerId, {
+								const customer = await locator.entityClient.load(CustomerTypeRef, idToElementId(customerId), {
 									...DEFAULT_ENTITY_RESTCLIENT_LOAD_OPTIONS,
 									cacheMode: CacheMode.WriteOnly,
 								})
@@ -354,16 +357,16 @@ export async function waitUntilCustomerInfoPlanTypeIsCorrect(expectedPlan: PlanT
 									// plan is now correct!
 									console.log("app store upgrade listener succeeded for", customer.customerInfo)
 									resolve(true)
-									locator.eventController.removeEntityListener(customerInfoUpdateListener)
+									locator.eventController.removeEntityUpdatesListener(entityUpdatesListener)
 								}
 							}
 						}
 					},
-					priority: OnEntityUpdateReceivedPriority.NORMAL,
+					priority: ListenerPriority.NORMAL,
 				}
-				locator.eventController.addEntityListener(customerInfoUpdateListener)
+				locator.eventController.addEntityUpdatesListener(entityUpdatesListener)
 				setTimeout(() => {
-					locator.eventController.removeEntityListener(customerInfoUpdateListener)
+					locator.eventController.removeEntityUpdatesListener(entityUpdatesListener)
 					console.warn("app store upgrade listener timed out for", customer.customerInfo)
 					resolve(false)
 				}, timeout_ms)

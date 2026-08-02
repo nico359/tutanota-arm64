@@ -20,8 +20,11 @@ import { GroupInvitationDeleteDataTypeRef } from "./TypeRefs.js"
 import { ImapFolderPostInTypeRef } from "./TypeRefs.js"
 import { ImapFolderPostOutTypeRef } from "./TypeRefs.js"
 import { ImapFolderDeleteInTypeRef } from "./TypeRefs.js"
+import { ImapOauthConfigGetInTypeRef } from "./TypeRefs.js"
+import { ImapOauthConfigGetOutTypeRef } from "./TypeRefs.js"
 import { ImapPostInTypeRef } from "./TypeRefs.js"
 import { ImapPostOutTypeRef } from "./TypeRefs.js"
+import { ImapPutInTypeRef } from "./TypeRefs.js"
 import { ImapDeleteInTypeRef } from "./TypeRefs.js"
 import { ImportMailGetInTypeRef } from "./TypeRefs.js"
 import { ImportMailGetOutTypeRef } from "./TypeRefs.js"
@@ -39,6 +42,7 @@ import { DeleteGroupDataTypeRef } from "./TypeRefs.js"
 import { DeleteMailDataTypeRef } from "./TypeRefs.js"
 import { ManageLabelServicePostInTypeRef } from "./TypeRefs.js"
 import { ManageLabelServicePostOutTypeRef } from "./TypeRefs.js"
+import { ManageLabelServicePutInTypeRef } from "./TypeRefs.js"
 import { ManageLabelServiceDeleteInTypeRef } from "./TypeRefs.js"
 import { MoveMailDataTypeRef } from "./TypeRefs.js"
 import { MoveMailPostOutTypeRef } from "./TypeRefs.js"
@@ -169,12 +173,21 @@ export const ImapFolderService = Object.freeze({
 	delete: { data: ImapFolderDeleteInTypeRef, return: null },
 } as const)
 
+export const ImapOauthConfigService = Object.freeze({
+	app: "tutanota",
+	name: "ImapOauthConfigService",
+	get: { data: ImapOauthConfigGetInTypeRef, return: ImapOauthConfigGetOutTypeRef },
+	post: null,
+	put: null,
+	delete: null,
+} as const)
+
 export const ImapService = Object.freeze({
 	app: "tutanota",
 	name: "ImapService",
 	get: null,
 	post: { data: ImapPostInTypeRef, return: ImapPostOutTypeRef },
-	put: null,
+	put: { data: ImapPutInTypeRef, return: null },
 	delete: { data: ImapDeleteInTypeRef, return: null },
 } as const)
 
@@ -237,7 +250,7 @@ export const ManageLabelService = Object.freeze({
 	name: "ManageLabelService",
 	get: null,
 	post: { data: ManageLabelServicePostInTypeRef, return: ManageLabelServicePostOutTypeRef },
-	put: null,
+	put: { data: ManageLabelServicePutInTypeRef, return: null },
 	delete: { data: ManageLabelServiceDeleteInTypeRef, return: null },
 } as const)
 

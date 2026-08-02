@@ -23,8 +23,15 @@ import { lang } from "../../../../ui/utils/LanguageViewModel"
 import { LoginController } from "../../../common/api/main/LoginController"
 import m from "mithril"
 import { isOfflineError, LockedError, NotAuthorizedError, NotFoundError } from "@tutao/rest-client/error"
-import { getReferencedAttachments, loadInlineImages, moveMails, moveMailsToSystemFolder, showDownloadProgressDialog } from "./MailGuiUtils"
-import { FileController } from "../../../common/file/FileController"
+import {
+	AttachmentDownloader,
+	getReferencedAttachments,
+	loadInlineImages,
+	moveMails,
+	moveMailsToSystemFolder,
+	showDownloadProgressDialog,
+} from "./MailGuiUtils"
+import { DownloadPostProcessing, FileController } from "../../../common/file/FileController"
 import { exportMails } from "../export/Exporter.js"
 import { IndexingNotSupportedError } from "../../../common/api/common/error/IndexingNotSupportedError"
 import { FileOpenError } from "../../../common/api/common/error/FileOpenError"
@@ -74,13 +81,15 @@ import {
 import { isPermanentDeleteAllowedMailSetKind } from "../MailUtils"
 import { haveSameId, isSameId, OperationType } from "@tutao/meta"
 import {
-	EntityEventsListener,
+	EntityUpdatesListener,
 	EntityUpdateData,
 	isUpdateForTypeRef,
-	OnEntityUpdateReceivedPriority,
+	ListenerPriority,
 } from "../../../../platform-kit/instance-pipeline/utils/EntityUpdateUtils"
 import { EncryptionAuthStatus, FeatureType, isBrowser, MailAuthenticationStatus, ProgrammingError } from "@tutao/app-env"
 import { OperationProgressTracker } from "../../../common/api/main/OperationProgressTracker"
+import { WebsocketConnectivityModel } from "../../../common/misc/WebsocketConnectivityModel"
+import { WsConnectionState } from "../../../../platform-kit/network/Constants"
 
 export const enum ContentBlockingStatus {
 	Block = "0",
@@ -115,6 +124,7 @@ export class MailViewerViewModel {
 	private forceLightMode: boolean = false
 	// always sanitized in this.sanitizeMailBody
 
+	private sanitizeUrlifyTimeoutId: TimeoutID = null
 	private sanitizeResult: SanitizedFragment | null = null
 	private loadingAttachments: boolean = false
 	private attachments: File[] = []
@@ -163,6 +173,7 @@ export class MailViewerViewModel {
 		readonly contactModel: ContactModel,
 		private readonly configFacade: ConfigurationDatabase,
 		private readonly fileController: FileController,
+		readonly attachmentDownloader: AttachmentDownloader,
 		readonly logins: LoginController,
 		private readonly eventController: EventController,
 		private readonly workerFacade: WorkerFacade,
@@ -175,20 +186,23 @@ export class MailViewerViewModel {
 		private readonly undoModel: UndoModel,
 		private readonly transferProgressDispatcher: TransferProgressDispatcher,
 		private readonly operationProgressTracker: OperationProgressTracker,
+		private readonly connectivityModel: WebsocketConnectivityModel,
 	) {
 		this.folderMailboxText = null
 		if (showFolder) {
 			this.showFolder()
 		}
-		this.eventController.addEntityListener(this.entityListener)
+		this.eventController.addEntityUpdatesListener(this.entityUpdatesListener)
+		this.connectivityModel.addConnectionStateListener(this.connectionStateListener)
 	}
 
-	private readonly entityListener: EntityEventsListener = {
+	private readonly entityUpdatesListener: EntityUpdatesListener = {
+		id: "MailViewerViewModel",
 		onEntityUpdatesReceived: async (events: EntityUpdateData[]) => {
 			for (const update of events) {
 				if (isUpdateForTypeRef(MailTypeRef, update)) {
 					const { instanceListId, instanceId, operation } = update
-					if (operation === OperationType.UPDATE && isSameId(this.mail._id, [instanceListId, instanceId])) {
+					if (operation === OperationType.UPDATE && isSameId(this.mail._id, [assertNotNull(instanceListId), instanceId])) {
 						try {
 							const updatedMail = await this.entityClient.load(MailTypeRef, this.mail._id)
 							this.updateMail({ mail: updatedMail })
@@ -203,7 +217,19 @@ export class MailViewerViewModel {
 				}
 			}
 		},
-		priority: OnEntityUpdateReceivedPriority.HIGH,
+		priority: ListenerPriority.HIGH,
+	}
+
+	private readonly connectionStateListener = {
+		id: "MailViewerViewModel",
+		priority: ListenerPriority.NORMAL,
+		onConnectionStateChanged: async (connectionState: WsConnectionState) => {
+			console.log("MailViewerViewModel connection state changed to", connectionState)
+			if (connectionState === WsConnectionState.connected) {
+				const updatedMail = await this.entityClient.load(MailTypeRef, this.mail._id)
+				this.updateMail({ mail: updatedMail })
+			}
+		},
 	}
 
 	private async determineRelevantRecipient() {
@@ -250,7 +276,12 @@ export class MailViewerViewModel {
 		// (from the list selecting a different element) and because it disposes the mailViewerViewModel that got updated
 		// this silences the warning about leaking entity event listeners when the listener is removed twice.
 		this.dispose = () => console.log("disposed MailViewerViewModel a second time, ignoring")
-		this.eventController.removeEntityListener(this.entityListener)
+		this.eventController.removeEntityUpdatesListener(this.entityUpdatesListener)
+		this.connectivityModel.removeConnectionStateListener(this.connectionStateListener)
+
+		if (this.sanitizeUrlifyTimeoutId) {
+			clearTimeout(this.sanitizeUrlifyTimeoutId)
+		}
 		const inlineImages = this.getLoadedInlineImages()
 		revokeInlineImages(inlineImages)
 	}
@@ -1062,7 +1093,13 @@ export class MailViewerViewModel {
 				// Call this again to make sure everything is loaded, including inline images because this can be called earlier than all the parts are loaded.
 				await this.loadAll(Promise.resolve(), { notify: true })
 			}
-			const editor = await newMailEditorAsResponse(args, this.isBlockingExternalImages(), this.getLoadedInlineImages(), mailboxDetails)
+			const editor = await newMailEditorAsResponse(
+				args,
+				this.isBlockingExternalImages(),
+				this.getLoadedInlineImages(),
+				this.attachmentDownloader,
+				mailboxDetails,
+			)
 			editor?.show()
 		}
 	}
@@ -1206,6 +1243,7 @@ export class MailViewerViewModel {
 					},
 					this.isBlockingExternalImages() || !this.isShowingExternalContent(),
 					this.getLoadedInlineImages(),
+					this.attachmentDownloader,
 					mailboxDetails,
 				)
 				editor?.show()
@@ -1222,10 +1260,20 @@ export class MailViewerViewModel {
 	private async sanitizeMailBody(mail: Mail, blockExternalContent: boolean): Promise<SanitizedFragment> {
 		const { getHtmlSanitizer } = await import("../../../common/misc/HtmlSanitizer")
 		const rawBody = this.getMailBody()
-		const urlified = await this.workerFacade.urlify(rawBody).catch((e) => {
-			console.warn("Failed to urlify mail body!", e)
-			return rawBody
+		const timeoutUrlify = new Promise<string>((resolve) => {
+			this.sanitizeUrlifyTimeoutId = setTimeout(() => {
+				console.warn("A mail has taken too long to be processed by urlify and we will use raw body instead.")
+				resolve(rawBody)
+			}, 5_000)
 		})
+
+		const urlified = await Promise.race([
+			this.workerFacade.urlify(rawBody).catch((e) => {
+				console.warn("Failed to urlify mail body!", e)
+				return rawBody
+			}),
+			timeoutUrlify,
+		])
 		const sanitizeResult = getHtmlSanitizer().sanitizeFragment(urlified, {
 			blockExternalContent,
 			allowRelativeLinks: isTutaTeamMail(mail),
@@ -1270,23 +1318,10 @@ export class MailViewerViewModel {
 		}
 	}
 
-	async downloadAndOpenAttachment(file: File, open: boolean) {
+	async downloadAndOpenAttachment(file: File, postDownload: DownloadPostProcessing) {
 		file = (await this.cryptoFacade.enforceSessionKeyUpdateIfNeeded(this._mail, [file]))[0]
-		try {
-			if (open) {
-				await showDownloadProgressDialog(this.transferProgressDispatcher, [file], await this.fileController.open(file))
-			} else {
-				await showDownloadProgressDialog(this.transferProgressDispatcher, [file], await this.fileController.download(file))
-			}
-		} catch (e) {
-			if (e instanceof FileOpenError) {
-				console.warn("FileOpenError", e)
-				await Dialog.message("canNotOpenFileOnDevice_msg")
-			} else {
-				console.error("could not open file:", e.message ?? "unknown error")
-				await Dialog.message("errorDuringFileOpen_msg")
-			}
-		}
+		// When downloading from email, we know it will be a Tutanota file and so do not have to pass a NativeFileApp
+		await this.attachmentDownloader.openOrDownloadAttachment(file, postDownload)
 	}
 
 	async importAttachment(file: File) {
@@ -1316,14 +1351,21 @@ export class MailViewerViewModel {
 	private async importCalendar(file: File) {
 		file = (await this.cryptoFacade.enforceSessionKeyUpdateIfNeeded(this._mail, [file]))[0]
 		try {
-			const [{ CalendarImporter }, { ImportInteractionHandler }, { DefaultDateProvider }, { EventSeriesResolver }] = await Promise.all([
+			const [
+				{ CalendarImporter },
+				{ ImportInteractionHandler },
+				{ DefaultDateProvider },
+				{ EventSeriesResolver },
+				{ importCalendarFile },
+				{ parseCalendarFile },
+			] = await Promise.all([
 				import("../../../common/calendar/import/CalendarImporter"),
 				import("../../../common/calendar/gui/ImportInteractionHandler"),
 				import("../../../common/calendar/date/CalendarUtils"),
 				import("../../../common/calendar/import/EventSeriesResolver"),
+				import("../../../common/calendar/gui/CalendarImporterDialog"),
+				import("../../../calendar-app/calendar/export/CalendarParser"),
 			])
-			const { parseCalendarFile } = await import("../../../calendar-app/calendar/export/CalendarParser")
-			const { importCalendarFile } = await import("../../../common/calendar/gui/CalendarImporterDialog")
 
 			const dataFile = await this.fileController.getAsDataFile(file)
 			const data = parseCalendarFile(dataFile)

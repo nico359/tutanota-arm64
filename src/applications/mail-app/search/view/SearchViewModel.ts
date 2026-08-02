@@ -6,10 +6,13 @@ import {
 	assertIsEntity,
 	assertIsEntity2,
 	elementIdPart,
+	elementIdToId,
 	EntityIdEncoding,
 	GENERATED_MAX_ID,
 	getElementId,
 	isSameId,
+	isSameIdTuple,
+	isSameSingleId,
 	isSameTypeRef,
 	ListElement,
 	ListElementEntity,
@@ -34,6 +37,7 @@ import {
 	mapAndFilterNull,
 	memoizedWithHiddenArgument,
 	neverNull,
+	Nullable,
 	ofClass,
 	onceAsync,
 	stringToBase64,
@@ -49,9 +53,12 @@ import {
 	createRestriction,
 	decodeCalendarSearchKey,
 	encodeCalendarSearchKey,
+	getFreeSearchStartDate,
 	getRestriction,
 	getSearchUrl,
 	hasMoreResults,
+	isIncompleteMailResult,
+	isNonBlockingSearchAvailable,
 	isSameSearchRestriction,
 	searchCategoryForRestriction,
 	SearchCategoryTypes,
@@ -73,7 +80,6 @@ import { getMailFilterForType, MailFilterType } from "../../mail/view/MailViewer
 import { CalendarEventsRepository } from "../../../common/calendar/date/CalendarEventsRepository.js"
 import { ListFilter } from "../../../common/misc/ListModel"
 import { client } from "../../../../platform-kit/app-env/boot/ClientDetector"
-import { OfflineStorageSettingsModel } from "../../../common/offline/OfflineStorageSettingsModel"
 import { getStartOfTheWeekOffsetForUser } from "../../../common/misc/weekOffset"
 import { Indexer } from "../../workerUtils/index/Indexer"
 import { SearchToken } from "../../../../ui/utils/QueryTokenUtils"
@@ -82,10 +88,10 @@ import { CalendarEvent, CalendarEventTypeRef, Contact, ContactTypeRef, Mail, Mai
 import { MailSetKind } from "../../../../entities/tutanota/Utils"
 import { isPermanentDeleteAllowedForFolder } from "../../mail/MailUtils"
 import {
-	EntityEventsListener,
+	EntityUpdatesListener,
 	EntityUpdateData,
 	isUpdateForTypeRef,
-	OnEntityUpdateReceivedPriority,
+	ListenerPriority,
 } from "../../../../platform-kit/instance-pipeline/utils/EntityUpdateUtils"
 
 const SEARCH_PAGE_SIZE = 100
@@ -96,7 +102,10 @@ export enum PaidFunctionResult {
 	Success,
 	PaidSubscriptionNeeded,
 }
-
+export type SelectedCalendarId = {
+	birthdayCalendarId: Id | null
+	longListShortList: IdTuple | null
+}
 export class SearchViewModel {
 	private _listModel: ListElementListModel<SearchResultListEntry>
 	get listModel(): ListElementListModel<SearchResultListEntry> {
@@ -172,17 +181,19 @@ export class SearchViewModel {
 	}
 
 	// isn't an IdTuple because it is two list ids
-	private _selectedCalendar: readonly [Id, Id] | Id | null = null // [longListId, shorListId] || birthDay_calendar_id | null
+	private _selectedCalendar: Nullable<SelectedCalendarId> = null
 	get selectedCalendar(): CalendarInfoBase | null {
 		const calendars = this.getAvailableCalendars(true)
 		const selectedCalendar =
 			calendars.find((calendarInfo) => {
-				if (isBirthdayCalendarInfo(calendarInfo)) {
-					return calendarInfo.id === this._selectedCalendar
+				if (this._selectedCalendar == null) {
+					return false
 				}
-				if (isCalendarInfo(calendarInfo)) {
+				if (isBirthdayCalendarInfo(calendarInfo)) {
+					return calendarInfo.id === this._selectedCalendar.birthdayCalendarId
+				} else if (isCalendarInfo(calendarInfo)) {
 					const groupRoot = calendarInfo.groupRoot
-					return isSameId([groupRoot.longEvents, groupRoot.shortEvents], this._selectedCalendar)
+					return isSameIdTuple([groupRoot.longEvents, groupRoot.shortEvents], this._selectedCalendar.longListShortList)
 				}
 			}) ?? null
 		return selectedCalendar
@@ -239,7 +250,6 @@ export class SearchViewModel {
 		private readonly calendarModel: CalendarModel,
 		private readonly updateUi: () => unknown,
 		private readonly selectionBehavior: ListAutoSelectBehavior,
-		private readonly offlineStorageSettings: OfflineStorageSettingsModel | null,
 	) {
 		this.currentQuery = this.search.result()?.query ?? ""
 		this._listModel = this.createList()
@@ -251,8 +261,7 @@ export class SearchViewModel {
 		this.mailboxSubscription = this.mailboxModel.mailboxDetails.map((mailboxes) => {
 			this.onMailboxesChanged(mailboxes)
 		})
-		this.eventController.addEntityListener(this.entityEventsListener)
-		await this.offlineStorageSettings?.init()
+		this.eventController.addEntityUpdatesListener(this.entityUpdatesListener)
 	})
 
 	getRestriction(): SearchRestriction {
@@ -277,13 +286,14 @@ export class SearchViewModel {
 		return isSameTypeRef(MailTypeRef, this.searchedType) && this.search.indexState().failedIndexingUpTo != null
 	}
 
-	private readonly entityEventsListener: EntityEventsListener = {
+	private readonly entityUpdatesListener: EntityUpdatesListener = {
+		id: "SearchViewModel",
 		onEntityUpdatesReceived: async (updates) => {
 			for (const update of updates) {
-				await this.entityEventReceived(update)
+				await this.onEntityUpdatesReceived(update)
 			}
 		},
-		priority: OnEntityUpdateReceivedPriority.NORMAL,
+		priority: ListenerPriority.NORMAL,
 	}
 
 	onNewUrl(args: Record<string, any>, requestedPath: string) {
@@ -308,24 +318,12 @@ export class SearchViewModel {
 		if (searchQuery == null) {
 			// no search query at all yet
 			listModel.updateLoadingStatus(ListLoadingState.Done)
-		} else if (this.search.isSameSearchWithExtendedRange(searchQuery, restriction)) {
+		} else if (isNonBlockingSearchAvailable() && this.search.isSameSearchWithExtendedRange(searchQuery, restriction)) {
 			if (restriction.end != null) {
 				this.search.extendCurrentResult(restriction.end).catch(() => listModel.updateLoadingStatus(ListLoadingState.ConnectionLost))
 			}
 		} else if (this.search.isNewSearch(searchQuery, restriction)) {
-			listModel.updateLoadingStatus(ListLoadingState.Loading)
-			this.search
-				.search(
-					{
-						query: searchQuery,
-						restriction,
-						minSuggestionCount: 0,
-						maxResults,
-					},
-					this.progressTracker,
-				)
-				.then(() => listModel.updateLoadingStatus(ListLoadingState.Idle))
-				.catch(() => listModel.updateLoadingStatus(ListLoadingState.ConnectionLost))
+			this.performNewSearch(listModel, searchQuery, restriction, maxResults)
 		}
 
 		if (isSameTypeRef(restriction.type, ContactTypeRef)) {
@@ -345,7 +343,7 @@ export class SearchViewModel {
 
 			// Check if user is trying to search in a birthday calendar while using a free account
 			const listIdsOrBirthdayCalendarId = this.extractCalendarListIds(restriction.folderIds)
-			if (!listIdsOrBirthdayCalendarId || Array.isArray(listIdsOrBirthdayCalendarId)) {
+			if (listIdsOrBirthdayCalendarId == null || listIdsOrBirthdayCalendarId.longListShortList != null) {
 				this._selectedCalendar = listIdsOrBirthdayCalendarId
 			} else if (isBirthdayCalendar(listIdsOrBirthdayCalendarId.toString())) {
 				const availableCalendars = this.getAvailableCalendars(true)
@@ -371,11 +369,32 @@ export class SearchViewModel {
 		}
 	}
 
-	private extractCalendarListIds(listIds: string[]): readonly [string, string] | string | null {
-		if (listIds.length < 1) return null
-		else if (listIds.length === 1) return listIds[0]
+	private performNewSearch(
+		listModel: ListElementListModel<SearchResultListEntry>,
+		searchQuery: string,
+		restriction: SearchRestriction,
+		maxResults: number | null,
+	) {
+		listModel.updateLoadingStatus(ListLoadingState.Loading)
+		this.search
+			.search(
+				{
+					query: searchQuery,
+					restriction,
+					minSuggestionCount: 0,
+					maxResults,
+				},
+				this.progressTracker,
+			)
+			.then(() => listModel.updateLoadingStatus(ListLoadingState.Idle))
+			.catch(() => listModel.updateLoadingStatus(ListLoadingState.ConnectionLost))
+	}
 
-		return [listIds[0], listIds[1]]
+	private extractCalendarListIds(listIds: string[]): Nullable<SelectedCalendarId> {
+		if (listIds.length < 1) return null
+		else if (listIds.length === 1) return { birthdayCalendarId: listIds[0], longListShortList: null }
+
+		return { birthdayCalendarId: null, longListShortList: [listIds[0], listIds[1]] }
 	}
 
 	private loadAndSelectIfNeeded(id: string | null, finder?: (a: ListElement) => boolean) {
@@ -460,64 +479,34 @@ export class SearchViewModel {
 		return getStartOfTheWeekOffsetForUser(this.logins.getUserController().userSettingsGroupRoot)
 	}
 
-	async selectStartDate(startDate: Date | null): Promise<PaidFunctionResult> {
-		if (isSameDayOfDate(this.startDate, startDate)) {
-			return PaidFunctionResult.Success
-		}
+	selectStartDate(startDate: Date | null): PaidFunctionResult {
+		const canSelectStartDate = this.canSelectTimePeriod()
 
-		if (!this.canSelectTimePeriod()) {
-			return PaidFunctionResult.PaidSubscriptionNeeded
-		}
+		const targetStartDate = canSelectStartDate ? startDate : getFreeSearchStartDate()
+		const isSameDay = isSameDayOfDate(this.startDate, targetStartDate)
+		this._startDate = targetStartDate
 
-		this._startDate = startDate
-
-		// If start date is outside the indexed range, suggest to extend the index and only if confirmed change the selected date.
-		// Otherwise, keep the date as it was.
-		if (startDate && this.getCategory() === SearchCategoryTypes.mail && startDate.getTime() < this.search.indexState().currentMailIndexTimestamp) {
+		// extend mail index when searching mails and start date is outside the indexed range
+		const indexState = this.search.indexState()
+		if (
+			this.getCategory() === SearchCategoryTypes.mail &&
+			indexState.currentMailIndexTimestamp !== FULL_INDEXED_TIMESTAMP &&
+			(targetStartDate == null || targetStartDate.getTime() < indexState.currentMailIndexTimestamp)
+		) {
 			if (this.listModel.state.loadingStatus === ListLoadingState.Done) {
 				// set list state to Idle so an empty row at the end of the list is shown where the progress indicator will be rendered
 				this.listModel.updateLoadingStatus(ListLoadingState.Idle)
 			}
 
-			// the current search result will be extended as the range extends
-			void this.indexerFacade.extendMailIndex(startDate.getTime())
-
-			let onIndexStateUpdate = (_: SearchIndexStateInfo) => {}
-			// separate subscription to indexState so offline range is updated even when the user navigates away from search
-			const dep = this.search.indexState.map((newState) => onIndexStateUpdate(newState))
-			// when subscribing to a mithril stream, the callback is invoked immediately with the stream's current value,
-			// but we only want this to be invoked once indexing starts
-			onIndexStateUpdate = (newState) => {
-				if (newState.progress === 0) {
-					dep.end(true)
-				}
-
-				if (this.offlineStorageSettings?.available()) {
-					const offlineRange = this.offlineStorageSettings.getTimeRange().getTime()
-					const isIndexingDoneOrCancelled = newState.progress === 0 && newState.error == null
-
-					// update offline storage range as index extends to not lose what's already indexed if the user logs
-					// out before indexing is done.
-					// Update offline range when indexing is cancelled to not continue indexing on next login
-					if (offlineRange > newState.currentMailIndexTimestamp || isIndexingDoneOrCancelled) {
-						this.offlineStorageSettings.setTimeRange(
-							new Date(
-								newState.currentMailIndexTimestamp !== FULL_INDEXED_TIMESTAMP
-									? newState.currentMailIndexTimestamp
-									: // aimedMailIndexTimestamp is set by the user and therefore might not be valid
-										this.offlineStorageSettings.isValidDate(new Date(newState.aimedMailIndexTimestamp))
-										? newState.aimedMailIndexTimestamp
-										: FULL_INDEXED_TIMESTAMP,
-							),
-						)
-					}
-				}
-			}
-		} else {
+			// for non-blocking search, the current search result will be extended as the range extends.
+			// for full-archive-download search, once indexing is done, the list will reload automatically if empty and
+			// by user action if not.
+			void this.indexerFacade.extendMailIndex(targetStartDate?.getTime() ?? FULL_INDEXED_TIMESTAMP)
+		} else if (!isSameDay) {
 			this.searchAgain()
 		}
 
-		return PaidFunctionResult.Success
+		return canSelectStartDate ? PaidFunctionResult.Success : PaidFunctionResult.PaidSubscriptionNeeded
 	}
 
 	selectEndDate(endDate: Date): PaidFunctionResult {
@@ -540,9 +529,9 @@ export class SearchViewModel {
 		if (!calendarInfo) {
 			this._selectedCalendar = null
 		} else if (isBirthdayCalendarInfo(calendarInfo)) {
-			this._selectedCalendar = calendarInfo.id
+			this._selectedCalendar = { birthdayCalendarId: calendarInfo.id, longListShortList: null }
 		} else if (isCalendarInfo(calendarInfo)) {
-			this._selectedCalendar = [calendarInfo.groupRoot.longEvents, calendarInfo.groupRoot.shortEvents]
+			this._selectedCalendar = { birthdayCalendarId: null, longListShortList: [calendarInfo.groupRoot.longEvents, calendarInfo.groupRoot.shortEvents] }
 		}
 		this.searchAgain()
 	}
@@ -714,7 +703,7 @@ export class SearchViewModel {
 		if (selectedMailFolder[0]) {
 			const mailFolder = await mailLocator.mailModel.getMailSetById(selectedMailFolder[0])
 			if (!mailFolder) {
-				const folderSystem = assertNotNull(mailLocator.mailModel.getFolderSystemByGroupId(mailboxes[0].mailGroup._id))
+				const folderSystem = assertNotNull(mailLocator.mailModel.getFolderSystemByGroupId(elementIdToId(mailboxes[0].mailGroup._id)))
 				this._selectedMailFolder = [getElementId(assertNotNull(folderSystem.getSystemFolderByType(MailSetKind.INBOX)))]
 				this.updateUi()
 			}
@@ -748,7 +737,7 @@ export class SearchViewModel {
 		return false
 	}
 
-	private async entityEventReceived(update: EntityUpdateData): Promise<void> {
+	private async onEntityUpdatesReceived(update: EntityUpdateData): Promise<void> {
 		const lastType: TypeRef<Mail | CalendarEvent | Contact> = this.searchedType
 		const isPossibleABirthdayContactUpdate = this.isPossibleABirthdayContactUpdate(update)
 
@@ -793,7 +782,7 @@ export class SearchViewModel {
 			return
 		}
 
-		await this._listModel.entityEventReceived(instanceListId!, instanceId, operation)
+		await this._listModel.onEntityUpdateReceived(instanceListId!, instanceId, operation)
 		// run the mail or contact update after the update on the list is finished to avoid parallel loading
 		if (operation === OperationType.UPDATE && this._listModel?.isItemSelected(elementIdPart(id))) {
 			try {
@@ -849,8 +838,8 @@ export class SearchViewModel {
 				// displayed conversation has changed
 				if (
 					!this._conversationViewModel ||
-					!isSameId(listIdPart(this._conversationViewModel.primaryMail._id), listIdPart(mail._id)) ||
-					!isSameId(elementIdPart(this._conversationViewModel.primaryMail._id), elementIdPart(mail._id))
+					!isSameSingleId(listIdPart(this._conversationViewModel.primaryMail._id), listIdPart(mail._id)) ||
+					!isSameSingleId(elementIdPart(this._conversationViewModel.primaryMail._id), elementIdPart(mail._id))
 				) {
 					this.updateDisplayedConversation(mail)
 				}
@@ -967,25 +956,40 @@ export class SearchViewModel {
 	}
 
 	private onMailIndexStateChanged(newState: SearchIndexStateInfo): void {
-		if (
-			isSameTypeRef(MailTypeRef, this.searchedType) &&
-			newState.progress === 0 &&
-			newState.error == null &&
-			newState.currentMailIndexTimestamp !== FULL_INDEXED_TIMESTAMP &&
-			(this._startDate == null || this._startDate.getTime() < newState.currentMailIndexTimestamp)
-		) {
-			// Indexing was cancelled and _startDate is outside the index range
-			const newStartTimestamp =
-				newState.currentMailIndexTimestamp === NOTHING_INDEXED_TIMESTAMP ? getEndOfDay(new Date()) : newState.currentMailIndexTimestamp
-			this._startDate = new Date(newStartTimestamp)
+		if (!isSameTypeRef(MailTypeRef, this.searchedType)) {
+			return
 		}
 
+		const isIndexingDoneOrCanceled = newState.progress === 0 && newState.error == null
 		const currentResult = this.search.result()
-		const isCurrentResultComplete = currentResult == null || (this._startDate != null && this._startDate.getTime() > currentResult.currentIndexTimestamp)
 
-		// only extend result when index is extended and result isn't already complete
-		if (!isCurrentResultComplete && currentResult.currentIndexTimestamp > newState.currentMailIndexTimestamp) {
-			void this.search.extendCurrentResult(newState.currentMailIndexTimestamp)
+		if (isNonBlockingSearchAvailable()) {
+			// Free users are not permitted to search beyond a certain date; avoid searching beyond this date if the index
+			// extended beyond it
+			const dateLimit = this.canSelectTimePeriod()
+				? newState.currentMailIndexTimestamp
+				: Math.max(newState.currentMailIndexTimestamp, getFreeSearchStartDate().getTime())
+
+			if (
+				isIndexingDoneOrCanceled &&
+				newState.currentMailIndexTimestamp !== FULL_INDEXED_TIMESTAMP &&
+				(this._startDate == null || this._startDate.getTime() < newState.currentMailIndexTimestamp)
+			) {
+				// Indexing was cancelled and _startDate is outside the index range
+				const newStartTimestamp = newState.currentMailIndexTimestamp === NOTHING_INDEXED_TIMESTAMP ? getEndOfDay(new Date()) : dateLimit
+				this._startDate = new Date(newStartTimestamp)
+			}
+
+			const isCurrentResultComplete =
+				currentResult == null || (this._startDate != null && this._startDate.getTime() > currentResult.currentIndexTimestamp)
+
+			// only extend result when index is extended and result isn't already complete
+			if (!isCurrentResultComplete && currentResult.currentIndexTimestamp > dateLimit) {
+				void this.search.extendCurrentResult(dateLimit)
+			}
+		} else if (isIndexingDoneOrCanceled && currentResult && isEmpty(currentResult.results) && !hasMoreResults(currentResult)) {
+			// Indexing is done or cancelled and list is empty, list will not be recreated
+			this.performNewSearch(this.listModel, currentResult.query, currentResult.restriction, SEARCH_PAGE_SIZE)
 		}
 	}
 
@@ -1016,6 +1020,20 @@ export class SearchViewModel {
 		}
 
 		this.previousResult = newResult
+	}
+
+	isIncompleteMailList(): boolean {
+		const currentResult = this.search.result()
+		return currentResult != null && isIncompleteMailResult(currentResult, this.search.indexState().currentMailIndexTimestamp)
+	}
+
+	searchAgainAndRecreateList(): void {
+		const restriction = this.getRestriction()
+		const maxResults = isSameTypeRef(MailTypeRef, restriction.type) ? SEARCH_PAGE_SIZE : null
+		this.performNewSearch(this.listModel, this.currentQuery, restriction, maxResults)
+
+		// new result is handled in onSearchResultChanged. We set previousResult to null so list gets recreated
+		this.previousResult = null
 	}
 
 	private async loadSearchResults<T extends SearchableTypes>(
@@ -1145,7 +1163,7 @@ export class SearchViewModel {
 		this.indexStateSubscription?.end(true)
 		this.indexStateSubscription = null
 		this.search.sendCancelSignal()
-		this.eventController.removeEntityListener(this.entityEventsListener)
+		this.eventController.removeEntityUpdatesListener(this.entityUpdatesListener)
 	}
 
 	getLabelsForMail(mail: Mail): MailSet[] {

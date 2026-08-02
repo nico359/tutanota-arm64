@@ -4,7 +4,7 @@ import { ColumnType, ViewColumn } from "../../../../ui/base/ViewColumn"
 import { InfoLink, lang, TranslationKey } from "../../../../ui/utils/LanguageViewModel"
 import { assertMainOrNode, FeatureType, isApp, isBrowser, Keys, ProgrammingError, UpgradePromptType } from "../../../../platform-kit/app-env"
 import { keyManager, Shortcut } from "../../../../ui/utils/KeyManager"
-import { getElementId, getIds, isSameId, isSameTypeRef, TypeRef } from "../../../../platform-kit/meta"
+import { elementIdToId, getElementId, getIds, isSameId, isSameSingleId, isSameTypeRef, TypeRef } from "../../../../platform-kit/meta"
 import { CalendarEvent, CalendarEventTypeRef, Contact, ContactTypeRef, Mail, MailTypeRef } from "@tutao/entities/tutanota"
 import { MailReportType, MailSetKind } from "../../../../entities/tutanota/Utils"
 import { SearchListView, SearchListViewAttrs } from "./SearchListView"
@@ -77,7 +77,7 @@ import { SelectAllCheckbox } from "../../../../ui/SelectAllCheckbox.js"
 import { selectionAttrsForList } from "../../../common/misc/ListModel.js"
 import { MultiselectMobileHeader } from "../../../../ui/MultiselectMobileHeader.js"
 import { MultiselectMode } from "../../../../ui/base/List.js"
-import { SearchViewModel } from "./SearchViewModel.js"
+import { PaidFunctionResult, SearchViewModel } from "./SearchViewModel.js"
 import { LockedError, NotFoundError } from "../../../../platform-kit/rest-client/error"
 import { showNotAvailableForFreeDialog } from "../../../common/misc/SubscriptionDialogs.js"
 import { listSelectionKeyboardShortcuts } from "../../../../ui/base/ListUtils.js"
@@ -259,14 +259,19 @@ export class SearchView extends BaseTopLevelView implements TopLevelView<SearchV
 					cancelCallback: () => {
 						this.searchViewModel.sendStopLoadingSignal()
 					},
-					isFreeAccount: locator.logins.getUserController().isFreeAccount(),
 					getLabelsForMail: (mail) => this.searchViewModel.getLabelsForMail(mail),
 					highlightedStrings: this.searchViewModel.getHighlightedStrings(),
 					availableCalendars: this.searchViewModel.getAvailableCalendars(true),
 					indexStateStream: this.searchViewModel.getSearchIndexStateStream(),
 					currentStartDate: this.searchViewModel.startDate,
-					extendSearchResult: (extendDate: Date) => {
-						void this.searchViewModel.selectStartDate(extendDate)
+					extendSearchResult: (extendDate: Date | null) => {
+						if (this.searchViewModel.selectStartDate(extendDate) === PaidFunctionResult.PaidSubscriptionNeeded) {
+							void showNotAvailableForFreeDialog(UpgradePromptType.EXTEND_MAIL_SEARCH_RANGE)
+						}
+					},
+					isIncompleteMailList: this.searchViewModel.isIncompleteMailList(),
+					searchAndRecreateMailList: () => {
+						this.searchViewModel.searchAgainAndRecreateList()
 					},
 				} satisfies SearchListViewAttrs),
 			),
@@ -1147,7 +1152,7 @@ export class SearchView extends BaseTopLevelView implements TopLevelView<SearchV
 
 		for (const mailbox of mailboxes) {
 			const mailboxIndex = mailboxes.indexOf(mailbox)
-			const mailFolders = mailLocator.mailModel.getFolderSystemByGroupId(mailbox.mailGroup._id)?.getIndentedList() ?? []
+			const mailFolders = mailLocator.mailModel.getFolderSystemByGroupId(elementIdToId(mailbox.mailGroup._id))?.getIndentedList() ?? []
 			for (const folderInfo of mailFolders) {
 				const mailboxLabel = mailboxIndex === 0 ? "" : ` (${getGroupInfoDisplayName(mailbox.mailGroupInfo)})`
 				const folderId = getElementId(folderInfo.folder)
@@ -1452,7 +1457,7 @@ export class SearchView extends BaseTopLevelView implements TopLevelView<SearchV
 				label: selectedCalendar
 					? lang.makeTranslation(
 							"calendar_label",
-							availableCalendars.find((calendarInfo) => isSameId(calendarInfo.id, selectedCalendar?.id))?.name ?? "",
+							availableCalendars.find((calendarInfo) => isSameSingleId(calendarInfo.id, selectedCalendar?.id))?.name ?? "",
 						)
 					: lang.getTranslation("calendar_label"),
 				selected: selectedCalendar != null,

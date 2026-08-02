@@ -1,8 +1,9 @@
-import { clone, isSameId, StrippedEntity } from "@tutao/meta"
+import { clone, isSameId, isSameSingleId } from "@tutao/meta"
 import {
 	AdvancedRepeatRule,
 	CalendarEvent,
 	CalendarEventAttendee,
+	CalendarEventParams,
 	CalendarEventTypeRef,
 	CalendarGroupRoot,
 	CalendarRepeatRule,
@@ -37,7 +38,14 @@ import {
 } from "@tutao/utils"
 import { BIRTHDAY_CALENDAR_BASE_ID, EndType, EventTextTimeOption, RepeatPeriod, WeekStart } from "@tutao/app-env"
 import { DateTime, DurationLikeObject, FixedOffsetZone, IANAZone, MonthNumbers, WeekdayNumbers } from "luxon"
-import { CalendarEventTimes, DAYS_SHIFTED_MS, generateEventElementId, isAllDayEvent, isAllDayEventByTimes } from "../../api/common/utils/CommonCalendarUtils"
+import {
+	CalendarEventDateTimeFields,
+	CalendarEventTimes,
+	DAYS_SHIFTED_MS,
+	generateEventElementId,
+	isAllDayEvent,
+	isAllDayEventByTimes,
+} from "../../api/common/utils/CommonCalendarUtils"
 import { Time } from "./Time.js"
 import { CalendarInfo } from "../../../calendar-app/calendar/model/CalendarModel"
 import { EntityClient } from "../../../../platform-kit/network/EntityClient.js"
@@ -56,27 +64,27 @@ export type CalendarTimeRange = {
 	end: number
 }
 
-export function eventStartsBefore(currentDate: Date, zone: string, event: CalendarEvent): boolean {
+export function eventStartsBefore(currentDate: Date, zone: string, event: CalendarEventDateTimeFields): boolean {
 	return getEventStart(event, zone).getTime() < currentDate.getTime()
 }
 
-export function eventStartsBeforeDay(currentDate: Date, zone: string, event: CalendarEvent): boolean {
+export function eventStartsBeforeDay(currentDate: Date, zone: string, event: CalendarEventDateTimeFields): boolean {
 	return getEventStart(event, zone).getTime() < getStartOfDayWithZone(currentDate, zone).getTime()
 }
 
-export function eventEndsBefore(date: Date, zone: string, event: CalendarEvent): boolean {
+export function eventEndsBefore(date: Date, zone: string, event: CalendarEventDateTimeFields): boolean {
 	return getEventEnd(event, zone).getTime() < date.getTime()
 }
 
-export function eventStartsAfter(date: Date, zone: string, event: CalendarEvent): boolean {
+export function eventStartsAfter(date: Date, zone: string, event: CalendarEventDateTimeFields): boolean {
 	return getEventStart(event, zone).getTime() > date.getTime()
 }
 
-export function eventEndsAfterDay(currentDate: Date, zone: string, event: CalendarEvent): boolean {
+export function eventEndsAfterDay(currentDate: Date, zone: string, event: CalendarEventDateTimeFields): boolean {
 	return getEventEnd(event, zone).getTime() > getStartOfNextDayWithZone(currentDate, zone).getTime()
 }
 
-export function eventEndsAfterOrOn(currentDate: Date, zone: string, event: CalendarEvent): boolean {
+export function eventEndsAfterOrOn(currentDate: Date, zone: string, event: CalendarEventDateTimeFields): boolean {
 	return getEventEnd(event, zone).getTime() >= getStartOfNextDayWithZone(currentDate, zone).getTime()
 }
 
@@ -868,7 +876,10 @@ export function getEventStart({ startTime, endTime }: CalendarEventTimes, timeZo
 	}
 }
 
-/** @param date encodes some calendar date in {@param zone} (like the 1st of May 2023)
+/**
+ * @param date encodes some calendar date in {@param zone} (like the 1st of May 2023)
+ * @param zone - Time zone applied to the given date
+ *
  * @returns {Date} encodes the same calendar date in UTC */
 export function getAllDayDateUTCFromZone(date: Date, zone: string): Date {
 	return DateTime.fromJSDate(date, { zone })
@@ -905,7 +916,7 @@ export function isSameEventInstance(left: EventWrapper, right: EventWrapper): bo
 
 export function hasAlarmsForTheUser(user: User, event: CalendarEvent): boolean {
 	const useAlarmList = neverNull(user.alarmInfoList).alarms
-	return event.alarmInfos.some(([listId]) => isSameId(listId, useAlarmList))
+	return event.alarmInfos.some(([listId]) => isSameSingleId(listId, useAlarmList))
 }
 
 export function eventComparator(l: EventWrapper, r: EventWrapper): number {
@@ -1471,7 +1482,7 @@ export function findNextAlarmOccurrence(
 				startTime: eventStart,
 				endTime: eventEnd,
 				repeatRule,
-			} as StrippedEntity<CalendarEvent>),
+			} as CalendarEventParams),
 			localTimeZone,
 			maxDate,
 		)

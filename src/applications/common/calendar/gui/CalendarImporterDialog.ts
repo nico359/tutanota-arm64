@@ -1,5 +1,5 @@
-import { elementIdPart, isSameId, listIdPart } from "@tutao/meta"
-import { showFileChooser, showNativeFilePicker } from "../../file/FileController.js"
+import { elementIdPart, isSameId, isSameSingleId, listIdPart } from "@tutao/meta"
+import { FileChooserMultiMode, showFileChooser, showNativeFilePicker } from "../../file/FileController.js"
 import { showProgressDialog } from "../../../../ui/dialogs/ProgressDialog.js"
 import { ParserError } from "../../misc/parsing/ParserCombinator.js"
 import { Dialog, DialogType } from "../../../../ui/base/Dialog.js"
@@ -194,7 +194,7 @@ export type ProgenitorsToUpdateExclusionDates = {
 export async function selectAndParseIcalFile(): Promise<ParsedEventAlarmTuple[]> {
 	try {
 		const allowedExtensions = ["ical", "ics", "ifb", "icalendar"]
-		const dataFiles = isApp() ? await showNativeFilePicker(allowedExtensions, true) : await showFileChooser(true, allowedExtensions)
+		const dataFiles = isApp() ? await showNativeFilePicker(allowedExtensions, true) : await showFileChooser(FileChooserMultiMode.Multi, allowedExtensions)
 		const contents = dataFiles.map((file) => parseCalendarFile(file).contents)
 		return contents.flat()
 	} catch (e) {
@@ -222,7 +222,7 @@ export async function exportCalendar(calendarName: string, groupRoot: CalendarGr
 		(async () => {
 			const allEvents = await loadAllEvents(groupRoot)
 			const eventsWithAlarms = await promiseMap(allEvents, async (event: CalendarEvent) => {
-				const thisUserAlarms = event.alarmInfos.filter((alarmInfoId) => isSameId(userAlarmInfos, listIdPart(alarmInfoId)))
+				const thisUserAlarms = event.alarmInfos.filter((alarmInfoId) => isSameSingleId(userAlarmInfos, listIdPart(alarmInfoId)))
 				if (thisUserAlarms.length === 0) return { event, alarms: [] }
 				const alarms = await locator.entityClient.loadMultiple(UserAlarmInfoTypeRef, userAlarmInfos, thisUserAlarms.map(elementIdPart))
 				return { event, alarms }

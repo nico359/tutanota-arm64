@@ -1,4 +1,4 @@
-import { OperationType, timestampToGeneratedId, TypeRef } from "../../../../../src/platform-kit/meta"
+import { elementIdToId, OperationType, timestampToGeneratedId } from "../../../../../src/platform-kit/meta"
 import { DbFacade } from "../../../../../src/applications/common/api/worker/search/DbFacade.js"
 import { daysToMillis, ENTITY_EVENT_BATCH_TTL_DAYS, NOTHING_INDEXED_TIMESTAMP, ProgrammingError } from "../../../../../src/platform-kit/app-env"
 import { IndexedDbIndexer, initSearchIndexObjectStores } from "../../../../../src/applications/mail-app/workerUtils/index/IndexedDbIndexer.js"
@@ -25,10 +25,11 @@ import { DateProvider } from "../../../../../src/platform-kit/utils/DateProvider
 import { ContactListTypeRef, ContactTypeRef, MailTypeRef } from "@tutao/entities/tutanota"
 import { ClientTypeModelResolver } from "../../../../../src/platform-kit/instance-pipeline"
 import { EntityUpdateTypeRef, GroupMembershipTypeRef, UserTypeRef } from "@tutao/entities/sys"
-import { EntityUpdateData, entityUpdateToUpdateData } from "../../../../../src/platform-kit/instance-pipeline/utils/EntityUpdateUtils"
+import { CachingStatus, EntityUpdateData, entityUpdateToUpdateData } from "../../../../../src/platform-kit/instance-pipeline/utils/EntityUpdateUtils"
 import { GroupType } from "../../../../../src/entities/sys/Utils"
 import { decryptKey, encryptKey } from "../../../../../src/platform-kit/crypto/instance-pipeline-crypto/KeyEncryption"
 import { aesEncrypt } from "../../../../../src/platform-kit/crypto/instance-pipeline-crypto/Aes"
+import { WebMailIndexer } from "../../../../../src/applications/mail-app/workerUtils/index/WebMailIndexer"
 
 const SERVER_TIME = new Date("1994-06-08").getTime()
 const serverDateProvider: DateProvider = {
@@ -48,14 +49,15 @@ contactList.contacts = "contactListId"
 o.spec("IndexedDbIndexer", () => {
 	const OUT_OF_DATE_SERVER_TIME = SERVER_TIME - daysToMillis(ENTITY_EVENT_BATCH_TTL_DAYS) - 1000 * 60 * 60 * 24
 
-	const noPatchesAndInstance: Pick<EntityUpdateData, "instance" | "patches" | "blobInstance"> = {
+	const noPatchesAndInstance: Pick<EntityUpdateData, "instance" | "patches" | "blobInstance" | "cachingStatus"> = {
 		instance: null,
 		patches: null,
 		blobInstance: null,
+		cachingStatus: CachingStatus.CacheNotUpdated,
 	}
 
 	let keyLoaderFacade: KeyLoaderFacade
-	let mailIndexer: MailIndexer
+	let mailIndexer: WebMailIndexer
 	let contactIndexer: ContactIndexer
 	let idbStub = new DbStub()
 	let dbWithStub: EncryptedDbWrapper
@@ -572,23 +574,31 @@ o.spec("IndexedDbIndexer", () => {
 				indexerMock.initDeferred.resolve()
 			})
 
-			function newUpdate<T>(typeRef: TypeRef<T>) {
-				return {
-					typeRef,
-				} as Partial<EntityUpdateData> as EntityUpdateData
-			}
-
-			let events = [newUpdate(MailTypeRef), newUpdate(ContactTypeRef), newUpdate(UserTypeRef)]
+			const events: EntityUpdateData[] = [
+				{ typeRef: MailTypeRef, operation: OperationType.CREATE, instanceListId: "mail-list", instanceId: "mail-create" },
+				{ typeRef: MailTypeRef, operation: OperationType.UPDATE, instanceListId: "mail-list", instanceId: "mail-update" },
+				{ typeRef: MailTypeRef, operation: OperationType.DELETE, instanceListId: "mail-list", instanceId: "mail-delete" },
+				{ typeRef: ContactTypeRef, operation: OperationType.CREATE, instanceListId: "contact-list", instanceId: "contact-create" },
+				{ typeRef: ContactTypeRef, operation: OperationType.UPDATE, instanceListId: "contact-list", instanceId: "contact-update" },
+				{ typeRef: ContactTypeRef, operation: OperationType.DELETE, instanceListId: "contact-list", instanceId: "contact-delete" },
+				{ typeRef: UserTypeRef },
+			] as Partial<EntityUpdateData>[] as EntityUpdateData[]
 			const batch = {
 				events,
 				groupId,
 				batchId,
 				isInitialSyncDone: true,
 			}
+
 			await indexer._processEntityEvents(batch)
 			verify(core.putLastBatchIdForGroup(groupId, batchId))
-			verify(mailIndexer.processEntityEvents(events, groupId, batchId), { times: 1 })
-			verify(contactIndexer.processEntityEvents(events, groupId, batchId), { times: 1 })
+			verify(mailIndexer.processEntityEvents(events), { times: 1 })
+			verify(mailIndexer.afterMailCreated(["mail-list", "mail-create"]), { times: 1 })
+			verify(mailIndexer.afterMailUpdated(["mail-list", "mail-update"]), { times: 1 })
+			verify(mailIndexer.afterMailDeleted(["mail-list", "mail-delete"]), { times: 1 })
+			verify(contactIndexer.afterContactCreated(["contact-list", "contact-create"]), { times: 1 })
+			verify(contactIndexer.afterContactUpdated(["contact-list", "contact-update"]), { times: 1 })
+			verify(contactIndexer.afterContactDeleted(["contact-list", "contact-delete"]), { times: 1 })
 		})
 
 		o.test("when it receives the events it queues them for processing", async function () {
@@ -715,12 +725,12 @@ o.spec("IndexedDbIndexer", () => {
 			await indexer.eventQueue.waitForEmptyQueue()
 
 			verify(core.putLastBatchIdForGroup(groupId, batchId1))
-			verify(mailIndexer.processEntityEvents(events1, groupId, batchId1))
-			verify(contactIndexer.processEntityEvents(events1, groupId, batchId1))
+			verify(mailIndexer.processEntityEvents(events1))
+			verify(mailIndexer.afterMailCreated(["list-id", "id-1"]))
 
 			verify(core.putLastBatchIdForGroup(groupId, batchId2))
-			verify(mailIndexer.processEntityEvents(events2, groupId, batchId2))
-			verify(contactIndexer.processEntityEvents(events2, groupId, batchId2))
+			verify(mailIndexer.processEntityEvents(events2))
+			verify(mailIndexer.afterMailCreated(["list-id", "id-2"]))
 		})
 
 		o.spec("handles mail updates", () => {
@@ -995,20 +1005,20 @@ o.spec("IndexedDbIndexer", () => {
 						...noPatchesAndInstance,
 					},
 				]
-				when(mailIndexer.processEntityEvents(updates, matchers.anything(), matchers.anything())).thenDo(() => processDeferred.resolve())
+				when(mailIndexer.processEntityEvents(updates)).thenDo(() => processDeferred.resolve())
 				indexer.enableMailIndexing()
 
 				await initialIndexingCalled.promise
 				// dispatch an event while initial indexing is running and see that it is not immediately processed
 				await indexer.processEntityEvents(updates, "batchId", userGroupId, true)
 				// not processed yet
-				verify(mailIndexer.processEntityEvents(matchers.anything(), matchers.anything(), matchers.anything()), { times: 0 })
+				verify(mailIndexer.processEntityEvents(matchers.anything()), { times: 0 })
 
 				// allow initial indexing to finish
 				initialIndexingDone.resolve()
 				// wait until process callback is called
 				await processDeferred.promise
-				verify(mailIndexer.processEntityEvents(updates, userGroupId, "batchId"))
+				verify(mailIndexer.processEntityEvents(updates))
 				verify(mailIndexer.doInitialMailIndexing(user))
 			})
 
@@ -1035,19 +1045,19 @@ o.spec("IndexedDbIndexer", () => {
 						...noPatchesAndInstance,
 					},
 				]
-				when(mailIndexer.processEntityEvents(updates, matchers.anything(), matchers.anything())).thenDo(() => processDeferred.resolve())
+				when(mailIndexer.processEntityEvents(updates)).thenDo(() => processDeferred.resolve())
 				indexer.extendMailIndex(time.getTime())
 
 				await extendingMailIndexingCalled.promise
 				await indexer.processEntityEvents(updates, "batchId", userGroupId, true)
 				// not processed yet
-				verify(mailIndexer.processEntityEvents(matchers.anything(), matchers.anything(), matchers.anything()), { times: 0 })
+				verify(mailIndexer.processEntityEvents(matchers.anything()), { times: 0 })
 
 				// allow extending indexing to finish
 				extendMailIndexingDone.resolve()
 				// wait until process callback is called
 				await processDeferred.promise
-				verify(mailIndexer.processEntityEvents(updates, userGroupId, "batchId"))
+				verify(mailIndexer.processEntityEvents(updates))
 				verify(mailIndexer.extendIndexIfNeeded(user, time.getTime()))
 			})
 
@@ -1067,7 +1077,7 @@ o.spec("IndexedDbIndexer", () => {
 				await indexer.disableMailIndexing()
 				verify(core.isStoppedProcessing())
 				verify(mailIndexer.cancelMailIndexing())
-				verify(dbWithStub.dbFacade.deleteDatabase(user._id))
+				verify(dbWithStub.dbFacade.deleteDatabase(elementIdToId(user._id)))
 
 				verify(mailIndexer.init(user), { times: 2 }) // +1 when disableMailIndexing was called
 			})

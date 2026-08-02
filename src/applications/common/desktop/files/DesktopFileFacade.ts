@@ -1,13 +1,20 @@
 import { default as stream, Readable, Transform } from "node:stream"
 import { pipeline } from "node:stream/promises"
-import { CommonNativeFacade, DownloadTaskResponse, FileFacade, IpcClientRect, UploadTaskResponse } from "@tutao/native-bridge/generatedIpc/types"
+import {
+	CommonNativeFacade,
+	DirectoryContents,
+	DownloadTaskResponse,
+	FileFacade,
+	IpcClientRect,
+	UploadTaskResponse,
+} from "@tutao/native-bridge/generatedIpc/types"
 import { FileUri } from "../../../../app-kit/native-bridge/common/FileApp.js"
 import { ElectronExports, FsExports, PathExports } from "../ElectronExportTypes.js"
 import path from "node:path"
 import { ApplicationWindow } from "../ApplicationWindow.js"
-import { assertNotNull, DateProvider, newPromise, throttle, uint8ArrayToBase64 } from "@tutao/utils"
+import { assertNotNull, DateProvider, first, newPromise, promiseFilter, throttle, uint8ArrayToBase64 } from "@tutao/utils"
 import { looksExecutable, nonClobberingFilename } from "../PathUtils.js"
-import url from "node:url"
+import { fileURLToPath as nodeFileURLToPath, pathToFileURL } from "node:url"
 import FsModule, { WriteStream } from "node:fs"
 import { Buffer } from "node:buffer"
 import { ReadableStream } from "node:stream/web"
@@ -23,6 +30,7 @@ import { OpenDialogOptions } from "electron"
 import { CommandExecutor } from "../CommandExecutor"
 import { DataFile } from "../../../../entities/tutanota/MailBundle"
 import { createHash } from "node:crypto"
+import { fileUrlFromString } from "./fileUtils"
 
 const TAG = "[DesktopFileFacade]"
 
@@ -52,8 +60,8 @@ export class DesktopFileFacade implements FileFacade {
 		return Promise.resolve()
 	}
 
-	async deleteFile(filePath: string): Promise<void> {
-		await this.tfs.deleteFile(filePath)
+	async deleteFile(fileUrl: string): Promise<void> {
+		await this.tfs.deleteFile(fileUrl)
 	}
 
 	private async deleteFileQuietly(filePath: string): Promise<void> {
@@ -72,23 +80,23 @@ export class DesktopFileFacade implements FileFacade {
 		try {
 			const { status, headers: headersIncoming, body } = await this.fetch(sourceUrl, { method: "GET", headers, signal: abortController.signal })
 
-			let encryptedFilePath
+			let encryptedFileUrl: URL | null
 			if (status === 200 && body != null) {
 				const downloadDirectory = await this.tfs.ensureEncryptedDir()
-				encryptedFilePath = path.join(downloadDirectory, fileName)
+				encryptedFileUrl = pathToFileURL(path.join(downloadDirectory, fileName))
 				const readable: stream.Readable = bodyToReadable(body)
 				// debounce so that we don't post the message too often
 				const onProgress = throttle(100, (bytes: number) => {
 					this.progressTracker.downloadProgress(fileId, bytes)
 				})
-				await this.pipeIntoFile(readable, encryptedFilePath, onProgress)
+				await this.pipeIntoFile(readable, encryptedFileUrl, onProgress)
 			} else {
-				encryptedFilePath = null
+				encryptedFileUrl = null
 			}
 
 			const result = {
 				statusCode: status,
-				encryptedFileUri: encryptedFilePath,
+				encryptedFileUri: encryptedFileUrl?.toString() ?? null,
 				errorId: getHttpHeader(headersIncoming, "error-id"),
 				precondition: getHttpHeader(headersIncoming, "precondition"),
 				suspensionTime: getHttpHeader(headersIncoming, "suspension-time") ?? getHttpHeader(headersIncoming, "retry-after"),
@@ -106,8 +114,8 @@ export class DesktopFileFacade implements FileFacade {
 		this.activeRequests.get(fileId)?.abort(new CancelledError("Request canceled"))
 	}
 
-	private async pipeIntoFile(response: stream.Readable, encryptedFilePath: string, progress: (bytes: number) => unknown) {
-		const fileStream: WriteStream = this.fs.createWriteStream(encryptedFilePath, { emitClose: true })
+	private async pipeIntoFile(response: stream.Readable, encryptedFileURL: URL, progress: (bytes: number) => unknown) {
+		const fileStream: WriteStream = this.fs.createWriteStream(encryptedFileURL, { emitClose: true })
 		try {
 			await pipeline(
 				response,
@@ -122,29 +130,28 @@ export class DesktopFileFacade implements FileFacade {
 				fileStream,
 			)
 		} catch (e) {
-			await this.fs.promises.unlink(encryptedFilePath)
+			await this.fs.promises.unlink(encryptedFileURL)
 			throw e
 		}
 	}
 
 	/** can be used with arbitrary paths, is run on the selected file locations before the files are read */
-	async getMimeType(filePath: string): Promise<string> {
-		return await getMimeTypeForFile(filePath)
+	async getMimeType(fileUrl: string): Promise<string> {
+		return await getMimeTypeForFile(fileUrlFromString(fileUrl))
 	}
 
 	/** can be used with arbitrary paths, is run on the selected file locations before the files are read */
-	async getName(filePath: string): Promise<string> {
-		return path.basename(filePath)
+	async getName(fileUrl: string): Promise<string> {
+		return path.basename(fileURLToPath(fileUrl))
 	}
 
 	/** can be used with arbitrary paths, is run on the selected file locations before the files are read */
-	async getSize(filePath: string): Promise<number> {
-		const stats = await this.fs.promises.stat(filePath)
-		return stats.size
+	async getSize(fileUrl: string): Promise<number> {
+		return this.tfs.getFileSize(fileUrl)
 	}
 
-	async hashFile(filePath: string): Promise<string> {
-		const fileStream = this.tfs.fileStream(filePath)
+	async hashFile(fileUrl: string): Promise<string> {
+		const fileStream = this.tfs.fileStream(fileUrl)
 		try {
 			const hash = createHash("sha256")
 			await pipeline(fileStream, hash)
@@ -155,7 +162,7 @@ export class DesktopFileFacade implements FileFacade {
 		}
 	}
 
-	async joinFiles(filename: string, files: Array<string>): Promise<string> {
+	async joinFiles(filename: string, filePartsUrls: Array<string>): Promise<string> {
 		const downloadDirectory = await this.tfs.ensureUnencrytpedDir()
 
 		const filesInDirectory = await this.fs.promises.readdir(downloadDirectory)
@@ -164,9 +171,9 @@ export class DesktopFileFacade implements FileFacade {
 		const outStream = this.fs.createWriteStream(filePath, { autoClose: false })
 
 		try {
-			for (const infile of files) {
-				this.tfs.assertInTmpDir(infile)
-				const readStream = this.fs.createReadStream(infile)
+			for (const infile of filePartsUrls) {
+				const inFileUrl = this.tfs.assertInTmpDir(infile)
+				const readStream = this.fs.createReadStream(inFileUrl)
 				try {
 					await newPromise<void>((resolve, reject) => {
 						readStream.on("end", resolve)
@@ -176,7 +183,7 @@ export class DesktopFileFacade implements FileFacade {
 				} finally {
 					readStream.close()
 				}
-				await this.fs.promises.unlink(infile)
+				await this.fs.promises.unlink(inFileUrl)
 			}
 
 			await closeFileStream(outStream)
@@ -190,21 +197,22 @@ export class DesktopFileFacade implements FileFacade {
 			throw e
 		}
 
-		return filePath
+		return pathToFileURL(filePath).toString()
 	}
 
-	async open(location: string /* , mimeType: string omitted */): Promise<void> {
-		this.tfs.assertInTmpDir(location)
+	async open(fileUrl: string /* , mimeType: string omitted */): Promise<void> {
+		this.tfs.assertInTmpDir(fileUrl)
+		const filePath = fileURLToPath(fileUrl)
 		const openWithElectronShell = () =>
 			this.electron.shell
-				.openPath(location) // may resolve with "" or an error message
+				.openPath(filePath) // may resolve with "" or an error message
 				.catch((e) => {
 					const message = "failed to open path." + e
-					throw new FileOpenError("Could not open " + location + ", " + message)
+					throw new FileOpenError("Could not open " + fileUrl + ", " + message)
 				})
 
 		// only windows will happily execute a just downloaded program
-		if (this.process.platform === "win32" && looksExecutable(location)) {
+		if (this.process.platform === "win32" && looksExecutable(filePath)) {
 			const { response } = await this.electron.dialog.showMessageBox({
 				type: "warning",
 				buttons: [lang.get("yes_label"), lang.get("no_label")],
@@ -222,7 +230,7 @@ export class DesktopFileFacade implements FileFacade {
 			await this.commandExecutor
 				.run({
 					executable: "xdg-open",
-					args: [location],
+					args: [filePath],
 					env:
 						// electron replaces XDG_CURRENT_DESKTOP in some cases which breaks gio open which breaks xdg-open
 						this.process.env.ORIGINAL_XDG_CURRENT_DESKTOP == null
@@ -233,29 +241,34 @@ export class DesktopFileFacade implements FileFacade {
 								},
 				})
 				.catch((e) => {
-					throw new FileOpenError("Could not open " + location + ", " + e)
+					throw new FileOpenError("Could not open " + fileUrl + ", " + e)
 				})
 		} else {
 			await openWithElectronShell()
 		}
 	}
 
-	async openFileChooser(boundingRect: IpcClientRect, filter: ReadonlyArray<string> | null): Promise<Array<string>> {
+	async openFileChooser(_boundingRect: IpcClientRect, filter: ReadonlyArray<string> | null): Promise<Array<string>> {
 		const opts: OpenDialogOptions = { properties: ["openFile", "multiSelections"] }
 		if (filter != null) {
 			opts.filters = [{ name: "Filter", extensions: filter.slice() }]
 		}
 		const { filePaths } = await this.electron.dialog.showOpenDialog(this.win._browserWindow, opts)
-		return filePaths
+		// File pickers are odd and sometimes allow choosing directories or other files instead
+		const onlyFilePaths = await promiseFilter(filePaths, async (f) => (await this.fs.promises.stat(f)).isFile())
+		return onlyFilePaths.map((path) => pathToFileURL(path).toString())
 	}
 
-	openFolderChooser(): Promise<string | null> {
-		// open folder dialog
-		return this.electron.dialog
-			.showOpenDialog(this.win._browserWindow, {
-				properties: ["openDirectory"],
-			})
-			.then(({ filePaths }) => filePaths[0] ?? null)
+	async openFolderChooser(): Promise<string | null> {
+		const { filePaths } = await this.electron.dialog.showOpenDialog(this.win._browserWindow, {
+			properties: ["openDirectory"],
+		})
+		const firstPath = first(filePaths)
+		if (firstPath && (await this.fs.promises.stat(firstPath)).isDirectory()) {
+			return pathToFileURL(firstPath).toString()
+		} else {
+			return null
+		}
 	}
 
 	/**
@@ -266,39 +279,21 @@ export class DesktopFileFacade implements FileFacade {
 		const opts: OpenDialogOptions = { properties: ["openDirectory", "openFile", "multiSelections"] }
 		opts.filters = [{ name: "Filter", extensions: ["eml", "mbox"].slice() }]
 		const { filePaths } = await this.electron.dialog.showOpenDialog(this.win._browserWindow, opts)
-		return filePaths
+		return filePaths.map((path) => pathToFileURL(path).toString())
 	}
 
 	async putFileIntoDownloadsFolder(localFileUri: string, fileNameToUse: string): Promise<string> {
-		this.tfs.assertInTmpDir(localFileUri)
-		const savePath = await this.pickSavePath(fileNameToUse)
-		await this.fs.promises.mkdir(path.dirname(savePath), {
+		const url = this.tfs.assertInTmpDir(localFileUri)
+		const savedFileUrl = await this.pickSavePath(fileNameToUse)
+		await this.fs.promises.mkdir(path.dirname(fileURLToPath(savedFileUrl)), {
 			recursive: true,
 		})
-		await this.fs.promises.copyFile(localFileUri, savePath)
-		await this.showInFileExplorer(savePath)
-		return savePath
-	}
-
-	/** can be used with arbitrary paths, is run on the selected file locations */
-	async splitFile(fileUri: string, maxChunkSizeBytes: number): Promise<Array<string>> {
-		// Instead of actually splitting the file into small files return a bunch of virtual
-		// URIs that point to a specific part of the file. aesEncryptFile() knows how to read them
-		const fileSize = await this.getSize(fileUri)
-		let currentOffset = 0
-		const chunks: string[] = []
-		while (currentOffset < fileSize) {
-			const start = currentOffset
-			const length = start + maxChunkSizeBytes > fileSize ? fileSize - start : maxChunkSizeBytes
-			const chunkUri = this.tfs.createFileChunkUri(fileUri, start, length)
-			chunks.push(chunkUri)
-			currentOffset = start + length
-		}
-		return chunks
+		await this.fs.promises.copyFile(url, savedFileUrl)
+		await this.showInFileExplorer(savedFileUrl)
+		return savedFileUrl.toString()
 	}
 
 	async upload(fileUri: string, targetUrl: string, method: HttpMethod, headers: Record<string, string>, fileId: string): Promise<UploadTaskResponse> {
-		const fileStream: NodeJS.ReadableStream = this.tfs.fileStream(fileUri)
 		const size = await this.tfs.getFileSize(fileUri)
 		headers["Content-Length"] = `${size}`
 
@@ -308,6 +303,8 @@ export class DesktopFileFacade implements FileFacade {
 		const onProgress = throttle(100, (bytes) => {
 			this.progressTracker.uploadProgress(fileId, bytes)
 		})
+
+		const fileStream: NodeJS.ReadableStream = this.tfs.fileStream(fileUri)
 		const progressStream = wrapReadableAsCountable(fileStream, onProgress)
 
 		try {
@@ -345,10 +342,10 @@ export class DesktopFileFacade implements FileFacade {
 	}
 
 	// This write data to app dir and return full path
-	async writeToAppDir(fileConent: Uint8Array, fileName: string): Promise<void> {
-		const fullPath = this.path.join(this.electron.app.getPath("userData"), fileName)
+	async writeToAppDir(content: Uint8Array, name: string): Promise<void> {
+		const fullPath = this.path.join(this.electron.app.getPath("userData"), name)
 		this.assertPathWithinUserData(fullPath)
-		this.fs.writeFileSync(fullPath, fileConent)
+		this.fs.writeFileSync(fullPath, content)
 	}
 
 	async readFromAppDir(fileName: string): Promise<Uint8Array> {
@@ -371,18 +368,14 @@ export class DesktopFileFacade implements FileFacade {
 	}
 
 	/** this is used to read unencrypted data from arbitrary locations */
-	async readDataFile(uriOrPath: FileUri): Promise<DataFile | null> {
-		try {
-			uriOrPath = url.fileURLToPath(uriOrPath)
-		} catch (e) {
-			// the thing already was a path, or at least not an URI
-		}
-		const name = path.basename(uriOrPath)
+	async readDataFile(fileUrl: FileUri): Promise<DataFile | null> {
+		const url = fileUrlFromString(fileUrl)
+		const name = path.basename(fileURLToPath(fileUrl))
 		try {
 			const [data, mimeType] = await Promise.all([
-				this.fs.promises.readFile(uriOrPath),
+				this.fs.promises.readFile(url),
 				// freestanding function doesn't have the checks
-				getMimeTypeForFile(uriOrPath),
+				getMimeTypeForFile(url),
 			])
 			if (data == null) return null
 			return {
@@ -398,16 +391,52 @@ export class DesktopFileFacade implements FileFacade {
 		}
 	}
 
+	async readDirectory(directoryUrl: string): Promise<DirectoryContents> {
+		const dirPath = fileURLToPath(directoryUrl)
+		const children = await this.fs.promises.readdir(dirPath, { withFileTypes: true })
+		const files = children.filter((f) => f.isFile()).map((f) => pathToFileURL(this.path.join(dirPath, f.name)).toString())
+		const folders = children.filter((f) => f.isDirectory()).map((f) => pathToFileURL(this.path.join(dirPath, f.name)).toString())
+		const name = this.path.basename(dirPath)
+		return {
+			name,
+			files: files,
+			path: directoryUrl,
+			folders: folders,
+		}
+	}
+	async openFileForReading(fileUrl: string): Promise<string> {
+		return this.tfs.openFileForReading(fileUrl)
+	}
+
+	async closeFile(streamUrl: string): Promise<void> {
+		this.tfs.closeFile(streamUrl)
+	}
+
+	async readChunk(streamUrl: string, maxChunkSize: number): Promise<string | null> {
+		const stream = this.tfs.fileStream(streamUrl)
+		if (stream.closed) {
+			return null
+		}
+		const buffer = await readStreamToBuffer(stream, maxChunkSize)
+		return this.tfs.createInMemoryFile(buffer)
+	}
+
 	/**
 	 * Select a non-colliding name in the configured downloadPath, preferably with the given file name
 	 * public for testing
 	 */
-	async pickSavePath(filename: string): Promise<string> {
-		const defaultDownloadPath = await this.conf.getVar(DesktopConfigKey.defaultDownloadPath)
+	private async pickSavePath(filename: string): Promise<URL> {
+		const defaultDownloadPathMaybeFileUrl = await this.conf.getVar(DesktopConfigKey.defaultDownloadPath)
 
-		if (defaultDownloadPath != null) {
+		if (defaultDownloadPathMaybeFileUrl != null) {
+			// the value saved to the config database changed from a file path to a file URL starting with the client version 353.260626.0
+			// (see revision ac6ba0a87f5c718649354a8f5a589dcfa570515e), so we need to check if the value is a file URL and if so, convert it to a file path
+			const defaultDownloadPath = defaultDownloadPathMaybeFileUrl.startsWith("file://")
+				? fileURLToPath(defaultDownloadPathMaybeFileUrl)
+				: defaultDownloadPathMaybeFileUrl
 			const fileName = path.basename(filename)
-			return path.join(defaultDownloadPath, nonClobberingFilename(await this.fs.promises.readdir(defaultDownloadPath), fileName))
+			const destinationPath = path.join(defaultDownloadPath, nonClobberingFilename(await this.fs.promises.readdir(defaultDownloadPath), fileName))
+			return pathToFileURL(destinationPath)
 		} else {
 			const { canceled, filePath } = await this.electron.dialog.showSaveDialog({
 				defaultPath: path.join(this.electron.app.getPath("downloads"), filename),
@@ -416,20 +445,20 @@ export class DesktopFileFacade implements FileFacade {
 			if (canceled) {
 				throw new CancelledError("Path selection cancelled")
 			} else {
-				return assertNotNull(filePath)
+				return pathToFileURL(filePath)
 			}
 		}
 	}
 
 	/** public for testing */
-	async showInFileExplorer(savePath: string): Promise<void> {
+	async showInFileExplorer(fileUrl: URL): Promise<void> {
 		// See doc for _lastOpenedFileManagerAt on why we do this throttling.
 		const lastOpenedFileManagerAt = this.lastOpenedFileManagerAt
 		const fileManagerTimeout = await this.conf.getConst(BuildConfigKey.fileManagerTimeout)
 
 		if (lastOpenedFileManagerAt == null || this.dateProvider.now() - lastOpenedFileManagerAt > fileManagerTimeout) {
 			this.lastOpenedFileManagerAt = this.dateProvider.now()
-			this.electron.shell.showItemInFolder(savePath)
+			this.electron.shell.showItemInFolder(fileURLToPath(fileUrl))
 		}
 	}
 	/** can be used with arbitrary paths, is run on the selected file locations before the files are read */
@@ -442,8 +471,8 @@ export class DesktopFileFacade implements FileFacade {
 	}
 }
 
-export async function getMimeTypeForFile(filePath: string): Promise<string> {
-	const ext = path.extname(filePath).slice(1).toLowerCase() // remove the dot and normalize
+export async function getMimeTypeForFile(url: URL): Promise<string> {
+	const ext = path.extname(fileURLToPath(url)).slice(1).toLowerCase() // remove the dot and normalize
 	const { extensionToMimeType } = await import("../flat-mimes.js")
 	const candidates = extensionToMimeType[ext]
 	// sometimes there are multiple options, but we'll take the first and reorder if issues arise.
@@ -457,15 +486,36 @@ function closeFileStream(stream: FsModule.WriteStream): Promise<void> {
 	})
 }
 
-export async function readStreamToBuffer(stream: NodeJS.ReadableStream): Promise<Uint8Array> {
+export async function readStreamToBuffer(stream: NodeJS.ReadableStream, upToBytes?: number): Promise<Uint8Array> {
+	const CHUNK_SIZE = 1024 * 1024
 	return newPromise((resolve, reject) => {
+		// stream will give us data in whatever chunks it pleases so we need to assemble them manually
 		const data: Buffer[] = []
+		let readSize = 0
+		stream.on("readable", () => {
+			// read() will return null if there's no data immediately available
+			// if there is less than chunkSize data left it will return all the remaining data and dispatch "end"
+			// on the last chunk that we want to read there might be less than CHUNK_SIZE data available
+			while (true) {
+				const bytesToRead = upToBytes != null ? Math.min(upToBytes - readSize, CHUNK_SIZE) : CHUNK_SIZE
+				const chunk = stream.read(bytesToRead) as Buffer | null
+				if (chunk == null) break
 
-		stream.on("data", (chunk) => {
-			data.push(chunk as Buffer)
+				data.push(chunk)
+				readSize += chunk.length
+				// if we already read the amount of data that we wanted then we need to stop immediately
+				if (upToBytes && readSize === upToBytes) {
+					resolve(Buffer.concat(data))
+					stream.removeAllListeners("readable")
+					stream.removeAllListeners("end")
+					stream.removeAllListeners("error")
+					break
+				}
+			}
 		})
 
 		stream.on("end", () => {
+			// there's no more data left in the stream
 			resolve(Buffer.concat(data))
 		})
 
@@ -500,4 +550,12 @@ function wrapReadableAsCountable(upstream: NodeJS.ReadableStream, onProgress: (b
 	})
 	upstream.pipe(progressStream)
 	return progressStream
+}
+
+function fileURLToPath(url: string | URL): string {
+	try {
+		return nodeFileURLToPath(url)
+	} catch (e) {
+		throw new ProgrammingError(`Invalid file URL: ${url}`)
+	}
 }

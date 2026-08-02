@@ -14,6 +14,7 @@ import { LeavingUserSurveyData } from "../subscription/LeavingUserSurveyWizard.j
 import { SURVEY_VERSION_NUMBER } from "../subscription/LeavingUserSurveyConstants.js"
 import { client } from "../../../platform-kit/app-env/boot/ClientDetector"
 import { createSurveyData, CustomerAccountTerminationRequest } from "@tutao/entities/sys"
+import { px } from "../../../ui/size"
 
 assertMainOrNode()
 

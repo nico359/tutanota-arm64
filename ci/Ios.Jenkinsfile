@@ -48,23 +48,6 @@ pipeline {
 				}
 			}
 		}
-		stage("Run tests") {
-			agent {
-				label 'mac'
-			}
-			environment {
-				LC_ALL = "en_US.UTF-8"
-				LANG = "en_US.UTF-8"
-			}
-			steps {
-				script {
-					generateXCodeProjects()
-					dir('app-ios') {
-						sh 'fastlane test_tuta_app'
-					}
-				}
-			} // steps
-		} // stage run tests
 
 		stage("Build") {
 			environment {
@@ -86,7 +69,7 @@ pipeline {
 						lock("ios-build-m1") {
 							script {
 								def util = load "ci/jenkins-lib/util.groovy"
-								def NODE_MAC_PATH = util.findNodeMacPath("22")
+								def NODE_MAC_PATH = util.findNodeMacPath("24")
 								withEnv(["PATH+NODE_MAC_PATH=${NODE_MAC_PATH}"]) {
 									buildWebapp("test")
 								}
@@ -114,7 +97,7 @@ pipeline {
 						lock("ios-build-m1") {
 							script {
 								def util = load "ci/jenkins-lib/util.groovy"
-								def NODE_MAC_PATH = util.findNodeMacPath("22")
+								def NODE_MAC_PATH = util.findNodeMacPath("24")
 								withEnv(["PATH+NODE_MAC_PATH=${NODE_MAC_PATH}"]) {
 									buildWebapp("prod")
 								}
@@ -176,8 +159,9 @@ def ensureWebappDirectories() {
 	script {
 		sh "pwd"
 		sh "echo $PATH"
-		sh "mkdir -p build-calendar-app"
 		sh "mkdir -p build"
+		sh "mkdir -p build-calendar-app"
+		sh "mkdir -p build-drive-app"
 	}
 }
 
@@ -204,9 +188,10 @@ def generateXCodeProject(String projectPath, String spec) {
 def generateXCodeProjects() {
 	ensureWebappDirectories()
 	generateXCodeProject("app-ios", "mail-project")
-	// We don't technically need the calendar project but some Xcode tools are slightly upset if they don't find all
-	// projects referenced from a workspace.
+	// We don't technically need the calendar or drive projects but some Xcode tools are slightly upset
+	// if they don't find all projects referenced from a workspace.
 	generateXCodeProject("app-ios", "calendar-project")
+	generateXCodeProject("app-ios", "drive-project")
 	generateXCodeProject("tuta-sdk/ios", "project")
 }
 

@@ -14,7 +14,7 @@ import {
 	sha256Hash,
 	uint8ArrayToKey,
 } from "../../../src/platform-kit/crypto"
-import { LoginFacade, LoginFailReason, LoginListener } from "../../../src/platform-kit/base/facades/LoginFacade"
+import { AsyncLoginStateOptions, LoginFacade, LoginFailReason, LoginListener, ResumeSessionState } from "../../../src/platform-kit/base/facades/LoginFacade"
 import { IServiceExecutor } from "../../../src/platform-kit/network/ServiceRequest"
 import { EntityClient } from "../../../src/platform-kit/network/EntityClient"
 import { CryptoFacade } from "../../../src/platform-kit/base/base-crypto/CryptoFacade"
@@ -51,11 +51,12 @@ import {
 } from "@tutao/entities/sys"
 import { DEFAULT_KDF_TYPE, KdfType } from "../../../src/platform-kit/base/base-crypto/Constants.js"
 import { AccountType } from "../../../src/entities/sys/Utils"
-import { CacheStorageLateInitializer } from "../../../src/platform-kit/base/facades/CacheStorageLateInitializer"
+import { CacheStorageLateInitializer, EphemeralStorageArgs, OfflineStorageArgs } from "../../../src/platform-kit/base/facades/CacheStorageLateInitializer"
 import { DefaultLoginListener } from "../../../src/applications/common/api/worker/utils/DefaultLoginListener"
 import { encryptKey } from "../../../src/platform-kit/crypto/instance-pipeline-crypto/KeyEncryption"
 import { _encryptString } from "../../../src/platform-kit/crypto/instance-pipeline-crypto/CryptoWrapper"
 import { CacheMode, DEFAULT_ENTITY_RESTCLIENT_LOAD_OPTIONS } from "../../../src/platform-kit/instance-pipeline/RestClientOptions"
+import { idToElementId } from "../../../src/platform-kit/meta"
 
 const { anything, argThat } = matchers
 
@@ -87,7 +88,7 @@ async function makeUser(userId: Id, kdfVersion: KdfType = DEFAULT_KDF_TYPE, user
 	const groupKey = encryptKey(userPassphraseKey, new Aes128Key([3229306880, 2716953871, 4072167920, 3901332676]))
 
 	return createTestEntity(UserTypeRef, {
-		_id: userId,
+		_id: idToElementId(userId),
 		verifier: sha256Hash(createAuthVerifier(userPassphraseKey)),
 		userGroup: createTestEntity(GroupMembershipTypeRef, {
 			group: "groupId",
@@ -101,13 +102,13 @@ async function makeUser(userId: Id, kdfVersion: KdfType = DEFAULT_KDF_TYPE, user
 	})
 }
 
-async function createSession(userId: string, accessKey: AesKey, instancePipeline: InstancePipeline) {
+async function createSessionJson(userId: string, accessKey: AesKey, instancePipeline: InstancePipeline) {
 	const session = createTestEntity(SessionTypeRef, {
 		user: userId,
 		accessKey: keyToUint8Array(accessKey),
 	})
-	const untypedSession = await instancePipeline.mapAndEncrypt(SessionTypeRef, session, aes256RandomKey())
-	return untypedSession
+	const encryptedInstance = await instancePipeline.mapAndEncrypt(SessionTypeRef, session, aes256RandomKey())
+	return encryptedInstance.getJsonRepresentation()
 }
 
 o.spec("LoginFacadeTest", function () {
@@ -130,7 +131,6 @@ o.spec("LoginFacadeTest", function () {
 	let typeModelResolver: TypeModelResolver
 	let rolloutFacade: RolloutFacade
 
-	const timeRangeDate = new Date("2025-03-21T12:33:40.972Z")
 	const login = "born.slippy@tuta.io"
 
 	o.beforeEach(function () {
@@ -148,21 +148,13 @@ o.spec("LoginFacadeTest", function () {
 		cryptoFacadeMock = object()
 		usingOfflineStorage = false
 		cacheStorageInitializerMock = object()
-		when(
-			cacheStorageInitializerMock.initialize({
-				userId: anything(),
-				databaseKey: anything(),
-				timeRangeDate: anything(),
-				forceNewDatabase: anything(),
-				type: "offline",
-			}),
-		).thenDo(async () => {
+		when(cacheStorageInitializerMock.initialize(matchers.isA(OfflineStorageArgs))).thenDo(async () => {
 			return {
 				isPersistent: usingOfflineStorage,
 				isNewOfflineDb: false,
 			}
 		})
-		when(cacheStorageInitializerMock.initialize({ userId: anything() as Id, type: "ephemeral" })).thenResolve({
+		when(cacheStorageInitializerMock.initialize(matchers.isA(EphemeralStorageArgs))).thenResolve({
 			isPersistent: false,
 			isNewOfflineDb: false,
 		})
@@ -219,22 +211,15 @@ o.spec("LoginFacadeTest", function () {
 						challenges: [],
 					}),
 				)
-				when(entityClientMock.load(UserTypeRef, userId, { ...DEFAULT_ENTITY_RESTCLIENT_LOAD_OPTIONS, cacheMode: CacheMode.WriteOnly })).thenResolve(
-					await makeUser(userId),
-				)
+				when(
+					entityClientMock.load(UserTypeRef, idToElementId(userId), { ...DEFAULT_ENTITY_RESTCLIENT_LOAD_OPTIONS, cacheMode: CacheMode.WriteOnly }),
+				).thenReturn(makeUser(userId))
 			})
 
 			o.test("When a database key is provided and session is persistent it is passed to the local-store storage initializer", async function () {
 				await facade.createSession(login, passphrase, "client", SessionType.Persistent, dbKey)
-				verify(
-					cacheStorageInitializerMock.initialize({
-						type: "offline",
-						databaseKey: dbKey,
-						userId,
-						timeRangeDate: null,
-						forceNewDatabase: false,
-					}),
-				)
+				const expectedStorageArgs = new OfflineStorageArgs(userId, dbKey, false)
+				verify(cacheStorageInitializerMock.initialize(expectedStorageArgs))
 				verify(databaseKeyFactoryMock.generateKey(), { times: 0 })
 				verify(eventBusClientMock.connect(ConnectMode.Initial))
 			})
@@ -242,21 +227,14 @@ o.spec("LoginFacadeTest", function () {
 				const databaseKey = Uint8Array.from([1, 2, 3, 4])
 				when(databaseKeyFactoryMock.generateKey()).thenResolve(databaseKey)
 				await facade.createSession(login, passphrase, "client", SessionType.Persistent, null)
-				verify(
-					cacheStorageInitializerMock.initialize({
-						type: "offline",
-						userId,
-						databaseKey,
-						timeRangeDate: null,
-						forceNewDatabase: true,
-					}),
-				)
+				const expectedStorageArgs = new OfflineStorageArgs(userId, databaseKey, true)
+				verify(cacheStorageInitializerMock.initialize(expectedStorageArgs))
 				verify(databaseKeyFactoryMock.generateKey(), { times: 1 })
 				verify(eventBusClientMock.connect(ConnectMode.Initial))
 			})
 			o.test("When no database key is provided and session is Login, nothing is passed to the local-store storage initialzier", async function () {
 				await facade.createSession(login, passphrase, "client", SessionType.Login, null)
-				verify(cacheStorageInitializerMock.initialize({ type: "ephemeral", userId }))
+				verify(cacheStorageInitializerMock.initialize(new EphemeralStorageArgs(userId)))
 				verify(databaseKeyFactoryMock.generateKey(), { times: 0 })
 				verify(eventBusClientMock.connect(ConnectMode.Initial))
 			})
@@ -332,10 +310,10 @@ o.spec("LoginFacadeTest", function () {
 					type: CredentialType.Internal,
 				}
 
-				when(entityClientMock.load(UserTypeRef, userId)).thenResolve(user)
-				when(entityClientMock.load(UserTypeRef, userId, { ...DEFAULT_ENTITY_RESTCLIENT_LOAD_OPTIONS, cacheMode: CacheMode.WriteOnly })).thenResolve(
-					user,
-				)
+				when(entityClientMock.load(UserTypeRef, idToElementId(userId))).thenResolve(user)
+				when(
+					entityClientMock.load(UserTypeRef, idToElementId(userId), { ...DEFAULT_ENTITY_RESTCLIENT_LOAD_OPTIONS, cacheMode: CacheMode.WriteOnly }),
+				).thenResolve(user)
 
 				// The call to /sys/session/...
 				when(
@@ -344,48 +322,36 @@ o.spec("LoginFacadeTest", function () {
 						HttpMethod.GET,
 						anything(),
 					),
-				).thenResolve(createSession(userId, accessKey, instancePipeline).then(JSON.stringify))
+				).thenResolve(createSessionJson(userId, accessKey, instancePipeline))
 			})
 
 			o.test("When resuming a session and there is a database key, it is passed to local-store storage initialization", async function () {
 				usingOfflineStorage = true
-				await facade.resumeSession(credentials, null, dbKey, timeRangeDate)
-				verify(
-					cacheStorageInitializerMock.initialize({
-						type: "offline",
-						databaseKey: dbKey,
-						userId,
-						timeRangeDate,
-						forceNewDatabase: false,
-					}),
-				)
+				await facade.resumeSession(credentials, null, dbKey)
+				const expectedStorageArgs = new OfflineStorageArgs(userId, dbKey, false)
+				verify(cacheStorageInitializerMock.initialize(expectedStorageArgs))
 			})
 
 			o.test("When resuming a session and there is no database key, nothing is passed to local-store storage initialization", async function () {
 				usingOfflineStorage = true
-				await facade.resumeSession(credentials, null, null, timeRangeDate)
-				verify(cacheStorageInitializerMock.initialize({ type: "ephemeral", userId }))
+				await facade.resumeSession(credentials, null, null)
+				verify(cacheStorageInitializerMock.initialize(new EphemeralStorageArgs(userId)))
 			})
 
 			o.test("when resuming a session and the local-store initialization has created a new database, we do synchronous login", async function () {
 				usingOfflineStorage = true
 				user.accountType = AccountType.PAID
-				when(
-					cacheStorageInitializerMock.initialize({
-						type: "offline",
-						databaseKey: dbKey,
-						userId,
-						timeRangeDate,
-						forceNewDatabase: false,
-					}),
-				).thenResolve({
+				const expectedStorageArgs = new OfflineStorageArgs(userId, dbKey, false)
+				when(cacheStorageInitializerMock.initialize(expectedStorageArgs)).thenResolve({
 					isPersistent: true,
 					isNewOfflineDb: true,
 				})
 
-				await facade.resumeSession(credentials, null, dbKey, timeRangeDate)
+				await facade.resumeSession(credentials, null, dbKey)
 
-				o(facade.asyncLoginState).deepEquals({ state: "idle" })("Synchronous login occured, so once resume returns we have already logged in")
+				o(facade.asyncLoginState).deepEquals({ state: AsyncLoginStateOptions.Idle })(
+					"Synchronous login occured, so once resume returns we have already logged in",
+				)
 				verify(eventBusClientMock.connect(ConnectMode.Initial))
 			})
 
@@ -393,22 +359,14 @@ o.spec("LoginFacadeTest", function () {
 				usingOfflineStorage = true
 				user.accountType = AccountType.PAID
 
-				when(
-					cacheStorageInitializerMock.initialize({
-						type: "offline",
-						databaseKey: dbKey,
-						userId,
-						timeRangeDate,
-						forceNewDatabase: false,
-					}),
-				).thenResolve({
+				when(cacheStorageInitializerMock.initialize(new OfflineStorageArgs(userId, dbKey, false))).thenResolve({
 					isPersistent: true,
 					isNewOfflineDb: false,
 				})
 
-				await facade.resumeSession(credentials, null, dbKey, timeRangeDate)
+				await facade.resumeSession(credentials, null, dbKey)
 
-				o(facade.asyncLoginState).deepEquals({ state: "running" })("Async login occurred so it is still running")
+				o(facade.asyncLoginState).deepEquals({ state: AsyncLoginStateOptions.Running })("Async login occurred so it is still running")
 			})
 
 			o.test("when resuming a session and a notAuthenticatedError is thrown, the error is propagated to the main thread", async function () {
@@ -428,7 +386,6 @@ o.spec("LoginFacadeTest", function () {
 						kdfType: DEFAULT_KDF_TYPE,
 					},
 					dbKey,
-					timeRangeDate,
 				)
 				await res.asyncResumeCompleted
 				verify(loginListener.onLoginFailure(LoginFailReason.SessionExpired))
@@ -436,7 +393,7 @@ o.spec("LoginFacadeTest", function () {
 
 			o.test("when resuming a session with credentials that don't have encryptedPassphraseKey it is assigned", async () => {
 				usingOfflineStorage = true
-				await facade.resumeSession(credentials, null, null, timeRangeDate)
+				await facade.resumeSession(credentials, null, null)
 
 				verify(
 					loginListener.onFullLoginSuccess(
@@ -477,10 +434,10 @@ o.spec("LoginFacadeTest", function () {
 					type: "internal",
 				} as Credentials
 
-				when(entityClientMock.load(UserTypeRef, userId)).thenResolve(user)
-				when(entityClientMock.load(UserTypeRef, userId, { ...DEFAULT_ENTITY_RESTCLIENT_LOAD_OPTIONS, cacheMode: CacheMode.WriteOnly })).thenResolve(
-					user,
-				)
+				when(entityClientMock.load(UserTypeRef, idToElementId(userId))).thenResolve(user)
+				when(
+					entityClientMock.load(UserTypeRef, idToElementId(userId), { ...DEFAULT_ENTITY_RESTCLIENT_LOAD_OPTIONS, cacheMode: CacheMode.WriteOnly }),
+				).thenResolve(user)
 
 				calls = []
 				// .thenReturn(sessionServiceDefer)
@@ -543,7 +500,7 @@ o.spec("LoginFacadeTest", function () {
 			async function testSuccessfulSyncLogin() {
 				when(restClientMock.request(anything(), HttpMethod.GET, anything())).thenDo(async () => {
 					calls.push("sessionService")
-					return JSON.stringify(await createSession(userId, accessKey, instancePipeline))
+					return await createSessionJson(userId, accessKey, instancePipeline)
 				})
 
 				await facade
@@ -556,7 +513,6 @@ o.spec("LoginFacadeTest", function () {
 									kdfType: DEFAULT_KDF_TYPE,
 								},
 						dbKey,
-						timeRangeDate,
 					)
 					.finally(() => {
 						calls.push("return")
@@ -578,7 +534,6 @@ o.spec("LoginFacadeTest", function () {
 							kdfType: DEFAULT_KDF_TYPE,
 						},
 						dbKey,
-						timeRangeDate,
 					),
 				).asyncThrows(restError.ConnectionError)
 				o(calls).deepEquals(["sessionService"])
@@ -587,7 +542,7 @@ o.spec("LoginFacadeTest", function () {
 			async function testSuccessfulAsyncLogin() {
 				when(restClientMock.request(anything(), HttpMethod.GET, anything())).thenDo(async () => {
 					calls.push("sessionService")
-					return JSON.stringify(await createSession(userId, accessKey, instancePipeline))
+					return createSessionJson(userId, accessKey, instancePipeline)
 				})
 
 				const deferred: DeferredObject<void> = defer()
@@ -600,10 +555,9 @@ o.spec("LoginFacadeTest", function () {
 						kdfType: DEFAULT_KDF_TYPE,
 					},
 					dbKey,
-					timeRangeDate,
 				)
 
-				o(result.type).equals("success")
+				o(result.state).equals(ResumeSessionState.Success)
 
 				await deferred.promise
 
@@ -630,7 +584,6 @@ o.spec("LoginFacadeTest", function () {
 						kdfType: DEFAULT_KDF_TYPE,
 					},
 					dbKey,
-					timeRangeDate,
 				)
 
 				// wait for async resume session
@@ -638,7 +591,7 @@ o.spec("LoginFacadeTest", function () {
 
 				console.log("after resolve " + calls.toString())
 
-				o(result.type).equals("success")
+				o(result.state).equals(ResumeSessionState.Success)
 				o(calls).deepEquals(["setUser", "sessionService"])
 
 				// Did not finish login
@@ -677,10 +630,10 @@ o.spec("LoginFacadeTest", function () {
 					type: "internal",
 				} as Credentials
 
-				when(entityClientMock.load(UserTypeRef, userId)).thenResolve(user)
-				when(entityClientMock.load(UserTypeRef, userId, { ...DEFAULT_ENTITY_RESTCLIENT_LOAD_OPTIONS, cacheMode: CacheMode.WriteOnly })).thenResolve(
-					user,
-				)
+				when(entityClientMock.load(UserTypeRef, idToElementId(userId))).thenResolve(user)
+				when(
+					entityClientMock.load(UserTypeRef, idToElementId(userId), { ...DEFAULT_ENTITY_RESTCLIENT_LOAD_OPTIONS, cacheMode: CacheMode.WriteOnly }),
+				).thenResolve(user)
 
 				calls = []
 				// .thenReturn(sessionServiceDefer)
@@ -697,7 +650,7 @@ o.spec("LoginFacadeTest", function () {
 				const groupInfo = createTestEntity(GroupInfoTypeRef)
 				when(entityClientMock.load(GroupInfoTypeRef, user.userGroup.groupInfo)).thenResolve(groupInfo)
 				when(restClientMock.request(matchers.contains("sys/session"), HttpMethod.GET, anything())).thenResolve(
-					JSON.stringify(await createSession(userId, accessKey, instancePipeline)),
+					await createSessionJson(userId, accessKey, instancePipeline),
 				)
 
 				const result = await facade.resumeSession(
@@ -707,7 +660,6 @@ o.spec("LoginFacadeTest", function () {
 						kdfType: DEFAULT_KDF_TYPE,
 					},
 					dbKey,
-					timeRangeDate,
 				)
 
 				await result.asyncResumeCompleted
@@ -725,7 +677,7 @@ o.spec("LoginFacadeTest", function () {
 				when(restClientMock.request(matchers.contains("sys/session"), HttpMethod.GET, anything()))
 					// @ts-ignore
 					// the type definitions for testdouble are lacking, but we can do this
-					.thenReturn(Promise.reject(connectionError), Promise.resolve(JSON.stringify(await createSession(userId, accessKey, instancePipeline))))
+					.thenReturn(Promise.reject(connectionError), Promise.resolve(createSessionJson(userId, accessKey, instancePipeline)))
 
 				const result = await facade.resumeSession(
 					credentials,
@@ -734,7 +686,6 @@ o.spec("LoginFacadeTest", function () {
 						kdfType: DEFAULT_KDF_TYPE,
 					},
 					dbKey,
-					timeRangeDate,
 				)
 
 				verify(userFacade.setAccessToken("accessToken"))
@@ -787,10 +738,10 @@ o.spec("LoginFacadeTest", function () {
 					type: "internal",
 				} as Credentials
 
-				when(entityClientMock.load(UserTypeRef, userId)).thenResolve(user)
-				when(entityClientMock.load(UserTypeRef, userId, { ...DEFAULT_ENTITY_RESTCLIENT_LOAD_OPTIONS, cacheMode: CacheMode.WriteOnly })).thenResolve(
-					user,
-				)
+				when(entityClientMock.load(UserTypeRef, idToElementId(userId))).thenResolve(user)
+				when(
+					entityClientMock.load(UserTypeRef, idToElementId(userId), { ...DEFAULT_ENTITY_RESTCLIENT_LOAD_OPTIONS, cacheMode: CacheMode.WriteOnly }),
+				).thenResolve(user)
 
 				when(serviceExecutor.get(SaltService, anything(), null), { ignoreExtraArgs: true }).thenResolve(
 					createSaltReturn({ salt: SALT, kdfVersion: KdfType.Bcrypt }),
@@ -810,11 +761,11 @@ o.spec("LoginFacadeTest", function () {
 			o("When successfully logged in, userFacade is initialised", async function () {
 				const groupInfo = createTestEntity(GroupInfoTypeRef)
 				when(entityClientMock.load(GroupInfoTypeRef, user.userGroup.groupInfo)).thenResolve(groupInfo)
-				when(restClientMock.request(matchers.contains("sys/session"), HttpMethod.GET, anything())).thenResolve(
-					JSON.stringify(await createSession(userId, accessKey, instancePipeline)),
+				when(restClientMock.request(matchers.contains("sys/session"), HttpMethod.GET, anything())).thenReturn(
+					createSessionJson(userId, accessKey, instancePipeline),
 				)
 
-				await facade.resumeSession(credentials, null, dbKey, timeRangeDate)
+				await facade.resumeSession(credentials, null, dbKey)
 
 				await fullLoginDeferred.promise
 
@@ -852,13 +803,13 @@ o.spec("LoginFacadeTest", function () {
 					latestSaltHash: sha256Hash(SALT),
 				})
 
-				when(entityClientMock.load(UserTypeRef, userId)).thenResolve(user)
-				when(entityClientMock.load(UserTypeRef, userId, { ...DEFAULT_ENTITY_RESTCLIENT_LOAD_OPTIONS, cacheMode: CacheMode.WriteOnly })).thenResolve(
-					user,
-				)
+				when(entityClientMock.load(UserTypeRef, idToElementId(userId))).thenResolve(user)
+				when(
+					entityClientMock.load(UserTypeRef, idToElementId(userId), { ...DEFAULT_ENTITY_RESTCLIENT_LOAD_OPTIONS, cacheMode: CacheMode.WriteOnly }),
+				).thenResolve(user)
 
-				when(restClientMock.request(matchers.contains("sys/session"), HttpMethod.GET, anything())).thenResolve(
-					JSON.stringify(await createSession(userId, accessKey, instancePipeline)),
+				when(restClientMock.request(matchers.contains("sys/session"), HttpMethod.GET, anything())).thenReturn(
+					createSessionJson(userId, accessKey, instancePipeline),
 				)
 			})
 
@@ -870,10 +821,9 @@ o.spec("LoginFacadeTest", function () {
 						kdfType: DEFAULT_KDF_TYPE,
 					},
 					null,
-					timeRangeDate,
 				)
 
-				o(result.type).equals("success")
+				o(result.state).equals(ResumeSessionState.Success)
 				verify(eventBusClientMock.connect(ConnectMode.Initial))
 			})
 
@@ -888,7 +838,6 @@ o.spec("LoginFacadeTest", function () {
 							kdfType: DEFAULT_KDF_TYPE,
 						},
 						null,
-						timeRangeDate,
 					),
 				).asyncThrows(restError.AccessExpiredError)
 				verify(restClientMock.request(matchers.contains("sys/session"), HttpMethod.DELETE, anything()), { times: 0 })
@@ -906,7 +855,6 @@ o.spec("LoginFacadeTest", function () {
 							kdfType: DEFAULT_KDF_TYPE,
 						},
 						null,
-						timeRangeDate,
 					),
 				).asyncThrows(restError.NotAuthenticatedError)
 				verify(restClientMock.request(matchers.contains("sys/session"), HttpMethod.DELETE, anything()))
@@ -944,13 +892,13 @@ o.spec("LoginFacadeTest", function () {
 					latestSaltHash: sha256Hash(SALT),
 				})
 
-				when(entityClientMock.load(UserTypeRef, userId)).thenResolve(user)
-				when(entityClientMock.load(UserTypeRef, userId, { ...DEFAULT_ENTITY_RESTCLIENT_LOAD_OPTIONS, cacheMode: CacheMode.WriteOnly })).thenResolve(
-					user,
-				)
+				when(entityClientMock.load(UserTypeRef, idToElementId(userId))).thenResolve(user)
+				when(
+					entityClientMock.load(UserTypeRef, idToElementId(userId), { ...DEFAULT_ENTITY_RESTCLIENT_LOAD_OPTIONS, cacheMode: CacheMode.WriteOnly }),
+				).thenResolve(user)
 
-				when(restClientMock.request(matchers.contains("sys/session"), HttpMethod.GET, anything())).thenResolve(
-					JSON.stringify(await createSession(userId, accessKey, instancePipeline)),
+				when(restClientMock.request(matchers.contains("sys/session"), HttpMethod.GET, anything())).thenReturn(
+					createSessionJson(userId, accessKey, instancePipeline),
 				)
 			})
 
@@ -962,10 +910,9 @@ o.spec("LoginFacadeTest", function () {
 						kdfType: KdfType.Bcrypt,
 					},
 					null,
-					timeRangeDate,
 				)
 
-				o(result.type).equals("success")
+				o(result.state).equals(ResumeSessionState.Success)
 			})
 		})
 	})

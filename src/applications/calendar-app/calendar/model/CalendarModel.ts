@@ -31,13 +31,16 @@ import Stream from "mithril/stream"
 import {
 	clone,
 	DELETE_MULTIPLE_LIMIT,
+	ElementId,
 	elementIdPart,
+	elementIdToId,
 	getElementId,
+	idToElementId,
 	isSameId,
+	isSameSingleId,
 	listIdPart,
 	OperationType,
 	POST_MULTIPLE_LIMIT,
-	removeTechnicalFields,
 } from "@tutao/meta"
 import type { LoginController } from "../../../common/api/main/LoginController"
 import { LockedError, NotAuthorizedError, NotFoundError, PreconditionFailedError } from "@tutao/rest-client/error"
@@ -84,7 +87,7 @@ import { locator } from "../../../common/api/main/CommonLocator.js"
 import { UserError } from "../../../common/api/main/UserError.js"
 import { LanguageViewModel } from "../../../../ui/utils/LanguageViewModel.js"
 import { NativePushServiceApp } from "../../../common/native/NativePushServiceApp.js"
-import { SyncDonePriority, SyncTracker } from "../../../common/api/main/SyncTracker.js"
+import { SyncTracker } from "../../../common/api/main/SyncTracker.js"
 import { NoopProgressMonitor, ProgressMonitorInterface } from "../../../../platform-kit/network/ProgressMonitorInterface"
 import { getEnabledMailAddressesForGroupInfo } from "../../../../platform-kit/network/GroupUtils"
 import { ContactModel } from "../../../common/contactsFunctionality/ContactModel"
@@ -117,12 +120,7 @@ import {
 	UserAlarmInfoTypeRef,
 } from "@tutao/entities/sys"
 import { isSharedGroupOwner } from "../../../../entities/sys/Utils"
-import {
-	EntityUpdateData,
-	isUpdateFor,
-	isUpdateForTypeRef,
-	OnEntityUpdateReceivedPriority,
-} from "../../../../platform-kit/instance-pipeline/utils/EntityUpdateUtils"
+import { EntityUpdateData, isUpdateFor, isUpdateForTypeRef, ListenerPriority } from "../../../../platform-kit/instance-pipeline/utils/EntityUpdateUtils"
 import { OperationId, OperationProgressTracker } from "../../../common/api/main/OperationProgressTracker"
 import { errorsToString } from "../../../../platform-kit/utils/Utils"
 import { formatNotificationForDisplay } from "../../../../ui/utils/Formatter"
@@ -138,6 +136,7 @@ import { IcsCalendarEvent, parseCalendarStringData, ParsedCalendarData, ParsedEv
 import { CalendarImporter, EventImportRejectionReason } from "../../../common/calendar/import/CalendarImporter"
 import { $Promisable } from "../../../mail-app/workerUtils/index/IndexerPromiseUtils"
 import { CacheMode, DEFAULT_ENTITY_RESTCLIENT_LOAD_OPTIONS } from "../../../../platform-kit/instance-pipeline/RestClientOptions"
+import { removeTechnicalFields } from "../gui/eventeditor-model/CalendarEventModel"
 
 const TAG = "[CalendarModel]"
 const EXTERNAL_CALENDAR_RETRY_LIMIT = 3
@@ -252,14 +251,16 @@ export class CalendarModel {
 		private readonly lang: LanguageViewModel,
 	) {
 		this.readProgressMonitor = oneShotProgressMonitorGenerator(progressTracker, logins.getUserController())
-		eventController.addEntityListener({
-			onEntityUpdatesReceived: (updates, eventOwnerGroupId) => this.entityEventsReceived(updates, eventOwnerGroupId),
-			priority: OnEntityUpdateReceivedPriority.NORMAL,
+		eventController.addEntityUpdatesListener({
+			id: "CalendarModel",
+			onEntityUpdatesReceived: (updates, eventOwnerGroupId) => this.onEntityUpdatesReceived(updates, eventOwnerGroupId),
+			priority: ListenerPriority.NORMAL,
 		})
 
 		syncTracker.addSyncDoneListener({
+			id: "CalendarModel",
 			onSyncDone: async () => this.requestWidgetRefresh(),
-			priority: SyncDonePriority.HIGH,
+			priority: ListenerPriority.HIGH,
 		})
 
 		this.birthdayCalendarInfo = this.createBirthdayCalendarInfo()
@@ -303,12 +304,12 @@ export class CalendarModel {
 		}
 	}
 
-	async getCalendarInfo(calendarId: Id): Promise<CalendarInfoBase | undefined> {
-		if (isBirthdayCalendar(calendarId)) {
+	async getCalendarInfo(calendarId: ElementId): Promise<CalendarInfoBase | undefined> {
+		if (isBirthdayCalendar(elementIdToId(calendarId))) {
 			return this.birthdayCalendarInfo
 		}
 		const calendars = await this.getCalendarInfos()
-		return calendars.get(calendarId)
+		return calendars.get(elementIdToId(calendarId))
 	}
 
 	/**
@@ -355,7 +356,7 @@ export class CalendarModel {
 		// in cases where start time or calendar changed, we need to change the event id and so need to delete/recreate.
 		// it's also possible that the event has to be moved from the long event list to the short event list or vice versa.
 		if (
-			existingEvent._ownerGroup !== groupRoot._id ||
+			!isSameSingleId(existingEvent._ownerGroup, elementIdToId(groupRoot._id)) ||
 			newEvent.startTime.getTime() !== existingEvent.startTime.getTime() ||
 			(await didLongStateChange(newEvent, existingEvent, zone))
 		) {
@@ -365,7 +366,7 @@ export class CalendarModel {
 			// We should reload the instance here because session key and permissions are updated when we recreate event.
 			return await this.entityClient.load<CalendarEvent>(CalendarEventTypeRef, newEvent._id)
 		} else {
-			newEvent._ownerGroup = groupRoot._id
+			newEvent._ownerGroup = elementIdToId(groupRoot._id)
 			// We can't load updated event here because cache is not updated yet. We also shouldn't need to load it, we have the latest version
 			await this.calendarFacade.updateCalendarEvent(newEvent, newAlarms, existingEvent)
 			this.requestWidgetRefresh()
@@ -404,16 +405,19 @@ export class CalendarModel {
 		for (const membership of userController.getCalendarMemberships()) {
 			try {
 				const result = await Promise.all([
-					this.entityClient.load(CalendarGroupRootTypeRef, membership.group),
+					this.entityClient.load(CalendarGroupRootTypeRef, idToElementId(membership.group)),
 					this.entityClient.load(GroupInfoTypeRef, membership.groupInfo),
-					this.entityClient.load(GroupTypeRef, membership.group),
+					this.entityClient.load(GroupTypeRef, idToElementId(membership.group)),
 				])
 				groupInstances.push(result)
 			} catch (e) {
 				if (e instanceof NotFoundError) {
 					notFoundMemberships.push(membership)
 				} else {
-					throw e
+					console.error("Error loading calendar info for group: ", membership.group, e)
+					if (!(e instanceof NotAuthorizedError)) {
+						throw e
+					}
 				}
 			}
 			progressMonitor.workDone(3)
@@ -423,7 +427,7 @@ export class CalendarModel {
 		for (const [groupRoot, groupInfo, group] of groupInstances) {
 			try {
 				const calendarInfo = await this.makeCalendarInfo(userController.userId, group, userController.userSettingsGroupRoot, groupRoot, groupInfo)
-				calendarInfos.set(groupRoot._id, calendarInfo)
+				calendarInfos.set(elementIdToId(groupRoot._id), calendarInfo)
 			} catch (e) {
 				if (e instanceof NotAuthorizedError) {
 					console.log("NotAuthorizedError when initializing calendar. Calendar has been removed ")
@@ -457,12 +461,13 @@ export class CalendarModel {
 		groupRoot: CalendarGroupRoot,
 		groupInfo: GroupInfo,
 	): Promise<CalendarInfo> {
+		const groupId = elementIdToId(groupRoot._id)
 		const groupMembers = await loadGroupMembers(group, this.entityClient)
 		const shared = groupMembers.length > 1
 		const userIsOwner = !shared || isSharedGroupOwner(group, userId)
-		const groupSettings = userSettingsGroupRoot.groupSettings.find((groupSettings) => groupSettings.group === group._id)
+		const groupSettings = userSettingsGroupRoot.groupSettings.find((groupSettings) => isSameSingleId(groupSettings.group, groupId))
 		const isExternal = hasSourceUrl(groupSettings)
-		const calendarId = groupRoot._id
+		const calendarId = elementIdToId(groupRoot._id)
 		const color = groupSettings?.color ?? DEFAULT_CALENDAR_COLOR
 		const sharedGroupName = getSharedGroupName(groupInfo, userSettingsGroupRoot, shared)
 		const calendarType = getCalendarType({
@@ -471,7 +476,7 @@ export class CalendarModel {
 			isUserOwner: userIsOwner,
 		})
 		return {
-			id: groupRoot._id,
+			id: elementIdToId(groupRoot._id),
 			name: sharedGroupName,
 			color: color,
 			type: calendarType,
@@ -505,7 +510,8 @@ export class CalendarModel {
 		let existingGroupSettings = groupSettings
 
 		if (!existingGroupSettings) {
-			const { groupSettings: gSettings } = await locator.entityClient.load(UserSettingsGroupRootTypeRef, userController.user.userGroup.group)
+			const userGroupId = userController.user.userGroup.group
+			const { groupSettings: gSettings } = await locator.entityClient.load(UserSettingsGroupRootTypeRef, idToElementId(userGroupId))
 			existingGroupSettings = gSettings
 		}
 
@@ -548,7 +554,7 @@ export class CalendarModel {
 			const groupRootsPromises: Promise<CalendarGroupRoot>[] = []
 			let calendarGroupRootsList: CalendarGroupRoot[] = []
 			for (const membership of userController.getCalendarMemberships()) {
-				groupRootsPromises.push(this.entityClient.load(CalendarGroupRootTypeRef, membership.group))
+				groupRootsPromises.push(this.entityClient.load(CalendarGroupRootTypeRef, idToElementId(membership.group)))
 			}
 			calendarGroupRootsList = await Promise.all(groupRootsPromises)
 
@@ -561,16 +567,18 @@ export class CalendarModel {
 				Date.now() + offset - lastSyncEntry.lastSuccessfulSync < syncInterval
 			if (shouldSkipSync) continue
 
-			const currentCalendarGroupRoot = calendarGroupRootsList.find((calendarGroupRoot) => isSameId(calendarGroupRoot._id, calendar.group)) ?? null
+			const currentCalendarGroupRoot =
+				calendarGroupRootsList.find((calendarGroupRoot) => isSameId(calendarGroupRoot._id, idToElementId(calendar.group))) ?? null
 			if (!currentCalendarGroupRoot) {
 				console.error(`Trying to sync a calendar the user isn't subscribed to anymore: ${calendar.group}`)
 				continue
 			}
 
 			let parsedExternalEvents: ParsedEventAlarmTuple[] = []
+			const calendarTimeZone = getTimeZone()
 			try {
 				const externalCalendar = await this.fetchExternalCalendar(calendar.url)
-				parsedExternalEvents = parseCalendarStringData(externalCalendar, getTimeZone()).contents
+				parsedExternalEvents = parseCalendarStringData(externalCalendar, calendarTimeZone).contents
 			} catch (error) {
 				let calendarName = calendar.name
 				console.log("failed to sync external calendar", error)
@@ -595,7 +603,7 @@ export class CalendarModel {
 				parsedExternalEvents,
 				existingEventList,
 				currentCalendarGroupRoot,
-				getTimeZone(),
+				calendarTimeZone,
 			)
 			const duplicates = rejectedEvents.get(EventImportRejectionReason.Duplicate) ?? []
 			const eventsToUpdate = duplicates.filter((event) => {
@@ -604,6 +612,10 @@ export class CalendarModel {
 				if (!existingEvent) {
 					console.warn("Found a duplicate without an existing event!")
 					return false
+				}
+
+				if (event.repeatRule?.timeZone === "") {
+					event.repeatRule.timeZone = calendarTimeZone // For repeating events we always keep a timezone in the repeat rule
 				}
 
 				return !eventHasSameFields(event, existingEvent)
@@ -740,7 +752,7 @@ export class CalendarModel {
 			}
 			// Reset permissions because server will assign them
 			downcast(event)._permissions = null
-			event._ownerGroup = currentCalendarGroupRoot._id
+			event._ownerGroup = elementIdToId(currentCalendarGroupRoot._id)
 			assertEventValidity(event)
 			operationsLog.created++
 		}
@@ -764,8 +776,10 @@ export class CalendarModel {
 			return calendarInfos
 		}
 
+		//
+		// Recover from the case where the user has no private calendar.
+		//
 		await this.createCalendar("", null, [], null)
-
 		// Reload calendar infos to include the newly created calendar
 		return await this.loadCalendarInfos(progressMonitor)
 	}
@@ -781,7 +795,7 @@ export class CalendarModel {
 		if (color != null) {
 			const { userSettingsGroupRoot } = this.logins.getUserController()
 			const newGroupSettings = createGroupSettings({
-				group: group._id,
+				group: elementIdToId(group._id),
 				color: color,
 				name: null,
 				defaultAlarmsList: serializedAlarms,
@@ -822,7 +836,7 @@ export class CalendarModel {
 
 		// Reset permissions because server will assign them
 		downcast(event)._permissions = null
-		event._ownerGroup = groupRoot._id
+		event._ownerGroup = elementIdToId(groupRoot._id)
 
 		const result = await this.calendarFacade.createCalendarEvent(event, alarmInfos ?? null)
 		this.handleSaveCalendarEventsErrorIfNeeded(result)
@@ -853,7 +867,7 @@ export class CalendarModel {
 		newEvent.pendingInvitation = this.isPendingInvitation(newEvent)
 		// Reset permissions because server will assign them
 		downcast(newEvent)._permissions = null
-		newEvent._ownerGroup = groupRoot._id
+		newEvent._ownerGroup = elementIdToId(groupRoot._id)
 
 		const result = await this.calendarFacade.replaceCalendarEvent(oldEvent, newEvent, alarmInfos ?? null)
 		this.handleSaveCalendarEventsErrorIfNeeded(result)
@@ -1043,7 +1057,7 @@ export class CalendarModel {
 
 		// Load the events bypassing the cache because we might have already processed some updates and they might have changed the events we are about to load.
 		// We want to operate on the latest events only, otherwise we might lose some data.
-		const latestPersistedEventsIndexEntry: ResolvedUidIndexEntry | null = await this.getFirstUidIndexEntryMatch(
+		const latestPersistedEventsIndexEntry: ResolvedUidIndexEntry | null = await this.getFirstUidIndexEntryMatchInPrivateCalendars(
 			getFirstOrThrow(parsedCalendarData.contents).icsCalendarEvent.uid,
 		)
 		const icsEventRecurrenceIdTimestamp = parsedCalendarData.contents[0].icsCalendarEvent.recurrenceId?.getTime()
@@ -1077,10 +1091,13 @@ export class CalendarModel {
 		}
 	}
 
-	public async getFirstUidIndexEntryMatch(uid: string): Promise<ResolvedUidIndexEntry | null> {
+	public async getFirstUidIndexEntryMatchInPrivateCalendars(uid: string): Promise<ResolvedUidIndexEntry | null> {
 		const calendarInfos = await this.getCalendarInfos()
 
-		for (const calendarGroupId of calendarInfos.keys()) {
+		for (const [calendarGroupId, calendarInfo] of calendarInfos) {
+			// Skip non-private calendars
+			if (calendarInfo.type !== CalendarType.Private) continue
+
 			const entry = await this.calendarFacade.getEventsByUid(uid, calendarGroupId, CachingMode.Bypass)
 			if (entry) {
 				return entry
@@ -1268,7 +1285,8 @@ export class CalendarModel {
 
 		let calendarGroupRoot
 		try {
-			calendarGroupRoot = await this.entityClient.load(CalendarGroupRootTypeRef, ownerGroup!)
+			const ownerGroupId = idToElementId(ownerGroup)
+			calendarGroupRoot = await this.entityClient.load(CalendarGroupRootTypeRef, ownerGroupId)
 		} catch (e) {
 			if (!(e instanceof NotFoundError) && !(e instanceof NotAuthorizedError)) throw e
 			console.log(TAG, "tried to create new progenitor or got new altered instance for progenitor in nonexistent/inaccessible calendar, ignoring")
@@ -1347,9 +1365,10 @@ export class CalendarModel {
 	 * @return Promise<CalendarEvent> - A promise with the newly updated event
 	 */
 	async doUpdateEvent(dbEvent: CalendarEvent, newEvent: CalendarEvent): Promise<CalendarEvent> {
+		const eventOwnerGroupId = idToElementId(assertNotNull(dbEvent._ownerGroup))
 		const [alarms, groupRoot] = await Promise.all([
 			this.loadAlarms(dbEvent.alarmInfos, this.logins.getUserController().user),
-			this.entityClient.load<CalendarGroupRoot>(CalendarGroupRootTypeRef, assertNotNull(dbEvent._ownerGroup)),
+			this.entityClient.load<CalendarGroupRoot>(CalendarGroupRootTypeRef, eventOwnerGroupId),
 		])
 		const alarmInfos = alarms.map((a) => a.alarmInfo)
 		const event = await this.updateEvent(newEvent, alarmInfos, "", groupRoot, dbEvent)
@@ -1398,7 +1417,7 @@ export class CalendarModel {
 			return []
 		}
 
-		const ids = alarmInfos.filter((alarmInfoId) => isSameId(listIdPart(alarmInfoId), alarmInfoList.alarms))
+		const ids = alarmInfos.filter((alarmInfoId) => isSameSingleId(listIdPart(alarmInfoId), alarmInfoList.alarms))
 
 		if (ids.length === 0) {
 			return []
@@ -1408,8 +1427,8 @@ export class CalendarModel {
 	}
 
 	async deleteCalendar(calendar: CalendarInfo): Promise<void> {
-		await this.calendarFacade.deleteCalendar(calendar.groupRoot._id)
-		this.deviceConfig.removeLastSync(calendar.group._id)
+		await this.calendarFacade.deleteCalendar(elementIdToId(calendar.groupRoot._id))
+		this.deviceConfig.removeLastSync(elementIdToId(calendar.group._id))
 	}
 
 	async getEventsByUid(uid: string, calendarGroupId: Id): Promise<ResolvedUidIndexEntry | null> {
@@ -1417,7 +1436,7 @@ export class CalendarModel {
 	}
 
 	// Visible for testing
-	async entityEventsReceived(updates: ReadonlyArray<EntityUpdateData>, eventOwnerGroupId: Id): Promise<void> {
+	async onEntityUpdatesReceived(updates: ReadonlyArray<EntityUpdateData>, eventOwnerGroupId: Id): Promise<void> {
 		const calendarInfos = await this.calendarInfos.getAsync()
 		// We iterate over the alarms twice: once to collect them and to set the counter correctly and the second time to actually process them.
 		const alarmEventsToProcess: UserAlarmInfo[] = []
@@ -1425,6 +1444,7 @@ export class CalendarModel {
 			// apps handle alarms natively. this code is a candidate to move into
 			// a generic web/native alarm handler
 			if (isUpdateForTypeRef(UserAlarmInfoTypeRef, entityEventData) && !isApp()) {
+				const alarmInfoId: IdTuple = [assertNotNull(entityEventData.instanceListId), entityEventData.instanceId]
 				if (entityEventData.operation === OperationType.CREATE) {
 					// Updates for UserAlarmInfo and CalendarEvent come in a
 					// separate batches and there's a race between loading of the
@@ -1434,7 +1454,7 @@ export class CalendarModel {
 					// and load it.
 					// All alarms for the same event come in the same batch so
 					try {
-						const userAlarmInfo = await this.entityClient.load(UserAlarmInfoTypeRef, [entityEventData.instanceListId, entityEventData.instanceId])
+						const userAlarmInfo = await this.entityClient.load(UserAlarmInfoTypeRef, alarmInfoId)
 						alarmEventsToProcess.push(userAlarmInfo)
 						const deferredEvent = this.getPendingAlarmRequest(userAlarmInfo.alarmInfo.calendarRef.elementId)
 						deferredEvent.pendingAlarmCounter++

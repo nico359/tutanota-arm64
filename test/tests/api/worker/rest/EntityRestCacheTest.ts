@@ -8,32 +8,38 @@ import {
 	collapseId,
 	CUSTOM_MIN_ID,
 	elementIdPart,
+	elementIdToId,
 	Entity,
 	firstBiggerThanSecondBase64Ext,
 	GENERATED_MAX_ID,
 	GENERATED_MIN_ID,
 	getElementId,
 	getListId,
+	idToElementId,
 	isSameTypeRef,
 	listIdPart,
 	OperationType,
-	ServerModelParsedInstance,
-	SomeEntity,
+	PersistentEntity,
 	TypeRef,
 } from "../../../../../src/platform-kit/meta"
 import { arrayOf, assertNotNull, deepEqual, downcast, last, Nullable, promiseMap, stringToBase64UrlCustomId } from "../../../../../src/platform-kit/utils"
 import { DefaultEntityRestCache, EXTEND_RANGE_MIN_CHUNK_SIZE } from "../../../../../src/applications/common/api/worker/rest/DefaultEntityRestCache.js"
-import { OfflineStorage, OfflineStorageCleaner } from "../../../../../src/app-kit/local-store/OfflineStorage.js"
-import { NoZoneDateProvider } from "../../../../../src/platform-kit/utils/NoZoneDateProvider.js"
+import { OfflineStorage } from "../../../../../src/app-kit/local-store/OfflineStorage.js"
 import { RestClient, restError } from "../../../../../src/platform-kit/rest-client"
 import { EphemeralCacheStorage } from "../../../../../src/app-kit/local-store/EphemeralCacheStorage.js"
 import { OfflineStorageMigrator } from "../../../../../src/app-kit/local-store/OfflineStorageMigrator.js"
 import { InterWindowEventFacadeSendDispatcher } from "../../../../../src/app-kit/native-bridge/common/generatedipc/dispatchers/InterWindowEventFacadeSendDispatcher.js"
 import { func, instance, matchers, object, replace, when } from "testdouble"
 import { SqlCipherFacade } from "../../../../../src/app-kit/native-bridge/common/generatedipc/types/SqlCipherFacade.js"
-import { clientInitializedTypeModelResolver, createTestEntity, modelMapperFromTypeModelResolver, removeOriginals } from "../../../TestUtils.js"
+import {
+	clientInitializedTypeModelResolver,
+	createTestEntity,
+	modelMapperFromTypeModelResolver,
+	offlineMapperFromTypeModelResolver,
+	removeOriginals,
+} from "../../../TestUtils.js"
 import { CustomCacheHandler, CustomCacheHandlerMap } from "../../../../../src/app-kit/local-store/CustomCacheHandler"
-import { ModelMapper, PatchMerger, PatchOperationType, TypeModelResolver } from "../../../../../src/platform-kit/instance-pipeline"
+import { DecryptedParsedInstance, ModelMapper, PatchMerger, PatchOperationType, TypeModelResolver } from "../../../../../src/platform-kit/instance-pipeline"
 
 import { CacheStorage } from "../../../../../src/app-kit/local-store/CacheStorage"
 import {
@@ -62,10 +68,14 @@ import {
 	PermissionTypeRef,
 	RootInstanceTypeRef,
 } from "@tutao/entities/sys"
-import { EntityUpdateData, entityUpdateToUpdateData } from "../../../../../src/platform-kit/instance-pipeline/utils/EntityUpdateUtils"
+import { CachingStatus, EntityUpdateData, entityUpdateToUpdateData } from "../../../../../src/platform-kit/instance-pipeline/utils/EntityUpdateUtils"
 import { EntityRestClient } from "../../../../../src/platform-kit/network/EntityRestClient"
 import { LastProcessedEventBatchProvider } from "../../../../../src/platform-kit/network/LastProcessedEventBatchProvider"
 import { CacheMode, DEFAULT_ENTITY_RESTCLIENT_LOAD_OPTIONS } from "../../../../../src/platform-kit/instance-pipeline/RestClientOptions"
+import { OfflineStorageArgs } from "../../../../../src/platform-kit/base/facades/CacheStorageLateInitializer"
+import { changeInstanceDirection } from "../../../instance-pipeline/InstancePipelineTestUtils"
+import { InstanceDirection } from "../../../../../src/platform-kit/instance-pipeline/ParsedValue"
+import { WebsocketConnectivityListener } from "../../../../../src/platform-kit/network/WebsocketConnectivityListener"
 
 const { anything } = matchers
 
@@ -91,25 +101,18 @@ async function getOfflineStorage(userId: Id, handlerMap: CustomCacheHandlerMap):
 	const sqlCipherFacade = new PerWindowSqlCipherFacade(odbRefCounter)
 	await sqlCipherFacade.openDb(userId, offlineDatabaseTestKey)
 	const interWindowEventSender = instance(InterWindowEventFacadeSendDispatcher)
-	const offlineStorageCleanerMock = object<OfflineStorageCleaner>()
 	const typeModelResolver = clientInitializedTypeModelResolver()
 	const offlineStorage = new OfflineStorage(
 		sqlCipherFacade,
 		interWindowEventSender,
-		new NoZoneDateProvider(),
 		migratorMock,
-		offlineStorageCleanerMock,
 		modelMapperFromTypeModelResolver(typeModelResolver),
 		typeModelResolver,
+		offlineMapperFromTypeModelResolver(typeModelResolver),
 		handlerMap,
 		{},
 	)
-	await offlineStorage.init({
-		userId,
-		databaseKey: offlineDatabaseTestKey,
-		timeRangeDate: new Date("2025-03-21T12:33:40.972Z"),
-		forceNewDatabase: false,
-	})
+	await offlineStorage.init(new OfflineStorageArgs(userId, offlineDatabaseTestKey, false))
 	return offlineStorage
 }
 
@@ -135,17 +138,14 @@ export function testEntityRestCache(name: string, getStorage: (userId: Id, custo
 		let modelMapper: ModelMapper
 		let patchMergerMock: PatchMerger
 		let lastProcessedBatchIdStorageFacadeMock: LastProcessedEventBatchProvider
+		let connectivityListenerMock: WebsocketConnectivityListener
 
 		// The entity client will assert to throwing if an unexpected method is called
 		// You can mock it's attributes if you want to assert that a given method will be called
 		let entityRestClient: EntityRestClient
 		let userId: Id | null
 
-		async function toStorableInstance(entity: Entity): Promise<ServerModelParsedInstance> {
-			return downcast<ServerModelParsedInstance>(await modelMapper.mapToClientModelParsedInstance(entity._type, entity))
-		}
-
-		let makeUpdateData = async function <T extends SomeEntity>(
+		let makeUpdateData = async function <T extends PersistentEntity>(
 			typeRef: TypeRef<T>,
 			listId: Id,
 			elementId: Id,
@@ -166,7 +166,7 @@ export function testEntityRestCache(name: string, getStorage: (userId: Id, custo
 			const instanceParsed = instance ? await toStorableInstance(instance) : null
 			return await entityUpdateToUpdateData(entityUpdate, instanceParsed, null)
 		}
-		let updateDataForCreate = function <T extends SomeEntity>(
+		let updateDataForCreate = function <T extends PersistentEntity>(
 			typeRef: TypeRef<T>,
 			listId: Id,
 			elementId: Id,
@@ -174,7 +174,7 @@ export function testEntityRestCache(name: string, getStorage: (userId: Id, custo
 		): Promise<EntityUpdateData> {
 			return makeUpdateData(typeRef, listId, elementId, OperationType.CREATE, instance, [])
 		}
-		let updateDataForUpdate = async function <T extends SomeEntity>(
+		let updateDataForUpdate = async function <T extends PersistentEntity>(
 			typeRef: TypeRef<T>,
 			listId: Id,
 			elementId: Id,
@@ -182,18 +182,18 @@ export function testEntityRestCache(name: string, getStorage: (userId: Id, custo
 		): Promise<EntityUpdateData> {
 			return makeUpdateData(typeRef, listId, elementId, OperationType.UPDATE, null, patches)
 		}
-		let updateDataForDelete = async function <T extends SomeEntity>(typeRef: TypeRef<T>, listId: Id, elementId: Id): Promise<EntityUpdateData> {
+		let updateDataForDelete = async function <T extends PersistentEntity>(typeRef: TypeRef<T>, listId: Id, elementId: Id): Promise<EntityUpdateData> {
 			return makeUpdateData(typeRef, listId, elementId, OperationType.DELETE, null, [])
 		}
 
-		let createId = function (idText) {
+		let createId = function (idText: string): string {
 			//return idText
 			return Array(13 - idText.length).join("-") + idText
 		}
 
-		let createCustomer = function (id): Customer {
-			let customer = createTestEntity(CustomerTypeRef, {
-				_id: createId(id),
+		const createCustomer = function (id: string): Customer {
+			return createTestEntity(CustomerTypeRef, {
+				_id: idToElementId(createId(id)),
 				_ownerGroup: "customer-owner",
 				adminGroup: "adminGroup",
 				customerGroup: "customerGroup",
@@ -203,7 +203,6 @@ export function testEntityRestCache(name: string, getStorage: (userId: Id, custo
 				teamGroups: "teamGroups",
 				customerInfo: ["freeId", "customerInfo"],
 			})
-			return customer
 		}
 
 		let createMailDetailsBlobInstance = function (archiveId, id, bodyText): MailDetailsBlob {
@@ -243,18 +242,26 @@ export function testEntityRestCache(name: string, getStorage: (userId: Id, custo
 			const batchCaptor = matchers.captor()
 			const typeRefCaptor = matchers.captor()
 			const serverModelParsedInstanceCaptor = matchers.captor()
-			when(entityRestClient.mapInstanceToEntity(typeRefCaptor.capture(), serverModelParsedInstanceCaptor.capture())).thenDo(async () =>
-				downcast<any>(await modelMapper.mapToInstance(typeRefCaptor.value, serverModelParsedInstanceCaptor.value)),
+			when(entityRestClient.mapInstanceToEntity(serverModelParsedInstanceCaptor.capture())).thenDo(async () =>
+				downcast<any>(await modelMapper.mapToInstance(serverModelParsedInstanceCaptor.value)),
 			)
 			when(entityRestClient.mapInstancesToEntity(typeRefCaptor.capture(), serverModelParsedInstanceCaptor.capture())).thenDo(async () =>
-				downcast<any>(await modelMapper.mapToInstances(typeRefCaptor.value, serverModelParsedInstanceCaptor.value)),
+				downcast<any>(await modelMapper.mapToInstances(serverModelParsedInstanceCaptor.value)),
 			)
 			when(entityRestClient.entityEventsReceived(batchCaptor.capture(), matchers.anything(), matchers.anything())).thenResolve(batchCaptor.value)
 			when(entityRestClient.getRestClient()).thenReturn(restClient)
 			return entityRestClient
 		}
 
+		function toStorableInstance(entity: Entity): Promise<DecryptedParsedInstance> {
+			return modelMapper.mapToDecryptedInstance(entity).then((parsedInstance) => {
+				changeInstanceDirection(parsedInstance, InstanceDirection.IncomingFromServer)
+				return parsedInstance
+			})
+		}
+
 		o.beforeEach(async function () {
+			connectivityListenerMock = object<WebsocketConnectivityListener>()
 			userId = "userId"
 			customCacheHandlerMap = object()
 			lastProcessedBatchIdStorageFacadeMock = object<LastProcessedEventBatchProvider>()
@@ -302,7 +309,6 @@ export function testEntityRestCache(name: string, getStorage: (userId: Id, custo
 
 			o.spec("post multiple cache range", function () {
 				o("create is not in cache range", async function () {
-					const contact = createTestEntity(ContactTypeRef, { _id: [firstContactListId, id1] })
 					const batch = [
 						await updateDataForCreate(ContactTypeRef, firstContactListId, id1, null),
 						await updateDataForCreate(ContactTypeRef, firstContactListId, id2, null),
@@ -422,7 +428,7 @@ export function testEntityRestCache(name: string, getStorage: (userId: Id, custo
 						blobInstance: null,
 					})
 					const contact1Parsed = await toStorableInstance(contact1)
-					contact1Parsed._errors = { 12: "some error for contact 1" }
+					contact1Parsed.addErrorByAttributeNameForTesting("firstName", "some error for contact 1")
 					const contact1EntityUpdate = await entityUpdateToUpdateData(entityUpdateContact1, contact1Parsed, null)
 
 					const contact2 = createTestEntity(ContactTypeRef, {
@@ -445,7 +451,7 @@ export function testEntityRestCache(name: string, getStorage: (userId: Id, custo
 						blobInstance: null,
 					})
 					const contact3Parsed = await toStorableInstance(contact3)
-					contact3Parsed._errors = { 12: "some error for contact 3" }
+					contact3Parsed.addErrorByAttributeNameForTesting("firstName", "some error for contact 3")
 					const contact3EntityUpdate = await entityUpdateToUpdateData(entityUpdateContact3, contact3Parsed, null)
 
 					const batch: readonly EntityUpdateData[] = [
@@ -652,7 +658,7 @@ export function testEntityRestCache(name: string, getStorage: (userId: Id, custo
 						_ownerGroup: ownerGroupId,
 					}),
 				)
-				dummyContact._errors = { 12: "some error for dummy contact" }
+				dummyContact.addErrorByAttributeNameForTesting("firstName", "some error for dummy contact")
 				when(entityRestClient.loadParsedInstance(anything(), anything())).thenResolve(dummyContact)
 
 				const batch: readonly EntityUpdateData[] = [
@@ -754,13 +760,12 @@ export function testEntityRestCache(name: string, getStorage: (userId: Id, custo
 					_ownerGroup: "owner-group",
 				})
 				const firstContact = Object.assign(structuredClone(sampleContact), { _id: [firstContactListId, id1] })
-				const secondContact = Object.assign(structuredClone(sampleContact), { _id: [firstContactListId, id2] })
 
 				await storage.put(ContactTypeRef, await toStorableInstance(firstContact))
 
 				const contactTypeModel = await typeModelResolver.resolveClientTypeReference(ContactTypeRef)
 
-				const firstNamePatch = createPatch({
+				const patchFirstName = createPatch({
 					attributePath: assertNotNull(AttributeModel.getAttributeId(contactTypeModel, "firstName")).toString(),
 					patchOperation: PatchOperationType.REPLACE,
 					value: "CipherTextForGuenther",
@@ -772,8 +777,8 @@ export function testEntityRestCache(name: string, getStorage: (userId: Id, custo
 				})
 
 				const batch = [
-					await updateDataForUpdate(ContactTypeRef, firstContactListId, id1, [firstNamePatch]),
-					await updateDataForUpdate(ContactTypeRef, firstContactListId, id2, [firstNamePatch]), // update for item not in cache should be skipped
+					await updateDataForUpdate(ContactTypeRef, firstContactListId, id1, [patchFirstName]),
+					await updateDataForUpdate(ContactTypeRef, firstContactListId, id2, [patchFirstName]), // update for item not in cache should be skipped
 				]
 
 				when(patchMergerMock.patchAndStoreInstance(batch[0])).thenDo(async () => {
@@ -963,6 +968,220 @@ export function testEntityRestCache(name: string, getStorage: (userId: Id, custo
 				o(mails).deepEquals([originalMails[0], originalMails[2]])
 			})
 		}) // entityEventsReceived
+
+		o.spec("ERC updateCacheWithMissedEntityUpdates", function () {
+			const contactListId = "contactListId"
+			const contactId = "contactId"
+			const mailListId = "mailListId"
+			const mailId = "mailId"
+			const blobListId = "archiveId"
+			const blobId = createId("blobId")
+			const mailSetEntriesListId = "mailSetEntriesListId"
+			o.test("groups instances by type and puts them to the storage", async () => {
+				const contact = createTestEntity(ContactTypeRef, {
+					_id: [contactListId, contactId],
+					_ownerGroup: "contact",
+				})
+				const mail = createTestEntity(MailTypeRef, {
+					_id: [mailListId, mailId],
+					mailDetails: [blobListId, createId("blobId2")],
+					_ownerGroup: "mail",
+					subject: "Test",
+					sender: createTestEntity(MailAddressTypeRef, {
+						name: "a",
+						address: "test@example.com",
+					}),
+					conversationEntry: ["listId", "elementId"],
+				})
+				const blob = createMailDetailsBlobInstance(blobListId, blobId, "Test body")
+				const contactUpdate = await updateDataForCreate(ContactTypeRef, getListId(contact), getElementId(contact), contact)
+				const mailUpdate = await updateDataForCreate(MailTypeRef, getListId(mail), getElementId(mail), mail)
+
+				mailUpdate.blobInstance = await toStorableInstance(blob)
+
+				const updates = [contactUpdate, mailUpdate]
+
+				await cache.updateCacheWithMissedEntityUpdates(updates)
+
+				o.check(await storage.get(MailTypeRef, mailListId, mailId)).notEquals(null)
+				o.check(await storage.get(ContactTypeRef, contactListId, contactId)).notEquals(null)
+				o.check(await storage.get(MailDetailsBlobTypeRef, blobListId, createId(blobId))).notEquals(null)
+				o.check(contactUpdate.cachingStatus).equals(CachingStatus.CacheUpdated)
+				o.check(mailUpdate.cachingStatus).equals(CachingStatus.CacheUpdated)
+			})
+
+			o.test("handles create events coming for the same id coming after the delete event correctly", async () => {
+				const mailSetEntry = createTestEntity(MailSetEntryTypeRef, {
+					_id: [mailSetEntriesListId, "mailSetEntryId"],
+					_ownerGroup: "mail",
+					mail: [mailListId, mailId],
+				})
+				const mailSetEntryDelete = await updateDataForDelete(MailSetEntryTypeRef, getListId(mailSetEntry), getElementId(mailSetEntry))
+				const mailSetEntryCreate = await updateDataForCreate(MailSetEntryTypeRef, getListId(mailSetEntry), getElementId(mailSetEntry), mailSetEntry)
+
+				const updates = [mailSetEntryDelete, mailSetEntryCreate]
+
+				// the mail set entry should be put to the cache right after deletion
+				// this is the order of events in case a client syncs another client moving an e-mail out of and back to a given mail set
+				await cache.updateCacheWithMissedEntityUpdates(updates)
+
+				o.check(await storage.get(MailSetEntryTypeRef, mailSetEntriesListId, "mailSetEntryId")).notEquals(null)
+				o.check(mailSetEntryDelete.cachingStatus).equals(CachingStatus.CacheUpdated)
+				o.check(mailSetEntryCreate.cachingStatus).equals(CachingStatus.CacheUpdated)
+			})
+
+			o.test("filters out updates with null instance or errors", async () => {
+				const goodContact = createTestEntity(ContactTypeRef, {
+					_id: [contactListId, contactId],
+					_ownerGroup: "contact",
+				})
+				const badContact = createTestEntity(ContactTypeRef, {
+					_id: [contactListId, "id2"],
+					_ownerGroup: "contact",
+				})
+				const badContactStorable = await toStorableInstance(badContact)
+				badContactStorable.addErrorByAttributeId(12, "some error")
+
+				const goodUpdate = await updateDataForCreate(ContactTypeRef, getListId(goodContact), getElementId(goodContact), goodContact)
+				const badUpdate = await updateDataForCreate(ContactTypeRef, getListId(badContact), getElementId(badContact), badContact)
+				badUpdate.instance = badContactStorable
+				const nullUpdate = await updateDataForCreate(ContactTypeRef, contactListId, "id3", null)
+				const batch = [goodUpdate, badUpdate, nullUpdate]
+
+				await cache.updateCacheWithMissedEntityUpdates(batch)
+
+				o.check(await storage.get(ContactTypeRef, contactListId, contactId)).notEquals(null)
+				o.check(await storage.get(ContactTypeRef, contactListId, "id2")).equals(null)
+				o.check(await storage.get(ContactTypeRef, contactListId, "id3")).equals(null)
+				o.check(goodUpdate.cachingStatus).equals(CachingStatus.CacheUpdated)
+				o.check(badUpdate.cachingStatus).equals(CachingStatus.CacheNotUpdated)
+				o.check(nullUpdate.cachingStatus).equals(CachingStatus.CacheNotUpdated)
+			})
+
+			o.test("handles mail type by storing blob instances as well", async () => {
+				const mail1 = createTestEntity(MailTypeRef, {
+					_id: [mailListId, mailId],
+					mailDetails: [blobListId, blobId],
+					_ownerGroup: "mail",
+					subject: "Test",
+					sender: createTestEntity(MailAddressTypeRef, {
+						name: "a",
+						address: "test@example.com",
+					}),
+					conversationEntry: ["listId", "elementId"],
+				})
+				const mail2 = createTestEntity(MailTypeRef, {
+					_id: [mailListId, "mailId2"],
+					mailDetails: ["blobListId2", createId("blobId2")],
+					_ownerGroup: "mail",
+					subject: "Test2",
+					sender: createTestEntity(MailAddressTypeRef, {
+						name: "a",
+						address: "test@example.com",
+					}),
+					conversationEntry: ["listId", "elementId"],
+				})
+				const blob1 = createMailDetailsBlobInstance(blobListId, blobId, "Test body")
+
+				const blob2 = createMailDetailsBlobInstance(blobListId, "blobId2", "Test body")
+				const mailUpdate = await updateDataForCreate(MailTypeRef, getListId(mail1), getElementId(mail1), mail1)
+				const mailUpdate2 = await updateDataForCreate(MailTypeRef, getListId(mail2), getElementId(mail2), mail2)
+				const blob1Storable = await toStorableInstance(blob1)
+				const blob2Storable = await toStorableInstance(blob2)
+				mailUpdate.blobInstance = blob1Storable
+				mailUpdate2.blobInstance = blob2Storable
+				const batch = [mailUpdate, mailUpdate2]
+
+				await cache.updateCacheWithMissedEntityUpdates(batch)
+
+				o.check(await storage.get(MailTypeRef, mailListId, mailId)).notEquals(null)
+				o.check(await storage.get(MailTypeRef, mailListId, "mailId2")).notEquals(null)
+				o.check(await storage.get(MailDetailsBlobTypeRef, blobListId, createId("blobId"))).notEquals(null)
+				o.check(await storage.get(MailDetailsBlobTypeRef, blobListId, createId("blobId2"))).notEquals(null)
+				o.check(mailUpdate.cachingStatus).equals(CachingStatus.CacheUpdated)
+				o.check(mailUpdate2.cachingStatus).equals(CachingStatus.CacheUpdated)
+			})
+
+			o.test("does not store blob instances if blobInstance is null or has errors", async () => {
+				const mail1 = createTestEntity(MailTypeRef, {
+					_id: [mailListId, mailId],
+					mailDetails: [blobListId, blobId],
+					_ownerGroup: "mail",
+					subject: "Test",
+					sender: createTestEntity(MailAddressTypeRef, {
+						name: "a",
+						address: "test@example.com",
+					}),
+					conversationEntry: ["listId", "elementId"],
+				})
+				const mail2 = createTestEntity(MailTypeRef, {
+					_id: [mailListId, "mailId2"],
+					mailDetails: null,
+					_ownerGroup: "mail",
+					subject: "Test2",
+					sender: createTestEntity(MailAddressTypeRef, {
+						name: "a",
+						address: "test@example.com",
+					}),
+					conversationEntry: ["listId", "elementId"],
+				})
+				const badBlob = createMailDetailsBlobInstance(blobListId, blobId, "Test body")
+				const badBlobStorable = await toStorableInstance(badBlob)
+				badBlobStorable.addErrorByAttributeId(12, "error")
+
+				const mailUpdate = await updateDataForCreate(MailTypeRef, getListId(mail1), getElementId(mail1), mail1)
+				mailUpdate.blobInstance = badBlobStorable
+				const mailUpdate2 = await updateDataForCreate(MailTypeRef, getListId(mail2), getElementId(mail2), mail1)
+				mailUpdate2.blobInstance = null
+				const batch = [mailUpdate, mailUpdate2]
+
+				await cache.updateCacheWithMissedEntityUpdates(batch)
+
+				o.check(await storage.get(MailTypeRef, mailListId, mailId)).notEquals(null)
+				o.check(await storage.get(MailTypeRef, mailListId, "mailId2")).equals(null)
+				o.check(await storage.get(MailDetailsBlobTypeRef, blobListId, createId(blobId))).equals(null)
+				o.check(mailUpdate.cachingStatus).equals(CachingStatus.CacheNotUpdated)
+				o.check(mailUpdate2.cachingStatus).equals(CachingStatus.CacheNotUpdated)
+			})
+
+			o.test("delete events delete instances in the offline storage", async () => {
+				const mail = createTestEntity(MailTypeRef, {
+					_id: [mailListId, mailId],
+					mailDetails: [blobListId, createId("blobId2")],
+					_ownerGroup: "mail",
+					subject: "Test",
+					sender: createTestEntity(MailAddressTypeRef, {
+						name: "a",
+						address: "test@example.com",
+					}),
+					conversationEntry: ["listId", "elementId"],
+				})
+				const mail2 = createTestEntity(MailTypeRef, {
+					_id: [mailListId, "mailId2"],
+					mailDetails: [blobListId, createId("blobId2")],
+					_ownerGroup: "mail",
+					subject: "Test",
+					sender: createTestEntity(MailAddressTypeRef, {
+						name: "a",
+						address: "test@example.com",
+					}),
+					conversationEntry: ["listId", "elementId"],
+				})
+				await storage.put(MailTypeRef, await toStorableInstance(mail))
+				await storage.put(MailTypeRef, await toStorableInstance(mail2))
+				const mailUpdate = await updateDataForDelete(MailTypeRef, getListId(mail), getElementId(mail))
+				const mail2Update = await updateDataForDelete(MailTypeRef, getListId(mail2), getElementId(mail2))
+
+				const updates = [mailUpdate, mail2Update]
+
+				await cache.updateCacheWithMissedEntityUpdates(updates)
+
+				o.check(await storage.get(MailTypeRef, mailListId, mailId)).equals(null)
+				o.check(await storage.get(MailTypeRef, mailListId, "mailId2")).equals(null)
+				o.check(mailUpdate.cachingStatus).equals(CachingStatus.CacheUpdated)
+				o.check(mail2Update.cachingStatus).equals(CachingStatus.CacheUpdated)
+			})
+		})
 
 		o("when reading from the cache, the entities will be cloned", async function () {
 			const archiveId = "archiveId"
@@ -1644,7 +1863,7 @@ export function testEntityRestCache(name: string, getStorage: (userId: Id, custo
 
 			const notInCache = [createCustomer("customer3"), createCustomer("customer4")]
 			await Promise.all(inCache.map(async (i) => await storage.put(CustomerTypeRef, await toStorableInstance(i))))
-			const ids = inCache.concat(notInCache).map((c) => c._id)
+			const ids = inCache.concat(notInCache).map((c) => elementIdToId(c._id))
 
 			const loadMultipleParsedInstances = spy((...any) => Promise.all(notInCache.map(toStorableInstance)))
 			const mock = mockAttribute(entityRestClient, entityRestClient.loadMultipleParsedInstances, loadMultipleParsedInstances)
@@ -1656,12 +1875,12 @@ export function testEntityRestCache(name: string, getStorage: (userId: Id, custo
 			o(loadMultipleParsedInstances.args).deepEquals([
 				CustomerTypeRef,
 				null,
-				notInCache.map((c) => c._id),
+				notInCache.map((c) => elementIdToId(c._id)),
 				undefined,
 				DEFAULT_ENTITY_RESTCLIENT_LOAD_OPTIONS,
 			])("load multiple is called for customers not in cache")
 			for (const item of inCache.concat(notInCache)) {
-				o(await storage.get(CustomerTypeRef, null, item._id)).notEquals(null)("element is in cache " + item._id)
+				o(await storage.get(CustomerTypeRef, null, elementIdToId(item._id))).notEquals(null)("element is in cache " + item._id)
 			}
 			unmockAttribute(mock)
 		})
@@ -1841,8 +2060,8 @@ export function testEntityRestCache(name: string, getStorage: (userId: Id, custo
 			o(client.load.callCount).equals(2)("The permission was loaded both times from the server")
 		})
 
-		o.test("when loading single ET custom id entity it is cached", async function () {
-			const id = stringToBase64UrlCustomId("1")
+		o.test(`${name} when loading single ET custom id entity it is cached`, async function () {
+			const id = idToElementId(stringToBase64UrlCustomId("1"))
 			const client: EntityRestClient = mockRestClient()
 			const entity = createTestEntity(MailAddressToGroupTypeRef, {
 				_id: id,
@@ -1888,12 +2107,12 @@ export function testEntityRestCache(name: string, getStorage: (userId: Id, custo
 			const ids = [stringToBase64UrlCustomId("1"), stringToBase64UrlCustomId("2")]
 			const client: EntityRestClient = mockRestClient()
 			const firstEntity = createTestEntity(MailAddressToGroupTypeRef, {
-				_id: ids[0],
+				_id: idToElementId(ids[0]),
 				_permissions: "permid",
 				_ownerGroup: "owner-group1",
 			})
 			const secondEntity = createTestEntity(MailAddressToGroupTypeRef, {
-				_id: ids[1],
+				_id: idToElementId(ids[1]),
 				_permissions: "permid",
 				_ownerGroup: "owner-group1",
 			})

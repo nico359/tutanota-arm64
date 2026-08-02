@@ -9,7 +9,7 @@ const noUnionExceptNullable = {
 		type: "problem",
 		docs: {description: "Disallow union types except T | null (Nullable<T>)"},
 		messages: {
-			noUnion: "Union types are not allowed except 'T | null'. Use a discriminated interface with an enum discriminant instead.",
+			noUnion: "Union types are not allowed except 'T | null'. Use classes instead.",
 		},
 		schema: [],
 	},
@@ -136,11 +136,11 @@ export default defineConfig([
 			sourceType: "module",
 		},
 	},
-	// {
-	// 	files: ["src/platform-kit/**/*.ts"],
-	// 	plugins: {"local": {rules: {noUnionExceptNullable}}},
-	// 	rules: {"local/noUnionExceptNullable": "error"},
-	// },
+	{
+		files: ["src/platform-kit/**/*.ts"],
+		plugins: {"local": {rules: {noUnionExceptNullable}}},
+		rules: {"local/noUnionExceptNullable": "error"},
+	},
 	[
 		globalIgnores([
 			"buildSrc/",

@@ -15,9 +15,9 @@ import { GroupManagementFacade } from "../../../../src/platform-kit/base/facades
 import { SyncTracker } from "../../../../src/applications/common/api/main/SyncTracker"
 import { IdentityKeyCreator } from "../../../../src/platform-kit/base/base-crypto/IdentityKeyCreator"
 import { noPatchesAndInstance } from "./EventBusClientTest"
-import { OperationType } from "../../../../src/platform-kit/meta"
+import { idToElementId, OperationType } from "../../../../src/platform-kit/meta"
 import { Group, GroupKeyUpdateTypeRef, GroupMembershipTypeRef, GroupTypeRef, User, UserGroupKeyDistributionTypeRef, UserTypeRef } from "@tutao/entities/sys"
-import { EntityUpdateData } from "../../../../src/platform-kit/instance-pipeline/utils/EntityUpdateUtils"
+import { CachingStatus, EntityUpdateData } from "../../../../src/platform-kit/instance-pipeline/utils/EntityUpdateUtils"
 
 o.spec("EventBusEventCoordinatorTest", () => {
 	let eventBusEventCoordinator: EventBusEventCoordinator
@@ -41,7 +41,7 @@ o.spec("EventBusEventCoordinatorTest", () => {
 	o.beforeEach(function () {
 		user = createTestEntity(UserTypeRef, {
 			userGroup: createTestEntity(GroupMembershipTypeRef, { group: userGroupId }),
-			_id: userId,
+			_id: idToElementId(userId),
 		})
 		userFacade = object()
 		when(userFacade.getUser()).thenReturn(user)
@@ -50,10 +50,10 @@ o.spec("EventBusEventCoordinatorTest", () => {
 		const userGroup: Group = object()
 		userGroup.currentKeys = object()
 		userGroup.groupKeyVersion = userGroupKeyVersion
-		when(entityClient.load(GroupTypeRef, userGroupId)).thenResolve(userGroup)
-		when(entityClient.load(UserTypeRef, userId)).thenResolve(user)
-		userGroupKeyDistribution = createTestEntity(UserGroupKeyDistributionTypeRef, { _id: userGroupId })
-		when(entityClient.load(UserGroupKeyDistributionTypeRef, userGroupId)).thenResolve(userGroupKeyDistribution)
+		when(entityClient.load(GroupTypeRef, idToElementId(userGroupId))).thenResolve(userGroup)
+		when(entityClient.load(UserTypeRef, idToElementId(userId))).thenResolve(user)
+		userGroupKeyDistribution = createTestEntity(UserGroupKeyDistributionTypeRef, { _id: idToElementId(userGroupId) })
+		when(entityClient.load(UserGroupKeyDistributionTypeRef, idToElementId(userGroupId))).thenResolve(userGroupKeyDistribution)
 		mailFacade = object()
 		let lazyMailFacade: lazyAsync<MailFacade> = lazyMemoized(async () => mailFacade)
 		eventController = object()
@@ -67,6 +67,7 @@ o.spec("EventBusEventCoordinatorTest", () => {
 		when(groupManagementFacade.loadTeamGroupIds()).thenResolve(teamGroupIds)
 		eventBusEventCoordinator = new EventBusEventCoordinator(
 			lazyMailFacade,
+			lazyMemoized(async () => object()),
 			userFacade,
 			entityClient,
 			eventController,
@@ -240,6 +241,7 @@ o.spec("EventBusEventCoordinatorTest", () => {
 				instance: null,
 				patches: null,
 				blobInstance: null,
+				cachingStatus: CachingStatus.CacheNotUpdated,
 			},
 		]
 

@@ -86,9 +86,7 @@ export class FileControllerNative extends FileController {
 	}
 
 	async openDownloadedFiles(downloadedFiles: FileReference[]): Promise<void> {
-		if (isIOSApp()) {
-			await this.processDownloadedFilesIOS(downloadedFiles)
-		} else if (isDesktop() || isAndroidApp()) {
+		if (isDesktop() || isAndroidApp() || isIOSApp()) {
 			await this.openFiles(downloadedFiles)
 		} else {
 			throw new ProgrammingError("in filecontroller native but not in ios, android or desktop? - tried to open")
@@ -126,7 +124,7 @@ export class FileControllerNative extends FileController {
 	private async processDownloadedFilesIOS(downloadedFiles: FileReference[]): Promise<void> {
 		await promiseMap(downloadedFiles, async (file) => {
 			try {
-				await this.fileApp.open(file)
+				await this.fileApp.putFileIntoDownloadsFolder(file.location, file.name)
 			} finally {
 				await this.fileApp.deleteFile(file.location).catch((e: any) => console.log("failed to delete file", file.location, e))
 			}

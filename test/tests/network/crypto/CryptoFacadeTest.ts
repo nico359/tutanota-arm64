@@ -8,16 +8,7 @@ import {
 	PresentableKeyVerificationState,
 } from "../../../../src/platform-kit/app-env"
 import { asCryptoProtoocolVersion, BucketPermissionType } from "../../../../src/platform-kit/base/base-crypto/Constants.js"
-import {
-	AttributeModel,
-	elementIdPart,
-	getListId,
-	isSameId,
-	listIdPart,
-	ServerModelUntypedInstance,
-	TypeModel,
-	UntypedInstance,
-} from "../../../../src/platform-kit/meta"
+import { elementIdPart, elementIdToId, getListId, idToElementId, isSameId, listIdPart, TypeModel } from "../../../../src/platform-kit/meta"
 import { RestClient, restError } from "../../../../src/platform-kit/rest-client"
 import { HttpMethod } from "../../../../src/platform-kit/rest-client/types"
 import { EntityClient } from "../../../../src/platform-kit/network/EntityClient.js"
@@ -27,17 +18,16 @@ import {
 	aesDecrypt,
 	aesEncrypt,
 	AesKey,
-	bitArrayToUint8Array,
 	cryptoUtils,
 	CryptoWrapper,
 	decryptKey,
 	encryptKey,
 	encryptRsaKey,
 	generateX25519KeyPair,
-	KeyPairType,
 	keyToUint8Array,
 	kyberPrivateKeyToBytes,
 	kyberPublicKeyToBytes,
+	PQKeyPairs,
 	pqKeyPairsToPublicKeys,
 	PQPublicKeys,
 	PublicKeyIdentifierType,
@@ -61,19 +51,10 @@ import { VerifiedPublicEncryptionKey } from "../../../../src/platform-kit/base/f
 import { KeyLoaderFacade } from "../../../../src/platform-kit/base/base-crypto/KeyLoaderFacade.js"
 import PublicEncryptionKeyProvider from "../../../../src/platform-kit/base/base-crypto/PublicEncryptionKeyProvider.js"
 import { KeyRotationFacade } from "../../../../src/platform-kit/base/base-crypto/KeyRotationFacade.js"
-import { EntityAdapter, TypeModelResolver } from "../../../../src/platform-kit/instance-pipeline"
+import { EncryptedParsedInstance, EntityAdapter, InstancePipeline, TypeModelResolver } from "../../../../src/platform-kit/instance-pipeline"
 import { KeyVerificationMismatchError } from "../../../../src/platform-kit/network/error/KeyVerificationMismatchError"
 import { loadLibOQSWASM } from "../../crypto/WebAssemblyTestUtils"
-import {
-	createMail,
-	createMailAddress,
-	FileTypeRef,
-	InternalRecipientKeyData,
-	Mail,
-	MailAddressTypeRef,
-	MailDetailsBlobTypeRef,
-	MailTypeRef,
-} from "@tutao/entities/tutanota"
+import { createMailAddress, FileTypeRef, Mail, MailAddressTypeRef, MailDetailsBlobTypeRef, MailTypeRef } from "@tutao/entities/tutanota"
 import {
 	BucketKey,
 	BucketKeyTypeRef,
@@ -81,11 +62,7 @@ import {
 	BucketTypeRef,
 	createBucket,
 	createBucketKey,
-	createBucketPermission,
-	createGroup,
 	createInstanceSessionKey,
-	createKeyPair,
-	createPermission,
 	createTypeInfo,
 	CustomerAccountTerminationRequestTypeRef,
 	Group,
@@ -103,11 +80,12 @@ import {
 	User,
 	UserTypeRef,
 } from "@tutao/entities/sys"
-import { PQKeyPairs } from "../../../../src/platform-kit/crypto/encryption/PQKeyPairs.js"
 import { InstanceSessionKeysCache } from "../../../../src/platform-kit/base/base-crypto/persistence/InstanceSessionKeysCache.js"
 import { ProcessingState } from "../../../../src/entities/tutanota/Utils"
 import { GroupType, PermissionType } from "../../../../src/entities/sys/Utils"
 import { CacheManager } from "../../../../src/platform-kit/base/base-crypto/persistence/CacheManager"
+import { InstanceDirection, ParsedValue } from "../../../../src/platform-kit/instance-pipeline/ParsedValue"
+import { changeInstanceDirection } from "../../instance-pipeline/InstancePipelineTestUtils"
 
 const { anything, argThat } = matchers
 
@@ -132,7 +110,7 @@ const senderAddress = "hello@tutao.de"
 o.spec("CryptoFacadeTest", function () {
 	let restClient: RestClient
 
-	let instancePipeline
+	let instancePipeline: InstancePipeline
 
 	let serviceExecutor: IServiceExecutor
 	let entityClient: EntityClient
@@ -185,7 +163,7 @@ o.spec("CryptoFacadeTest", function () {
 
 		const bucketKey = createTestEntity(BucketKeyTypeRef, {
 			pubEncBucketKey,
-			keyGroup: recipientUser.userGroup._id,
+			keyGroup: elementIdToId(recipientUser.userGroup._id),
 			bucketEncSessionKeys: bucketEncSessionKeys,
 			recipientKeyVersion,
 			senderKeyVersion: senderPubEccKey != null ? senderPubEccKey.version.toString() : "0",
@@ -256,7 +234,7 @@ o.spec("CryptoFacadeTest", function () {
 		const sk = aes256RandomKey()
 		const mail = createTestEntity(MailTypeRef, {
 			_ownerEncSessionKey: recipientUser.mailGroupKey ? encryptKey(recipientUser.mailGroupKey, sk) : null,
-			_ownerGroup: recipientUser.mailGroup._id,
+			_ownerGroup: elementIdToId(recipientUser.mailGroup._id),
 			_ownerKeyVersion: recipientUser.mailGroup.groupKeyVersion,
 			bucketKey: null,
 		})
@@ -271,10 +249,10 @@ o.spec("CryptoFacadeTest", function () {
 
 		const sk = aes256RandomKey()
 		const groupKey_v1 = aes256RandomKey()
-		when(keyLoaderFacade.loadSymGroupKey(recipientUser.mailGroup._id, 1)).thenResolve(groupKey_v1)
+		when(keyLoaderFacade.loadSymGroupKey(elementIdToId(recipientUser.mailGroup._id), 1)).thenResolve(groupKey_v1)
 
 		const mail = createTestEntity(MailTypeRef, {
-			_ownerGroup: recipientUser.mailGroup._id,
+			_ownerGroup: elementIdToId(recipientUser.mailGroup._id),
 			_ownerEncSessionKey: encryptKey(groupKey_v1, sk),
 			_ownerKeyVersion: "1",
 		})
@@ -302,7 +280,7 @@ o.spec("CryptoFacadeTest", function () {
 
 		const mail = createTestEntity(MailTypeRef, {
 			confidential,
-			_ownerGroup: recipientUser.mailGroup._id,
+			_ownerGroup: elementIdToId(recipientUser.mailGroup._id),
 			_permissions: "permissionListId",
 		})
 
@@ -311,7 +289,7 @@ o.spec("CryptoFacadeTest", function () {
 		})
 		const permission = createTestEntity(PermissionTypeRef, {
 			_id: ["permissionListId", "permissionId"],
-			_ownerGroup: recipientUser.userGroup._id,
+			_ownerGroup: elementIdToId(recipientUser.userGroup._id),
 			bucketEncSessionKey: encryptKey(bk, sk),
 			bucket,
 			type: PermissionType.Public,
@@ -319,9 +297,9 @@ o.spec("CryptoFacadeTest", function () {
 		const pubEncBucketKey = object<Uint8Array>()
 		const bucketPermission = createTestEntity(BucketPermissionTypeRef, {
 			_id: ["bucketPermissionListId", "bucketPermissionId"],
-			_ownerGroup: recipientUser.userGroup._id,
+			_ownerGroup: elementIdToId(recipientUser.userGroup._id),
 			type: BucketPermissionType.Public,
-			group: recipientUser.userGroup._id,
+			group: elementIdToId(recipientUser.userGroup._id),
 			pubEncBucketKey,
 			protocolVersion: protocolVersion,
 			pubKeyVersion: "0",
@@ -369,13 +347,13 @@ o.spec("CryptoFacadeTest", function () {
 
 		const mail = createTestEntity(MailTypeRef, {
 			_permissions: "permissionListId",
-			_ownerGroup: recipientTestUser.mailGroup._id,
+			_ownerGroup: elementIdToId(recipientTestUser.mailGroup._id),
 			confidential: true,
 		})
 		const bucket = createBucket({
 			bucketPermissions: "bucketPermissionListId",
 		})
-		const permission = createPermission({
+		const permission = createTestEntity(PermissionTypeRef, {
 			_format: "",
 			listElementApplication: null,
 			listElementTypeId: null,
@@ -383,7 +361,7 @@ o.spec("CryptoFacadeTest", function () {
 			symEncSessionKey: null,
 			symKeyVersion: null,
 			_id: ["permissionListId", "permissionId"],
-			_ownerGroup: recipientTestUser.mailGroup._id,
+			_ownerGroup: elementIdToId(recipientTestUser.mailGroup._id),
 			bucketEncSessionKey: encryptKey(bk, sk),
 			bucket,
 			type: PermissionType.Public,
@@ -399,13 +377,13 @@ o.spec("CryptoFacadeTest", function () {
 			keyToUint8Array(bk),
 		)
 		const protocolVersion = CryptoProtocolVersion.RSA
-		const bucketPermission = createBucketPermission({
+		const bucketPermission = createTestEntity(BucketPermissionTypeRef, {
 			_id: ["bucketPermissionListId", "bucketPermissionId"],
 			_format: "",
 			_permissions: "",
-			_ownerGroup: recipientTestUser.mailGroup._id,
+			_ownerGroup: elementIdToId(recipientTestUser.mailGroup._id),
 			type: BucketPermissionType.Public,
-			group: recipientTestUser.userGroup._id,
+			group: elementIdToId(recipientTestUser.userGroup._id),
 			pubEncBucketKey,
 			senderKeyVersion: "0",
 			ownerEncBucketKey: null,
@@ -451,14 +429,14 @@ o.spec("CryptoFacadeTest", function () {
 		const bk = aes256RandomKey()
 
 		const mail = createTestEntity(MailTypeRef, {
-			_ownerGroup: recipientTestUser.mailGroup._id,
+			_ownerGroup: elementIdToId(recipientTestUser.mailGroup._id),
 			confidential: true,
 			_permissions: "permissionListId",
 		})
 		const bucket = createBucket({
 			bucketPermissions: "bucketPermissionListId",
 		})
-		const permission = createPermission({
+		const permission = createTestEntity(PermissionTypeRef, {
 			_format: "",
 			listElementApplication: null,
 			listElementTypeId: null,
@@ -466,7 +444,7 @@ o.spec("CryptoFacadeTest", function () {
 			symEncSessionKey: null,
 			symKeyVersion: null,
 			_id: ["permissionListId", "permissionId"],
-			_ownerGroup: recipientTestUser.mailGroup._id,
+			_ownerGroup: elementIdToId(recipientTestUser.mailGroup._id),
 			bucketEncSessionKey: encryptKey(bk, sk),
 			bucket,
 			type: PermissionType.Public,
@@ -482,13 +460,13 @@ o.spec("CryptoFacadeTest", function () {
 			keyToUint8Array(bk),
 		)
 		const protocolVersion = CryptoProtocolVersion.RSA
-		const bucketPermission = createBucketPermission({
+		const bucketPermission = createTestEntity(BucketPermissionTypeRef, {
 			_id: ["bucketPermissionListId", "bucketPermissionId"],
 			_format: "",
 			_permissions: "",
-			_ownerGroup: recipientTestUser.mailGroup._id,
+			_ownerGroup: elementIdToId(recipientTestUser.mailGroup._id),
 			type: BucketPermissionType.Public,
-			group: recipientTestUser.userGroup._id,
+			group: elementIdToId(recipientTestUser.userGroup._id),
 			pubEncBucketKey,
 			senderKeyVersion: "0",
 			ownerEncBucketKey: null,
@@ -536,7 +514,7 @@ o.spec("CryptoFacadeTest", function () {
 
 		let mail = createTestEntity(MailTypeRef, {
 			_id: ["mailListId", "mailId"],
-			_ownerGroup: recipientTestUser.mailGroup._id,
+			_ownerGroup: elementIdToId(recipientTestUser.mailGroup._id),
 			confidential,
 			mailDetails: ["mailDetailsArchiveId", "mailDetailsId"],
 			sender: createTestEntity(MailAddressTypeRef, {
@@ -642,7 +620,7 @@ o.spec("CryptoFacadeTest", function () {
 
 		const recipientKeyPairs = await pqFacade.generateKeyPairs()
 
-		const recipientKeyPair = createKeyPair({
+		const recipientKeyPair = createTestEntity(KeyPairTypeRef, {
 			_id: "recipientKeyPairId",
 			pubEccKey: recipientKeyPairs.x25519KeyPair.publicKey,
 			symEncPrivEccKey: null,
@@ -655,7 +633,7 @@ o.spec("CryptoFacadeTest", function () {
 
 		const senderKeyPairs = await pqFacade.generateKeyPairs()
 
-		const senderKeyPair = createKeyPair({
+		const senderKeyPair = createTestEntity(KeyPairTypeRef, {
 			_id: "senderKeyPairId",
 			pubRsaKey: null,
 			symEncPrivRsaKey: null,
@@ -666,7 +644,7 @@ o.spec("CryptoFacadeTest", function () {
 			signature: null,
 		})
 
-		const senderUserGroup = createGroup({
+		const senderUserGroup = createTestEntity(GroupTypeRef, {
 			_format: "",
 			_ownerGroup: "",
 			_permissions: "",
@@ -683,7 +661,7 @@ o.spec("CryptoFacadeTest", function () {
 			storageCounter: "counter1",
 			type: "",
 			user: "user1",
-			_id: "userGroupId",
+			_id: idToElementId("userGroupId"),
 			currentKeys: senderKeyPair,
 			groupKeyVersion: "0",
 			formerGroupKeys: createTestEntity(GroupKeysRefTypeRef),
@@ -706,38 +684,36 @@ o.spec("CryptoFacadeTest", function () {
 
 		const recipientPublicKeys: Versioned<PQPublicKeys> = {
 			version: 0,
-			object: {
-				keyPairType: KeyPairType.TUTA_CRYPT,
-				x25519PublicKey: recipientKeyPair.pubEccKey!,
-				kyberPublicKey: {
-					raw: recipientKeyPair.pubKyberKey!,
-				},
-			},
+			object: new PQPublicKeys(recipientKeyPair.pubEccKey!, {
+				raw: recipientKeyPair.pubKyberKey!,
+			}),
 		}
 		const loadedPublicKey: VerifiedPublicEncryptionKey = {
 			publicEncryptionKey: recipientPublicKeys,
 			verificationState: EncryptionKeyVerificationState.NO_ENTRY,
 		}
 		when(publicEncryptionKeyProvider.loadCurrentPublicEncryptionKey(anything())).thenResolve(loadedPublicKey)
-		when(asymmetricCryptoFacade.asymEncryptSymKey(bk, recipientPublicKeys, senderUserGroup._id)).thenResolve({
+		when(asymmetricCryptoFacade.asymEncryptSymKey(bk, recipientPublicKeys, elementIdToId(senderUserGroup._id))).thenResolve({
 			recipientKeyVersion: recipientPublicKeys.version,
 			senderKeyVersion: cryptoUtils.parseKeyVersion(senderUserGroup.groupKeyVersion),
 			pubEncSymKeyBytes: encodedPqMessage,
 			cryptoProtocolVersion: CryptoProtocolVersion.TUTA_CRYPT,
 		})
 
-		const internalRecipientKeyData = (await crypto.encryptBucketKeyForInternalRecipient(
-			senderUserGroup._id,
-			bk,
-			recipientMailAddress,
-			notFoundRecipients,
-			keyVerificationMismatchRecipients,
-		)) as InternalRecipientKeyData
+		const pubEncRecipientKeyData = assertNotNull(
+			await crypto.encryptBucketKeyForInternalRecipient(
+				elementIdToId(senderUserGroup._id),
+				bk,
+				recipientMailAddress,
+				notFoundRecipients,
+				keyVerificationMismatchRecipients,
+			),
+		).pubEncRecipientKeyData!
 
-		o(internalRecipientKeyData!.recipientKeyVersion).equals("0")
-		o(internalRecipientKeyData.protocolVersion).equals(CryptoProtocolVersion.TUTA_CRYPT)
-		o(internalRecipientKeyData!.mailAddress).equals(recipientMailAddress)
-		o(internalRecipientKeyData!.pubEncBucketKey).deepEquals(encodedPqMessage)
+		o(pubEncRecipientKeyData.recipientKeyVersion).equals("0")
+		o(pubEncRecipientKeyData.protocolVersion).equals(CryptoProtocolVersion.TUTA_CRYPT)
+		o(pubEncRecipientKeyData.mailAddress).equals(recipientMailAddress)
+		o(pubEncRecipientKeyData.pubEncBucketKey).deepEquals(encodedPqMessage)
 		verify(
 			publicEncryptionKeyProvider.loadCurrentPublicEncryptionKey({
 				identifierType: PublicKeyIdentifierType.MAIL_ADDRESS,
@@ -755,8 +731,8 @@ o.spec("CryptoFacadeTest", function () {
 
 		const senderKeyPair: KeyPair = object()
 
-		const senderUserGroup = createGroup({
-			_id: "userGroupId",
+		const senderUserGroup = createTestEntity(GroupTypeRef, {
+			_id: idToElementId("userGroupId"),
 			currentKeys: senderKeyPair,
 			groupKeyVersion: "0",
 			_permissions: "",
@@ -808,25 +784,27 @@ o.spec("CryptoFacadeTest", function () {
 		).thenResolve(loadedSenderPublicKey)
 
 		const pubEncBucketKey = object<Uint8Array>()
-		when(asymmetricCryptoFacade.asymEncryptSymKey(bk, recipientPublicKeys, senderUserGroup._id)).thenResolve({
+		when(asymmetricCryptoFacade.asymEncryptSymKey(bk, recipientPublicKeys, elementIdToId(senderUserGroup._id))).thenResolve({
 			recipientKeyVersion: recipientPublicKeys.version,
 			senderKeyVersion: cryptoUtils.parseKeyVersion(senderUserGroup.groupKeyVersion),
 			pubEncSymKeyBytes: pubEncBucketKey,
 			cryptoProtocolVersion: CryptoProtocolVersion.RSA,
 		})
 
-		const internalRecipientKeyData = (await crypto.encryptBucketKeyForInternalRecipient(
-			senderUserGroup._id,
-			bk,
-			recipientMailAddress,
-			notFoundRecipients,
-			keyVerificationMismatchRecipients,
-		)) as InternalRecipientKeyData
+		const pubEncRecipientKeyData = assertNotNull(
+			await crypto.encryptBucketKeyForInternalRecipient(
+				elementIdToId(senderUserGroup._id),
+				bk,
+				recipientMailAddress,
+				notFoundRecipients,
+				keyVerificationMismatchRecipients,
+			),
+		).pubEncRecipientKeyData!
 
-		o(internalRecipientKeyData!.recipientKeyVersion).equals("0")
-		o(internalRecipientKeyData!.mailAddress).equals(recipientMailAddress)
-		o(internalRecipientKeyData.protocolVersion).equals(CryptoProtocolVersion.RSA)
-		o(internalRecipientKeyData.pubEncBucketKey).deepEquals(pubEncBucketKey)
+		o(pubEncRecipientKeyData.recipientKeyVersion).equals("0")
+		o(pubEncRecipientKeyData.mailAddress).equals(recipientMailAddress)
+		o(pubEncRecipientKeyData.protocolVersion).equals(CryptoProtocolVersion.RSA)
+		o(pubEncRecipientKeyData.pubEncBucketKey).deepEquals(pubEncBucketKey)
 		verify(
 			publicEncryptionKeyProvider.loadCurrentPublicEncryptionKey({
 				identifierType: PublicKeyIdentifierType.MAIL_ADDRESS,
@@ -1146,6 +1124,8 @@ o.spec("CryptoFacadeTest", function () {
 		const testData = await prepareConfidentialMailToExternalRecipient([file1SessionKey, file2SessionKey])
 
 		const mailSessionKey = neverNull(await crypto.resolveSessionKey(testData.entityAdapter))
+		console.log(mailSessionKey)
+		console.log(testData.sk)
 		o(mailSessionKey).deepEquals(testData.sk)
 
 		const resolvedSessionKeys = assertNotNull(await crypto.resolveWithBucketKey(testData.entityAdapter))
@@ -1172,12 +1152,12 @@ o.spec("CryptoFacadeTest", function () {
 		const userCaptor = matchers.captor()
 		verify(
 			keyLoaderFacade.loadSymGroupKey(
-				externalUser.userGroup._id,
+				elementIdToId(externalUser.userGroup._id),
 				cryptoUtils.parseKeyVersion(externalUser.mailGroup.adminGroupKeyVersion!),
 				userCaptor.capture(),
 			),
 		)
-		verify(keyLoaderFacade.loadSymGroupKey(externalUser.mailGroup._id, testData.recipientKeyVersion, mailCaptor.capture()))
+		verify(keyLoaderFacade.loadSymGroupKey(elementIdToId(externalUser.mailGroup._id), testData.recipientKeyVersion, mailCaptor.capture()))
 		o(userCaptor.value.version).equals(cryptoUtils.parseKeyVersion(externalUser.userGroup.groupKeyVersion))
 		o(mailCaptor.value.version).equals(cryptoUtils.parseKeyVersion(externalUser.mailGroup.groupKeyVersion))
 
@@ -1653,7 +1633,7 @@ o.spec("CryptoFacadeTest", function () {
 		const mail = createTestEntity(MailTypeRef, {
 			_id: ["mailListId", "mailId"],
 			_permissions: "permissionListId",
-			_ownerGroup: recipientUser.mailGroup._id,
+			_ownerGroup: elementIdToId(recipientUser.mailGroup._id),
 			confidential: true,
 			subject: "oh no is this a subject",
 		})
@@ -1693,14 +1673,14 @@ o.spec("CryptoFacadeTest", function () {
 		const protocolVersion = CryptoProtocolVersion.RSA
 		const bucketKey = createBucketKey({
 			pubEncBucketKey,
-			keyGroup: recipientUser.userGroup._id,
+			keyGroup: elementIdToId(recipientUser.userGroup._id),
 			bucketEncSessionKeys: bucketEncSessionKeys,
 			groupEncBucketKey: null,
 			protocolVersion,
 			senderKeyVersion: null,
 			recipientKeyVersion: "0",
 		})
-		when(keyLoaderFacade.loadCurrentKeyPair(recipientUser.userGroup._id, anything())).thenResolve({
+		when(keyLoaderFacade.loadCurrentKeyPair(elementIdToId(recipientUser.userGroup._id), anything())).thenResolve({
 			object: RSA_TEST_KEYPAIR,
 			version: 0,
 		})
@@ -1721,7 +1701,7 @@ o.spec("CryptoFacadeTest", function () {
 			sk,
 			bk,
 			mailGroupKey: recipientUser.mailGroupKey,
-			userGroupId: recipientUser.userGroup._id,
+			userGroupId: elementIdToId(recipientUser.userGroup._id),
 		}
 	}
 
@@ -1750,7 +1730,7 @@ o.spec("CryptoFacadeTest", function () {
 
 		let pqKeyPairs = await pqFacade.generateKeyPairs()
 
-		const recipientKeyPair = createKeyPair({
+		const recipientKeyPair = createTestEntity(KeyPairTypeRef, {
 			_id: "keyPairId",
 			pubEccKey: pqKeyPairs.x25519KeyPair.publicKey,
 			symEncPrivEccKey: aesEncrypt(recipientUser.userGroupKey, pqKeyPairs.x25519KeyPair.privateKey),
@@ -1770,7 +1750,7 @@ o.spec("CryptoFacadeTest", function () {
 
 		const mail = createTestEntity(MailTypeRef, {
 			confidential,
-			_ownerGroup: recipientUser.mailGroup._id,
+			_ownerGroup: elementIdToId(recipientUser.mailGroup._id),
 			_ownerEncSessionKey: null, // enforce asymmetric crypto to resolve session key
 			_id: ["mailListId", "mailId"],
 			_permissions: "permissionListId",
@@ -1853,7 +1833,7 @@ o.spec("CryptoFacadeTest", function () {
 		let sk = aes256RandomKey()
 		let bk = aes256RandomKey()
 
-		const mailUntypedInstance = await createUntypedMailInstance(null, sk, confidential, externalUser.mailGroup._id)
+		const enncryptedMailInstance = await createEncryptedMailInstance(null, sk, confidential, elementIdToId(externalUser.mailGroup._id))
 
 		const groupKeyToEncryptBucketKey = externalUserGroupEncBucketKey ? externalUser.userGroupKey : externalUser.mailGroupKey
 		const groupEncBucketKey = encryptKey(groupKeyToEncryptBucketKey, bk)
@@ -1886,18 +1866,17 @@ o.spec("CryptoFacadeTest", function () {
 
 		const bucketKey = createTestEntity(BucketKeyTypeRef, {
 			pubEncBucketKey: null,
-			keyGroup: externalUserGroupEncBucketKey ? externalUser.userGroup._id : null,
+			keyGroup: externalUserGroupEncBucketKey ? elementIdToId(externalUser.userGroup._id) : null,
 			groupEncBucketKey: groupEncBucketKey,
 			bucketEncSessionKeys: bucketEncSessionKeys,
 		})
 
-		const bucketKeyUntypedInstance: UntypedInstance = await instancePipeline.mapAndEncrypt(BucketKeyTypeRef, bucketKey, null)
-
-		mailUntypedInstance[assertNotNull(AttributeModel.getAttributeId(MailTypeModel, "bucketKey"))] = [bucketKeyUntypedInstance]
-		const mailEncryptedParsedInstance = await instancePipeline.typeMapper.applyJsTypes(MailTypeModel, mailUntypedInstance)
+		const bucketKeyUntypedInstance = await instancePipeline.mapAndEncryptToParsedInstance(BucketKeyTypeRef, bucketKey, null)
+		enncryptedMailInstance.addAttributeByName("bucketKey", ParsedValue.fromNestedItems([bucketKeyUntypedInstance]))
+		changeInstanceDirection(enncryptedMailInstance, InstanceDirection.IncomingFromServer)
 
 		return {
-			entityAdapter: await EntityAdapter.from(MailTypeModel, mailEncryptedParsedInstance, instancePipeline.modelMapper),
+			entityAdapter: await EntityAdapter.fromEncryptedParsedInstance(enncryptedMailInstance, instancePipeline.modelMapper, instancePipeline.cryptoMapper),
 			bucketKey,
 			sk,
 			bk,
@@ -1928,10 +1907,10 @@ o.spec("CryptoFacadeTest", function () {
 		const externalUser = createTestUser("Bob", entityClient)
 
 		// Setup relationship between internal and external user
-		externalUser.userGroup.admin = internalUser.userGroup._id
+		externalUser.userGroup.admin = elementIdToId(internalUser.userGroup._id)
 		externalUser.userGroup.adminGroupEncGKey = encryptKey(internalUser.userGroupKey, externalUser.userGroupKey)
 		externalUser.userGroup.adminGroupKeyVersion = "0"
-		externalUser.mailGroup.admin = externalUser.userGroup._id
+		externalUser.mailGroup.admin = elementIdToId(externalUser.userGroup._id)
 		externalUser.mailGroup.adminGroupEncGKey = encryptKey(externalUser.userGroupKey, externalUser.mailGroupKey)
 		externalUser.mailGroup.adminGroupKeyVersion = "4"
 		const recipientKeyVersion = "5"
@@ -1940,18 +1919,22 @@ o.spec("CryptoFacadeTest", function () {
 
 		configureLoggedInUser(internalUser, userFacade, keyLoaderFacade)
 
-		when(keyLoaderFacade.loadSymGroupKey(externalUser.mailGroup._id, cryptoUtils.parseKeyVersion(recipientKeyVersion), anything())).thenResolve(
-			externalUser.mailGroupKey,
-		)
 		when(
-			keyLoaderFacade.loadSymGroupKey(externalUser.userGroup._id, cryptoUtils.parseKeyVersion(externalUser.mailGroup.adminGroupKeyVersion), anything()),
+			keyLoaderFacade.loadSymGroupKey(elementIdToId(externalUser.mailGroup._id), cryptoUtils.parseKeyVersion(recipientKeyVersion), anything()),
+		).thenResolve(externalUser.mailGroupKey)
+		when(
+			keyLoaderFacade.loadSymGroupKey(
+				elementIdToId(externalUser.userGroup._id),
+				cryptoUtils.parseKeyVersion(externalUser.mailGroup.adminGroupKeyVersion),
+				anything(),
+			),
 		).thenResolve(externalUser.userGroupKey)
 
 		// setup test mail (confidential reply from external)
 		let confidential = true
 		let sk = aes256RandomKey()
 		let bk = aes256RandomKey()
-		const untypedMailInstance = await createUntypedMailInstance(null, sk, confidential, internalUser.mailGroup._id)
+		const encryptedMailInstance = await createEncryptedMailInstance(null, sk, confidential, elementIdToId(internalUser.mailGroup._id))
 
 		const keyGroup = externalUser.mailGroup._id
 		const groupEncBucketKey = encryptKey(externalUser.mailGroupKey, bk)
@@ -1973,7 +1956,7 @@ o.spec("CryptoFacadeTest", function () {
 
 		const bucketKey = createTestEntity(BucketKeyTypeRef, {
 			pubEncBucketKey: null,
-			keyGroup: keyGroup,
+			keyGroup: elementIdToId(keyGroup),
 			groupEncBucketKey: groupEncBucketKey,
 			recipientKeyVersion,
 			bucketEncSessionKeys: bucketEncSessionKeys,
@@ -1981,12 +1964,15 @@ o.spec("CryptoFacadeTest", function () {
 			senderKeyVersion: null,
 		})
 
-		const bucketKeyUntypedInstance: UntypedInstance = await instancePipeline.mapAndEncrypt(BucketKeyTypeRef, bucketKey, null)
+		const encryptedBuckeyKeyInstance = await instancePipeline.mapAndEncryptToParsedInstance(BucketKeyTypeRef, bucketKey, null)
+		encryptedMailInstance.addAttributeByName("bucketKey", ParsedValue.fromNestedItems([encryptedBuckeyKeyInstance]))
+		changeInstanceDirection(encryptedMailInstance, InstanceDirection.IncomingFromServer)
 
-		untypedMailInstance[assertNotNull(AttributeModel.getAttributeId(MailTypeModel, "bucketKey"))] = [bucketKeyUntypedInstance]
-
-		const encryptedMailParsedInstance = await instancePipeline.typeMapper.applyJsTypes(MailTypeModel, untypedMailInstance)
-		const entityAdapter = await EntityAdapter.from(MailTypeModel, encryptedMailParsedInstance, instancePipeline.modelMapper)
+		const entityAdapter = await EntityAdapter.fromEncryptedParsedInstance(
+			encryptedMailInstance,
+			instancePipeline.modelMapper,
+			instancePipeline.cryptoMapper,
+		)
 
 		return {
 			entityAdapter: entityAdapter,
@@ -2000,23 +1986,23 @@ o.spec("CryptoFacadeTest", function () {
 		}
 	}
 
-	async function createUntypedMailInstance(
+	async function createEncryptedMailInstance(
 		ownerGroupKey: AesKey | null,
 		sessionKey: AesKey,
 		confidential: boolean,
 		ownerGroupId: string,
-	): Promise<ServerModelUntypedInstance> {
-		const mail = createMail({
+	): Promise<EncryptedParsedInstance> {
+		const mail = createTestEntity(MailTypeRef, {
 			_format: "0",
 			_ownerGroup: ownerGroupId,
 			_ownerEncSessionKey: ownerGroupKey ? encryptKey(ownerGroupKey, sessionKey) : null,
 			_permissions: "permissionListId",
 			_id: ["mailListId", "mailId"],
 			receivedDate: new Date(1470039025474),
-			state: "",
+			state: "0",
 			unread: true,
 			subject: "any subject",
-			replyType: "",
+			replyType: "0",
 			confidential: confidential,
 			sender: createMailAddress({
 				address: senderAddress,
@@ -2026,7 +2012,7 @@ o.spec("CryptoFacadeTest", function () {
 			bucketKey: null,
 			authStatus: null,
 			listUnsubscribe: false,
-			method: "",
+			method: "0",
 			phishingStatus: "0",
 			recipientCount: "0",
 			differentEnvelopeSender: null,
@@ -2047,8 +2033,7 @@ o.spec("CryptoFacadeTest", function () {
 			serverClassificationData: "0,10",
 		})
 
-		// casting here is fine, since we just want to mimic server response data
-		return (await instancePipeline.mapAndEncrypt(MailTypeRef, mail, sessionKey)) as unknown as ServerModelUntypedInstance
+		return await instancePipeline.mapAndEncryptToParsedInstance(MailTypeRef, mail, sessionKey)
 	}
 })
 
@@ -2057,24 +2042,24 @@ export function createTestUser(name: string, entityClient: EntityClient): TestUs
 	const mailGroupKey = aes256RandomKey()
 
 	const userGroup = createTestEntity(GroupTypeRef, {
-		_id: "userGroup" + name,
+		_id: idToElementId("userGroup" + name),
 		type: GroupType.User,
 		currentKeys: null,
 		groupKeyVersion: "0",
 	})
 
 	const mailGroup = createTestEntity(GroupTypeRef, {
-		_id: "mailGroup" + name,
+		_id: idToElementId("mailGroup" + name),
 		type: GroupType.Mail,
 		currentKeys: null,
 		groupKeyVersion: "0",
 	})
 
 	const userGroupMembership = createTestEntity(GroupMembershipTypeRef, {
-		group: userGroup._id,
+		group: elementIdToId(userGroup._id),
 	})
 	const mailGroupMembership = createTestEntity(GroupMembershipTypeRef, {
-		group: mailGroup._id,
+		group: elementIdToId(mailGroup._id),
 	})
 
 	const user = createTestEntity(UserTypeRef, {
@@ -2098,20 +2083,23 @@ export function createTestUser(name: string, entityClient: EntityClient): TestUs
  * Helper function to mock the user facade so that the given test user is considered as logged-in user.
  */
 export function configureLoggedInUser(testUser: TestUser, userFacade: UserFacade, keyLoaderFacade: KeyLoaderFacade) {
+	const userGroupId = elementIdToId(testUser.userGroup._id)
+	const mailGroupId = elementIdToId(testUser.mailGroup._id)
+
 	when(userFacade.getLoggedInUser()).thenReturn(testUser.user)
-	when(keyLoaderFacade.getCurrentSymGroupKey(testUser.mailGroup._id)).thenResolve({
+	when(keyLoaderFacade.getCurrentSymGroupKey(mailGroupId)).thenResolve({
 		object: testUser.mailGroupKey,
 		version: 0,
 	})
-	when(keyLoaderFacade.getCurrentSymGroupKey(testUser.userGroup._id)).thenResolve({
+	when(keyLoaderFacade.getCurrentSymGroupKey(userGroupId)).thenResolve({
 		object: testUser.userGroupKey,
 		version: 0,
 	})
-	when(userFacade.hasGroup(testUser.userGroup._id)).thenReturn(true)
-	when(userFacade.hasGroup(testUser.mailGroup._id)).thenReturn(true)
+	when(userFacade.hasGroup(userGroupId)).thenReturn(true)
+	when(userFacade.hasGroup(mailGroupId)).thenReturn(true)
 	when(userFacade.getCurrentUserGroupKey()).thenReturn({ object: testUser.userGroupKey, version: 0 })
 	when(userFacade.isLeader()).thenReturn(true)
 	when(userFacade.isFullyLoggedIn()).thenReturn(true)
-	when(keyLoaderFacade.loadSymGroupKey(testUser.mailGroup._id, 0)).thenResolve(testUser.mailGroupKey)
-	when(keyLoaderFacade.loadSymGroupKey(testUser.userGroup._id, 0)).thenResolve(testUser.userGroupKey)
+	when(keyLoaderFacade.loadSymGroupKey(mailGroupId, 0)).thenResolve(testUser.mailGroupKey)
+	when(keyLoaderFacade.loadSymGroupKey(userGroupId, 0)).thenResolve(testUser.userGroupKey)
 }

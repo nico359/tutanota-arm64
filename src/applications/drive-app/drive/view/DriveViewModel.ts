@@ -1,14 +1,14 @@
-import { elementIdPart, getElementId, isSameId, listIdPart, OperationType } from "@tutao/meta"
-import { EntityUpdateData, isUpdateForTypeRef, OnEntityUpdateReceivedPriority } from "../../../../platform-kit/instance-pipeline/utils/EntityUpdateUtils"
+import { elementIdPart, getElementId, isSameId, isSameSingleId, listIdPart, OperationType } from "@tutao/meta"
+import { EntityUpdateData, isUpdateForTypeRef, ListenerPriority } from "../../../../platform-kit/instance-pipeline/utils/EntityUpdateUtils"
 import { EntityClient, loadMultipleFromLists } from "../../../../platform-kit/network/EntityClient"
 import { BreadcrumbEntry, DriveFacade, DriveFolderType, DriveRootFolders } from "../../../common/api/worker/facades/lazy/DriveFacade"
-import { Router } from "../../../../ui/ScopedRouter"
+import { Router } from "../../../../ui/ScopedThrottledRouter"
 import m from "mithril"
-import { assertNotNull, debounceStart, filterInt, last, memoizedWithHiddenArgument, noOp, partition } from "@tutao/utils"
-import { DriveTransferController, DriveTransfers, DriveTransferState } from "./DriveTransferController"
+import { assertNotNull, debounceStart, filterInt, last, memoizedWithHiddenArgument, noOp, partition, promiseMap } from "@tutao/utils"
+import { DriveTransferController, DriveTransfers } from "./DriveTransferController"
 import { getDefaultSenderFromUser } from "../../../common/mailFunctionality/SharedMailUtils"
 import { EventController } from "../../../common/api/main/EventController"
-import { Const, OperationStatus, SECOND_IN_MILLIS } from "@tutao/app-env"
+import { Const, isDesktop, OperationStatus, SECOND_IN_MILLIS } from "@tutao/app-env"
 import { ListModel } from "../../../common/misc/ListModel"
 import { ListAutoSelectBehavior } from "../../../common/misc/DeviceConfig"
 import { ListFetchResult } from "../../../../ui/base/ListUtils"
@@ -20,7 +20,9 @@ import { LoginController } from "../../../common/api/main/LoginController"
 import { isDriveEnabled } from "../../../common/misc/DriveUtils"
 import { TransferProgressDispatcher } from "../../../common/api/main/TransferProgressDispatcher"
 import {
+	childFileFromEntry,
 	deduplicateItemNames,
+	DiskFolder,
 	FileFolderItem,
 	FolderItem,
 	folderItemEntity,
@@ -29,6 +31,8 @@ import {
 	loadFolderContents,
 	moveItems,
 	pickNewFileName,
+	traverse,
+	walkTree,
 } from "./DriveUtils"
 import { UserError } from "../../../common/api/main/UserError"
 import { MoveCycleError } from "../../../common/api/common/error/MoveCycleError"
@@ -38,7 +42,10 @@ import { FileReference, WebFile } from "../../../../entities/tutanota/Utils"
 import { DownloadProgressInfo, TransferId, UploadProgressInfo } from "../../../../entities/drive/Utils"
 import { DriveFile, DriveFileRefTypeRef, DriveFileTypeRef, DriveFolder, DriveFolderTypeRef } from "@tutao/entities/drive"
 import { isWebFile } from "../../../../ui/utils/FileUtils"
-import { isOfflineError, handleRestError, NotAuthorizedError, NotFoundError } from "@tutao/rest-client/error"
+import { handleRestError, isOfflineError, NotAuthorizedError, NotFoundError } from "@tutao/rest-client/error"
+import { WebFileResolver } from "./WebFileResolver"
+import { WebsocketConnectivityModel } from "../../../common/misc/WebsocketConnectivityModel"
+import { WsConnectionState } from "../../../../platform-kit/network/Constants"
 
 export interface RegularFolder {
 	type: DriveFolderType.Regular
@@ -170,6 +177,16 @@ export class DriveViewModel {
 	public readonly initialized: Promise<void>
 	public resolveInitialized: (value: PromiseLike<void> | void) => void = (value: void) => {}
 
+	private readonly connectionStateListener = {
+		id: "DriveViewModel",
+		priority: ListenerPriority.NORMAL,
+		onConnectionStateChanged: async (connectionState: WsConnectionState) => {
+			if (connectionState === WsConnectionState.connected) {
+				await this.listModel.reload()
+			}
+		},
+	}
+
 	constructor(
 		private readonly entityClient: EntityClient,
 		private readonly driveFacade: DriveFacade,
@@ -179,7 +196,9 @@ export class DriveViewModel {
 		public readonly loginController: LoginController,
 		private readonly userManagementFacade: UserManagementFacade,
 		private readonly transferController: DriveTransferController,
+		private readonly webFileResolver: WebFileResolver | null,
 		public readonly updateUi: () => unknown,
+		private readonly connectivityModel: WebsocketConnectivityModel,
 	) {
 		this.userMailAddress = getDefaultSenderFromUser(this.loginController.getUserController())
 		this.initialized = new Promise((resolve, reject) => {
@@ -210,12 +229,15 @@ export class DriveViewModel {
 			}
 		}
 
-		this.eventController.addEntityListener({
+		this.eventController.addEntityUpdatesListener({
+			id: "DriveViewModel",
 			onEntityUpdatesReceived: async (events) => {
-				await this.entityEventsReceived(events)
+				await this.onEntityUpdatesReceived(events)
 			},
-			priority: OnEntityUpdateReceivedPriority.NORMAL,
+			priority: ListenerPriority.NORMAL,
 		})
+
+		this.connectivityModel.addConnectionStateListener(this.connectionStateListener)
 
 		this.uploadProgressListener.addUploadListener((info: UploadProgressInfo) => {
 			this.transferController.onChunkUploaded(info.transferId, info.uploadedBytes)
@@ -280,7 +302,7 @@ export class DriveViewModel {
 			sortCompare: (item1: FolderItem, item2: FolderItem): number => {
 				return this.comparisonFunction()(item1, item2)
 			},
-			isSameId: isSameId,
+			isSameId: isSameSingleId,
 			autoSelectBehavior: () => ListAutoSelectBehavior.OLDER,
 		})
 		this.listStateSubscription?.end(true)
@@ -313,7 +335,7 @@ export class DriveViewModel {
 		},
 	)
 
-	private async entityEventsReceived(events: ReadonlyArray<EntityUpdateData>) {
+	private async onEntityUpdatesReceived(events: ReadonlyArray<EntityUpdateData>) {
 		for (const update of events) {
 			if (isUpdateForTypeRef(DriveFileRefTypeRef, update) && update.instanceListId === this.currentFolder?.folder.files) {
 				if (update.operation === OperationType.DELETE) {
@@ -334,7 +356,7 @@ export class DriveViewModel {
 				}
 				if (update.operation === OperationType.UPDATE || update.operation === OperationType.CREATE) {
 					const item = await this.loadItem(isUpdateForTypeRef(DriveFolderTypeRef, update) ? "folder" : "file", [
-						update.instanceListId,
+						assertNotNull(update.instanceListId),
 						update.instanceId,
 					])
 					this.listModel.updateLoadedItem(item)
@@ -566,13 +588,24 @@ export class DriveViewModel {
 		}
 	}
 
-	async uploadFiles(files: WebFile[] | FileReference[]): Promise<void> {
+	getSelectedItem(): FolderItem | null {
+		if (this.listModel.getSelectedAsArray().length === 1) {
+			return this.listModel.getActiveItem()
+		} else {
+			return null
+		}
+	}
+
+	async uploadFiles(files: (WebFile | FileReference)[], folders?: DiskFolder<WebFile | FileReference>[], customTargetFolderId?: IdTuple): Promise<void> {
 		if (this.roots == null) {
 			console.log("drive is not initialized")
 			return
 		}
-		const targetFolderId: IdTuple =
-			this.currentFolder == null || this.currentFolder.type === DriveFolderType.Trash ? this.roots?.root : this.currentFolder.folder._id
+		const targetFolderId: IdTuple = customTargetFolderId
+			? customTargetFolderId
+			: this.currentFolder == null || this.currentFolder.type === DriveFolderType.Trash
+				? this.roots?.root
+				: this.currentFolder.folder._id
 
 		await this.listModel.waitLoad()
 		const folderItems = this.listModel.getUnfilteredAsArray()
@@ -583,10 +616,30 @@ export class DriveViewModel {
 			takenFileNames.add(newName)
 			await this.transferController.upload(file, newName, targetFolderId)
 		}
+
+		for (const folder of folders ?? []) {
+			folder.name = pickNewFileName(folder.name, takenFileNames)
+			await walkTree({ folder, parent: targetFolderId }, async ({ folder: currentFolder, parent }) => {
+				const createdFolder = await this.driveFacade.createFolder(currentFolder.name, parent)
+				for (const childFile of currentFolder.files) {
+					const fileName = isWebFile(childFile) ? childFile.file.name : childFile.name
+					await this.transferController.upload(childFile, fileName, createdFolder._id)
+				}
+				return currentFolder.folders.map((f) => ({ folder: f, parent: createdFolder._id }))
+			})
+		}
 	}
 
-	async createNewFolder(folderName: string): Promise<void> {
-		await this.driveFacade.createFolder(folderName, assertNotNull(this.currentFolder?.folder)._id)
+	async createNewFolder(folderName: string, parentFolderId?: IdTuple): Promise<DriveFolder> {
+		if (parentFolderId == null) {
+			const currentFolder = assertNotNull(this.currentFolder).folder
+			if (currentFolder.type === DriveFolderType.Trash) {
+				parentFolderId = assertNotNull(this.roots).root
+			} else {
+				parentFolderId = currentFolder._id
+			}
+		}
+		return this.driveFacade.createFolder(folderName, parentFolderId)
 	}
 
 	navigateToFolder(folderId: IdTuple) {
@@ -608,6 +661,7 @@ export class DriveViewModel {
 	async openFile(file: DriveFile): Promise<void> {
 		this.transferController.download(file, "open")
 	}
+
 	async downloadFile(file: DriveFile): Promise<void> {
 		this.transferController.download(file, "download")
 	}
@@ -729,6 +783,29 @@ export class DriveViewModel {
 
 	enterMultiselect() {
 		this.listModel.enterMultiselect()
+	}
+
+	async filesDropped(files: File[], folderTransferItems: FileSystemDirectoryEntry[]) {
+		if (isDesktop()) {
+			const webFileResolver = assertNotNull(this.webFileResolver)
+			const fileRefs = await promiseMap(files, (file) => webFileResolver.resolveWebFile(file))
+
+			async function fileEntryToFileRef(entry: FileSystemFileEntry): Promise<FileReference> {
+				const file = await childFileFromEntry(entry)
+				return await webFileResolver.resolveWebFile(file.file)
+			}
+
+			const tree = await traverse<FileReference>(folderTransferItems, fileEntryToFileRef)
+			await this.uploadFiles(fileRefs, tree)
+		} else {
+			const tree = await traverse(folderTransferItems, childFileFromEntry)
+			await this.uploadFiles(
+				files.map((f) => {
+					return { _type: "WebFile", file: f } satisfies WebFile
+				}),
+				tree,
+			)
+		}
 	}
 }
 

@@ -16,7 +16,7 @@ import {
 	ofClass,
 	stringToBase64,
 } from "../../../../platform-kit/utils"
-import { elementIdPart } from "../../../../platform-kit/meta"
+import { elementIdPart, elementIdToId } from "../../../../platform-kit/meta"
 import { Group, GroupInfo, User } from "@tutao/entities/sys"
 import { GroupType, hasCapabilityOnGroup, NewPaidPlans } from "../../../../entities/sys/Utils"
 import {
@@ -26,7 +26,6 @@ import {
 	isDesktop,
 	Keys,
 	ProgrammingError,
-	reverse,
 	ShareCapability,
 	TimeFormat,
 	UpgradePromptType,
@@ -125,6 +124,8 @@ import { exportCalendar } from "../../../common/calendar/gui/CalendarImporterDia
 import { CalendarImporter } from "../../../common/calendar/import/CalendarImporter"
 import { ImportInteractionHandler } from "../../../common/calendar/gui/ImportInteractionHandler"
 import { EventSeriesResolver } from "../../../common/calendar/import/EventSeriesResolver"
+import { reverse } from "../../../common/misc/EnumUtils"
+import { isFreeSignupOnly } from "../../../common/misc/LoginUtils"
 
 export type GroupColors = Map<Id, string>
 
@@ -154,7 +155,7 @@ export class CalendarView extends BaseTopLevelView implements TopLevelView<Calen
 
 	constructor({ attrs }: Vnode<CalendarViewAttrs>) {
 		super()
-		const userId = locator.logins.getUserController().user._id
+		const userId = elementIdToId(locator.logins.getUserController().user._id)
 
 		this.viewModel = attrs.calendarViewModel
 		this.currentViewType = deviceConfig.getDefaultCalendarView(userId)
@@ -192,36 +193,39 @@ export class CalendarView extends BaseTopLevelView implements TopLevelView<Calen
 								SidebarSection,
 								{
 									name: "yourCalendars_label",
-									button: m(IconButton, {
-										title: "addCalendar_action",
-										colors: ButtonColor.Nav,
-										click:
-											(isApp() || isDesktop()) && findFirstPrivateCalendar(attrs.calendarViewModel.calendarInfos)
-												? createDropdown({
-														lazyButtons: () => [
-															{
-																label: "addCalendar_action",
-																colors: ButtonColor.Nav,
-																click: () => this.onPressedAddCalendar(CalendarType.Private),
-																icon: Icons.Plus,
-																size: ButtonSize.Compact,
-															},
-															{
-																label: "addCalendarFromURL_action",
-																icon: Icons.Chainlink,
-																size: ButtonSize.Compact,
-																click: () => this.onPressedAddCalendar(CalendarType.External),
-															},
-														],
-													})
-												: () => this.onPressedAddCalendar(CalendarType.Private),
-										icon: Icons.Plus,
-										size: ButtonSize.Compact,
-									}),
+									button:
+										isFreeSignupOnly() && locator.logins.getUserController().isFreeAccount()
+											? null
+											: m(IconButton, {
+													title: "addCalendar_action",
+													colors: ButtonColor.Nav,
+													click:
+														(isApp() || isDesktop()) && findFirstPrivateCalendar(attrs.calendarViewModel.calendarInfos)
+															? createDropdown({
+																	lazyButtons: () => [
+																		{
+																			label: "addCalendar_action",
+																			colors: ButtonColor.Nav,
+																			click: () => this.onPressedAddCalendar(CalendarType.Private),
+																			icon: Icons.Plus,
+																			size: ButtonSize.Compact,
+																		},
+																		{
+																			label: "addCalendarFromURL_action",
+																			icon: Icons.Chainlink,
+																			size: ButtonSize.Compact,
+																			click: () => this.onPressedAddCalendar(CalendarType.External),
+																		},
+																	],
+																})
+															: () => this.onPressedAddCalendar(CalendarType.Private),
+													icon: Icons.Plus,
+													size: ButtonSize.Compact,
+												}),
 									hideIfEmpty: true,
 								},
 								this.renderCalendars(CalendarType.Private),
-								this.renderBirthdayCalendar(),
+								(!isFreeSignupOnly() || !locator.logins.getUserController().isFreeAccount()) && this.renderBirthdayCalendar(),
 							),
 							m(
 								SidebarSection,
@@ -532,6 +536,7 @@ export class CalendarView extends BaseTopLevelView implements TopLevelView<Calen
 			for (let listener of streamListeners) {
 				listener.end(true)
 			}
+			this.viewModel.deinit()
 		}
 
 		deviceConfig.getLastSyncStream().map(redraw)
@@ -962,14 +967,15 @@ export class CalendarView extends BaseTopLevelView implements TopLevelView<Calen
 			}
 
 			const calendarGroup = await calendarModel.createCalendar(getExternalCalendarName(iCalStr), properties.color, [], properties.sourceUrl)
+			const calendarGroupId = elementIdToId(calendarGroup._id)
 			const calendarGroupRoot = await locator.entityClient.load(CalendarGroupRootTypeRef, calendarGroup._id)
-			deviceConfig.updateLastSync(calendarGroup._id)
+			deviceConfig.updateLastSync(calendarGroupId)
 
 			let calendarInfo = await this.viewModel.getCalendarModel().getCalendarInfo(calendarGroup._id)
 			if (!calendarInfo) {
-				console.warn(`CalendarInfo not available during external calendar subscription - CalendarId (${calendarGroup._id})`)
+				console.warn(`CalendarInfo not available during external calendar subscription - CalendarId (${calendarGroupId})`)
 				calendarInfo = {
-					id: calendarGroup._id,
+					id: calendarGroupId,
 					name: "",
 					color: DEFAULT_CALENDAR_COLOR,
 					type: CalendarType.External,
@@ -1412,7 +1418,7 @@ export class CalendarView extends BaseTopLevelView implements TopLevelView<Calen
 			},
 		]
 
-		if (this.canShare(isExternal)) {
+		if (this.canShare(isExternal) && (!isFreeSignupOnly() || !locator.logins.getUserController().isFreeAccount())) {
 			actions.push({
 				label: "sharing_label",
 				icon: Icons.PersonAddFilled,
@@ -1462,7 +1468,7 @@ export class CalendarView extends BaseTopLevelView implements TopLevelView<Calen
 			group.type === GroupType.Calendar &&
 			hasCapabilityOnGroup(user, group, ShareCapability.Write) &&
 			!hasSourceUrl(groupSettings) &&
-			!isBirthdayCalendar(group._id)
+			!isBirthdayCalendar(elementIdToId(group._id))
 		)
 	}
 

@@ -1,8 +1,9 @@
-import { clone } from "../../../../../platform-kit/meta"
+import { clone, elementIdToId, idToElementId } from "../../../../../platform-kit/meta"
 import { CalendarEvent, CalendarEventAttendee } from "@tutao/entities/tutanota"
 import { CalendarAttendeeStatus } from "../../../../../entities/tutanota/Utils"
 import {
 	addDaysForRecurringEvent,
+	AlarmInterval,
 	calendarEventHasMoreThanOneOccurrencesLeft,
 	CalendarTimeRange,
 	getStartOfDayWithZone,
@@ -57,7 +58,7 @@ export class CalendarEventPreviewViewModel {
 		if (!this.calendarEvent?._ownerGroup) {
 			return undefined
 		}
-		return this.calendarModel.getCalendarInfo(this.calendarEvent._ownerGroup)
+		return this.calendarModel.getCalendarInfo(idToElementId(this.calendarEvent._ownerGroup))
 	})
 
 	/**
@@ -70,6 +71,7 @@ export class CalendarEventPreviewViewModel {
 	 * @param lazyIndexEntry async function to resolve the progenitor of the shown event
 	 * @param eventModelFactory
 	 * @param calendarInviteHandler
+	 * @param alarms
 	 * @param highlightedStrings
 	 * @param uiUpdateCallback
 	 */
@@ -82,6 +84,7 @@ export class CalendarEventPreviewViewModel {
 		private readonly lazyIndexEntry: () => Promise<ResolvedUidIndexEntry | null>,
 		private readonly eventModelFactory: (mode: CalendarOperation, event: CalendarEvent) => Promise<CalendarEventModel | null>,
 		private readonly calendarInviteHandler: () => Promise<CalendarInviteHandler>,
+		public readonly alarms: AlarmInterval[] | Error,
 		private readonly highlightedStrings?: readonly SearchToken[],
 		private readonly uiUpdateCallback: () => void = m.redraw,
 	) {
@@ -280,7 +283,7 @@ export class CalendarEventPreviewViewModel {
 					isAlteredInstance: false,
 				},
 			}
-			addDaysForRecurringEvent(occurrencesPerDay, progenitorWrapper, generationRange, newEventModel.editModels.whenModel.zone)
+			addDaysForRecurringEvent(occurrencesPerDay, progenitorWrapper, generationRange, newEventModel.editModels.whenModel.calendarTimeZone)
 
 			const occurrencesLeft =
 				newEventModel.editModels.whenModel.repeatEndOccurrences -
@@ -332,7 +335,7 @@ export class CalendarEventPreviewViewModel {
 			newEventModel.editModels.whenModel.deleteExcludedDates()
 			newEventModel.editModels.whoModel.resetGuestsStatus()
 
-			const calendarId = newEventModel.editModels.whoModel.selectedCalendar.group._id
+			const calendarId = elementIdToId(newEventModel.editModels.whoModel.selectedCalendar.group._id)
 			await newEventModel.editModels.alarmModel.removeCalendarDefaultAlarms(calendarId, this.calendarModel.getGroupSettings())
 
 			const eventEditor = new EventEditorDialog()

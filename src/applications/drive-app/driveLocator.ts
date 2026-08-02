@@ -75,6 +75,7 @@ import {
 	ContactSuggestion,
 	DesktopSystemFacade,
 	ExternalCalendarFacade,
+	ImapSyncFacade,
 	MobileContactsFacade,
 	MobilePaymentsFacade,
 	MobileSystemFacade,
@@ -108,7 +109,7 @@ import { WhitelabelThemeGenerator } from "../../ui/WhitelabelThemeGenerator"
 import { NativeInterfaces } from "../common/native/NativeInterfaceFactory"
 import { EntropyFacade } from "../../platform-kit/base/facades/EntropyFacade"
 import { ClientModelInfo } from "@tutao/instance-pipeline"
-import { Router, ScopedRouter, ThrottledRouter } from "../../ui/ScopedRouter"
+import { Router, ScopedThrottledRouter, ThrottledRouter } from "../../ui/ScopedThrottledRouter"
 import { CalendarEvent, CalendarEventAttendee, Contact, Mail, MailboxProperties } from "@tutao/entities/tutanota"
 import { getEventWithDefaultTimes, setNextHalfHour } from "../common/api/common/utils/CommonCalendarUtils"
 import { CALENDAR_PREFIX } from "../../ui/utils/RouteChange"
@@ -120,7 +121,8 @@ import { SearchToken } from "../../ui/utils/QueryTokenUtils"
 import { KdfType } from "../../platform-kit/base/base-crypto/Constants"
 import { GroupSettingsModel } from "../common/sharing/model/GroupSettingsModel"
 
-import { ParsedEventAlarmTuple } from "../calendar-app/calendar/export/CalendarParser"
+import type { ParsedEventAlarmTuple } from "../calendar-app/calendar/export/CalendarParser"
+import type { AlarmInterval } from "../common/calendar/date/CalendarUtils"
 
 assertMainOrNode()
 
@@ -182,6 +184,7 @@ class DriveLocator implements CommonLocator {
 	whitelabelThemeGenerator!: WhitelabelThemeGenerator
 	driveFacade!: DriveFacade
 	transferProgressDispatcher!: TransferProgressDispatcher
+	imapImporter!: ImapSyncFacade
 
 	private nativeInterfaces: NativeInterfaces | null = null
 	private entropyFacade!: EntropyFacade
@@ -228,8 +231,9 @@ class DriveLocator implements CommonLocator {
 
 	readonly driveViewModel: lazyAsync<DriveViewModel> = lazyMemoized(async () => {
 		const { DriveViewModel } = await import("./drive/view/DriveViewModel.js")
-		const router = new ScopedRouter(this.throttledRouter(), "/drive")
+		const router = new ScopedThrottledRouter("/drive")
 		const { DriveTransferController } = await import("./drive/view/DriveTransferController.js")
+		const { WebFileResolver } = await import("../drive-app/drive/view/WebFileResolver.js")
 
 		const redraw = await this.redraw()
 		const driveUploadStackModel = new DriveTransferController(this.driveFacade, this.blobFacade, redraw, this.fileController)
@@ -243,7 +247,9 @@ class DriveLocator implements CommonLocator {
 			this.logins,
 			this.userManagementFacade,
 			driveUploadStackModel,
+			isDesktop() ? new WebFileResolver(window.nativeApp, this.fileApp, this.desktopSystemFacade) : null,
 			redraw,
+			this.connectivityModel,
 		)
 	})
 
@@ -615,6 +621,8 @@ class DriveLocator implements CommonLocator {
 
 			this.transferProgressDispatcher = new TransferProgressDispatcher()
 
+			// TODO: it would be nice to move this facade out of the ApplicationWindow
+			this.imapImporter = {} as ImapSyncFacade
 			this.webMobileFacade = new WebMobileFacade(this.connectivityModel, CALENDAR_PREFIX)
 			this.nativeInterfaces = createNativeInterfaces(
 				this.webMobileFacade,
@@ -623,6 +631,7 @@ class DriveLocator implements CommonLocator {
 					async () => this.native,
 					() => this.desktopSettingsFacade,
 				),
+				this.imapImporter,
 				new WebInterWindowEventFacade(this.logins, windowFacade, deviceConfig),
 				new WebCommonNativeFacade(
 					this.logins,
@@ -868,16 +877,23 @@ class DriveLocator implements CommonLocator {
 		calendars: ReadonlyMap<string, CalendarInfo>,
 		highlightedTokens: readonly SearchToken[],
 	): Promise<CalendarEventPreviewViewModel> {
-		const { findAttendeeInAddresses } = await import("../common/api/common/utils/CommonCalendarUtils.js")
-		const { getEventType } = await import("../calendar-app/calendar/gui/CalendarGuiUtils.js")
-		const { CalendarEventPreviewViewModel } = await import("../calendar-app/calendar/gui/eventpopup/CalendarEventPreviewViewModel.js")
-
-		const mailboxDetails = await this.mailboxModel.getUserMailboxDetails()
-
-		const mailboxProperties = await this.mailboxModel.getMailboxProperties(mailboxDetails.mailboxGroupRoot)
+		const [{ findAttendeeInAddresses }, { getEventType }, { CalendarEventPreviewViewModel }, { resolveAlarmsForEvent }, mailboxDetails] = await Promise.all(
+			[
+				import("../common/api/common/utils/CommonCalendarUtils.js"),
+				import("../calendar-app/calendar/gui/CalendarGuiUtils.js"),
+				import("../calendar-app/calendar/gui/eventpopup/CalendarEventPreviewViewModel.js"),
+				import("../calendar-app/calendar/gui/eventeditor-model/CalendarEventModel"),
+				this.mailboxModel.getUserMailboxDetails(),
+			],
+		)
 
 		const userController = this.logins.getUserController()
-		const customer = await userController.reloadCustomer()
+
+		const [mailboxProperties, customer] = await Promise.all([
+			this.mailboxModel.getMailboxProperties(mailboxDetails.mailboxGroupRoot),
+			userController.reloadCustomer(),
+		])
+
 		const ownMailAddresses = getEnabledMailAddressesWithUser(mailboxDetails, userController.userGroupInfo)
 		const ownAttendee: CalendarEventAttendee | null = findAttendeeInAddresses(selectedEvent.attendees, ownMailAddresses)
 		const eventType = getEventType(selectedEvent, calendars, ownMailAddresses, userController)
@@ -886,15 +902,27 @@ class DriveLocator implements CommonLocator {
 			selectedEvent.uid != null && selectedEvent._ownerGroup != null
 				? this.calendarFacade.getEventsByUid(selectedEvent.uid, selectedEvent._ownerGroup)
 				: null
+
+		const calendarModel = await this.calendarModel()
+		const alarms: Array<AlarmInterval> | Error = await resolveAlarmsForEvent(
+			selectedEvent.alarmInfos,
+			calendarModel,
+			this.logins.getUserController().user,
+		).catch((e) => {
+			console.error(e)
+			return e
+		})
+
 		const popupModel = new CalendarEventPreviewViewModel(
 			selectedEvent,
-			await this.calendarModel(),
+			calendarModel,
 			eventType,
 			hasBusinessFeature,
 			ownAttendee,
 			lazyIndexEntry,
 			async (mode: CalendarOperation, event: CalendarEvent) => this.calendarEventModel(mode, event, mailboxDetails, mailboxProperties, null),
 			this.calendarInviteHandler,
+			alarms,
 			highlightedTokens,
 		)
 

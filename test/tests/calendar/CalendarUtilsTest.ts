@@ -41,7 +41,6 @@ import {
 	serializeAlarmInterval,
 } from "../../../src/applications/common/api/common/utils/CommonCalendarUtils.js"
 import { getStartOfDay, identity, lastThrow, neverNull } from "../../../src/platform-kit/utils"
-import { replace } from "testdouble"
 import { CalendarEventAlteredInstance, CalendarEventProgenitor } from "../../../src/applications/common/api/worker/facades/lazy/CalendarFacade.js"
 import { getDateInUTC, getDateInZone, makeEventWrapper, makeUserController } from "./CalendarTestUtils.js"
 import { ParserError } from "../../../src/applications/common/misc/parsing/ParserCombinator.js"
@@ -54,7 +53,6 @@ import { Time } from "../../../src/applications/common/calendar/date/Time.js"
 import type { UserController } from "../../../src/applications/common/api/main/UserController.js"
 import { EventWrapper } from "../../../src/applications/calendar-app/calendar/view/CalendarViewModel"
 import {
-	AdvancedRepeatRule,
 	CalendarEvent,
 	CalendarEventAttendeeTypeRef,
 	CalendarEventTypeRef,
@@ -64,8 +62,8 @@ import {
 	EncryptedMailAddressTypeRef,
 	UserSettingsGroupRootTypeRef,
 } from "@tutao/entities/tutanota"
-import { DateWrapperTypeRef, GroupMembershipTypeRef, GroupTypeRef, RepeatRule, UserTypeRef } from "@tutao/entities/sys"
-import { clone, StrippedEntity } from "../../../src/platform-kit/meta"
+import { DateWrapperTypeRef, Group, GroupMembership, GroupMembershipTypeRef, GroupTypeRef, RepeatRule, User, UserTypeRef } from "@tutao/entities/sys"
+import { clone, elementIdToId, idToElementId } from "../../../src/platform-kit/meta"
 import { AccountType, GroupType, hasCapabilityOnGroup } from "../../../src/entities/sys/Utils"
 
 const zone = "Europe/Berlin"
@@ -256,6 +254,13 @@ o.spec("CalendarUtilsTest", function () {
 		o("it produces a date at the start of the day according to the time zone", function () {
 			const date = new Date("2023-01-29T22:30:00.000Z")
 			const expected = "2023-01-29T05:00:00.000Z"
+			const result = getStartOfDayWithZone(date, "America/New_York")
+			o(result.toISOString()).equals(expected)(`${result.toISOString()} vs ${expected}`)
+		})
+
+		o("given a midnight date, it produces a date at the start of the previous day according to the time zone", function () {
+			const date = new Date("2023-01-29T00:00:00.000Z")
+			const expected = "2023-01-28T05:00:00.000Z"
 			const result = getStartOfDayWithZone(date, "America/New_York")
 			o(result.toISOString()).equals(expected)(`${result.toISOString()} vs ${expected}`)
 		})
@@ -789,30 +794,29 @@ o.spec("CalendarUtilsTest", function () {
 		})
 	})
 	o.spec("capability", function () {
-		let user
-		let ownerUser
-		let group
-		let groupMembership
-		let groupOwnerMembership
+		let user: User
+		let ownerUser: User
+		let group: Group
+		let groupMembership: GroupMembership
+		let groupOwnerMembership: GroupMembership
 		o.before(function () {
-			// @ts-ignore
 			group = createTestEntity(GroupTypeRef, {
-				_id: "g1",
+				_id: idToElementId("g1"),
 				type: GroupType.Calendar,
 				user: "groupOwner",
 			})
 			groupMembership = createTestEntity(GroupMembershipTypeRef, {
-				group: group._id,
+				group: elementIdToId(group._id),
 			})
 			groupOwnerMembership = createTestEntity(GroupMembershipTypeRef, {
-				group: group._id,
+				group: elementIdToId(group._id),
 			})
 			ownerUser = createTestEntity(UserTypeRef, {
-				_id: "groupOwner",
+				_id: idToElementId("groupOwner"),
 				memberships: [groupOwnerMembership],
 			})
 			user = createTestEntity(UserTypeRef, {
-				_id: "groupMember",
+				_id: idToElementId("groupMember"),
 				memberships: [groupMembership],
 			})
 		})
@@ -1011,11 +1015,11 @@ o.spec("CalendarUtilsTest", function () {
 						createAdvancedRepeatRule({
 							interval: "TU",
 							ruleType: ByRule.BYDAY,
-						} as StrippedEntity<AdvancedRepeatRule>),
+						}),
 						createAdvancedRepeatRule({
 							interval: "MO",
 							ruleType: ByRule.BYDAY,
-						} as StrippedEntity<AdvancedRepeatRule>),
+						}),
 					],
 				}),
 			)
@@ -1114,11 +1118,11 @@ o.spec("CalendarUtilsTest", function () {
 						createAdvancedRepeatRule({
 							interval: "TU",
 							ruleType: ByRule.BYDAY,
-						} as StrippedEntity<AdvancedRepeatRule>),
+						}),
 						createAdvancedRepeatRule({
 							interval: "MO",
 							ruleType: ByRule.BYDAY,
-						} as StrippedEntity<AdvancedRepeatRule>),
+						}),
 					],
 				}),
 			)
@@ -1217,7 +1221,7 @@ o.spec("CalendarUtilsTest", function () {
 						createAdvancedRepeatRule({
 							interval: "1MO",
 							ruleType: ByRule.BYDAY,
-						} as StrippedEntity<AdvancedRepeatRule>),
+						}),
 					],
 				}),
 			)
@@ -2433,7 +2437,7 @@ o.spec("CalendarUtilsTest", function () {
 	o.spec("getEventType", function () {
 		let userController: UserController
 		o.beforeEach(() => {
-			const user = createTestEntity(UserTypeRef, { _id: "user-id" })
+			const user = createTestEntity(UserTypeRef, { _id: idToElementId("user-id") })
 			const userSettingsGroupRoot = createTestEntity(UserSettingsGroupRootTypeRef, { groupSettings: [] })
 			userController = makeUserController([], AccountType.PAID, undefined, false, false, user, userSettingsGroupRoot)
 		})
@@ -2441,7 +2445,7 @@ o.spec("CalendarUtilsTest", function () {
 			const event = {}
 			const calendars: Map<string, CalendarInfo> = new Map()
 			const ownMailAddresses = []
-			replace(userController.user, "accountType", AccountType.EXTERNAL)
+			userController.user.accountType = AccountType.EXTERNAL
 			o(getEventType(event, calendars, ownMailAddresses, userController)).equals(EventType.EXTERNAL)
 		})
 
@@ -2488,19 +2492,19 @@ o.spec("CalendarUtilsTest", function () {
 			calendars.set("ownergroup", {
 				hasMultipleMembers: true,
 				group: createTestEntity(GroupTypeRef, {
-					_id: "calendarGroup",
+					_id: idToElementId("calendarGroup"),
 					type: GroupType.Calendar,
 					user: "otherUser",
 				}),
 			})
 			const ownMailAddresses = ["my@address.to"]
-			replace(userController.user, "_id", ["userList", "userId"])
-			replace(userController.user, "memberships", [
+			userController.user._id = idToElementId("userId")
+			userController.user.memberships = [
 				createTestEntity(GroupMembershipTypeRef, {
 					group: "calendarGroup",
 					capability: ShareCapability.Write,
 				}),
-			])
+			]
 			o(getEventType(event, calendars, ownMailAddresses, userController)).equals(EventType.SHARED_RW)
 		})
 
@@ -2518,20 +2522,21 @@ o.spec("CalendarUtilsTest", function () {
 			calendars.set("ownergroup", {
 				hasMultipleMembers: true,
 				group: createTestEntity(GroupTypeRef, {
-					_id: "calendarGroup",
+					_id: idToElementId("calendarGroup"),
 					type: GroupType.Calendar,
 					user: "otherUser",
 				}),
 			})
 			const ownMailAddresses = ["my@address.to"]
 
-			replace(userController.user, "_id", ["userList", "userId"])
-			replace(userController.user, "memberships", [
+			userController.user._id = idToElementId("userId")
+			userController.user.memberships = [
 				createTestEntity(GroupMembershipTypeRef, {
 					group: "calendarGroup",
 					capability: ShareCapability.Write,
 				}),
-			])
+			]
+
 			o(getEventType(event, calendars, ownMailAddresses, userController)).equals(EventType.LOCKED)
 		})
 
@@ -2549,13 +2554,13 @@ o.spec("CalendarUtilsTest", function () {
 			calendars.set("ownergroup", {
 				hasMultipleMembers: false,
 				group: createTestEntity(GroupTypeRef, {
-					_id: "calendarGroup",
+					_id: idToElementId("calendarGroup"),
 					type: GroupType.Calendar,
 					user: "userId",
 				}),
 			})
 			const ownMailAddresses = ["my@address.to"]
-			replace(userController.user, "_id", ["userList", "userId"])
+			userController.user._id = idToElementId("userId")
 			o(getEventType(event, calendars, ownMailAddresses, userController)).equals(EventType.OWN)
 		})
 	})
@@ -2577,14 +2582,14 @@ o.spec("CalendarUtilsTest", function () {
 		calendars.set("ownergroup", {
 			hasMultipleMembers: true,
 			group: createTestEntity(GroupTypeRef, {
-				_id: "calendarGroup",
+				_id: idToElementId("calendarGroup"),
 				type: GroupType.Calendar,
 				user: "otherUser",
 			}),
 		})
 		const ownMailAddresses = ["my@address.to"]
 		const user = createTestEntity(UserTypeRef, {
-			_id: "user-id",
+			_id: idToElementId("user-id"),
 			memberships: [
 				createTestEntity(GroupMembershipTypeRef, {
 					group: "calendarGroup",
@@ -2592,7 +2597,7 @@ o.spec("CalendarUtilsTest", function () {
 				}),
 			],
 		})
-		replace(user, "_id", ["userList", "userId"])
+		user._id = idToElementId("userId")
 		const userSettingsGroupRoot = createTestEntity(UserSettingsGroupRootTypeRef, { groupSettings: [] })
 		const userController = makeUserController([], AccountType.PAID, undefined, false, false, user, userSettingsGroupRoot)
 		o(getEventType(event, calendars, ownMailAddresses, userController)).equals(EventType.SHARED_RO)
@@ -2615,16 +2620,16 @@ o.spec("CalendarUtilsTest", function () {
 		calendars.set("ownergroup", {
 			hasMultipleMembers: false,
 			group: createTestEntity(GroupTypeRef, {
-				_id: "calendarGroup",
+				_id: idToElementId("calendarGroup"),
 				type: GroupType.Calendar,
 				user: "userId",
 			}),
 		})
 		const ownMailAddresses = ["my@address.to"]
 		const user = createTestEntity(UserTypeRef, {
-			_id: "user-id",
+			_id: idToElementId("user-id"),
 		})
-		replace(user, "_id", ["userList", "userId"])
+		user._id = idToElementId("userId")
 		const userSettingsGroupRoot = createTestEntity(UserSettingsGroupRootTypeRef, { groupSettings: [] })
 		const userController = makeUserController([], AccountType.PAID, undefined, false, false, user, userSettingsGroupRoot)
 		o(getEventType(event, calendars, ownMailAddresses, userController)).equals(EventType.INVITE)

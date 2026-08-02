@@ -10,9 +10,9 @@ import {
 	SessionExpiredError,
 	TooManyRequestsError,
 } from "@tutao/rest-client/error"
-import { type AppName, AttributeModel, hasError, isSameTypeRef, timestampToGeneratedId, TypeRef } from "@tutao/meta"
+import { type AppName, elementIdToId, isSameTypeRef, timestampToGeneratedId, TypeRef } from "@tutao/meta"
 import { assertNotNull, DateProvider, delay, identity, isNotEmpty, lazyAsync, Nullable, ofClass, promiseMap, randomIntFromInterval } from "@tutao/utils"
-import { EntityAdapter, InstancePipeline, LoggedInUserProvider, SessionKeyResolver, TypeModelResolver } from "@tutao/instance-pipeline"
+import { DecryptedParsedInstance, EntityAdapter, InstancePipeline, LoggedInUserProvider, SessionKeyResolver, TypeModelResolver } from "@tutao/instance-pipeline"
 import { CloseEventBusOption, ConnectMode, WsConnectionState } from "../../../platform-kit/network/Constants.js"
 import { SessionKeyNotFoundError } from "@tutao/crypto/error"
 import { ProgressMonitorInterface } from "../../../platform-kit/network/ProgressMonitorInterface.js"
@@ -29,16 +29,25 @@ import {
 	sysModelInfo,
 	WebsocketCounterData,
 	WebsocketCounterDataTypeRef,
+	WebsocketEntityData,
 	WebsocketEntityDataTypeRef,
+	WebsocketLeaderStatus,
 	WebsocketLeaderStatusTypeRef,
 } from "@tutao/entities/sys"
 import { GroupType } from "../../../entities/sys/Utils"
-import { MailDetailsBlobTypeRef, MailTypeRef, PhishingMarkerWebsocketDataTypeRef, ReportedMailFieldMarker, tutanotaModelInfo } from "@tutao/entities/tutanota"
-import { Entity, ServerModelParsedInstance, ServerModelUntypedInstance } from "@tutao/meta"
+import {
+	MailDetailsBlobTypeRef,
+	MailTypeRef,
+	PhishingMarkerWebsocketData,
+	PhishingMarkerWebsocketDataTypeRef,
+	ReportedMailFieldMarker,
+	tutanotaModelInfo,
+} from "@tutao/entities/tutanota"
 import { EventQueue, QueuedBatch } from "./EventQueue.js"
-import { EntityUpdateData, entityUpdateToUpdateData } from "../../../platform-kit/instance-pipeline/utils/EntityUpdateUtils"
+import { CacheSyncStatus, EntityUpdateData, entityUpdateToUpdateData } from "../../../platform-kit/instance-pipeline/utils/EntityUpdateUtils"
 import { EntityMigrator } from "../../../platform-kit/network/EntityRestClient"
 import { validateKdfNonceLength } from "@tutao/crypto"
+import { IncomingServerJson } from "../../../platform-kit/instance-pipeline/TypeMapper"
 
 assertWorkerOrNode()
 
@@ -52,6 +61,8 @@ export const enum EventBusState {
 
 // EntityEventBatches expire after 45 days. keep a time diff security of one day.
 export const ENTITY_EVENT_BATCH_EXPIRE_MS = 44 * 24 * 60 * 60 * 1000
+export const MAX_EVENT_QUEUE_LENGTH_BEFORE_FLUSHING = 500
+
 const RETRY_AFTER_SERVICE_UNAVAILABLE_ERROR_MS = 30000
 const NORMAL_SHUTDOWN_CLOSE_CODE = 1
 /**
@@ -125,6 +136,7 @@ export class EventBusClient {
 	 */
 	private readonly artificialWorkEstimate = 25
 	private readonly initialWorkDone = 25
+	private flushCount = 0
 
 	/**
 	 * Represents a currently retried execution due to a ServiceUnavailableError
@@ -165,7 +177,7 @@ export class EventBusClient {
 
 	private reset() {
 		this.immediateReconnect = false
-
+		this.flushCount = 0
 		this.eventQueue.pause()
 		this.eventQueue.clear()
 
@@ -177,10 +189,12 @@ export class EventBusClient {
 	 * @param connectMode
 	 */
 	async connect(connectMode: ConnectMode) {
+		await this.cache.setCacheSyncStatus(CacheSyncStatus.OnlineSyncOngoing)
+
 		console.log(TAG, "ws connect reconnect:", connectMode === ConnectMode.Reconnect, "state:", this.state)
 		// make sure a retry will be cancelled by setting _serviceUnavailableRetry to null
 		this.serviceUnavailableRetry = null
-
+		this.flushCount = 0
 		this.connectivityListener.updateWebSocketState(WsConnectionState.connecting)
 
 		this.state = EventBusState.Automatic
@@ -197,7 +211,7 @@ export class EventBusClient {
 			"&clientVersion=" +
 			env.versionNumber +
 			"&userId=" +
-			this.loggedInUserProvider.getLoggedInUser()._id +
+			elementIdToId(this.loggedInUserProvider.getLoggedInUser()._id) +
 			"&accessToken=" +
 			authHeaders.accessToken +
 			(this.lastAntiphishingMarkersId ? "&lastPhishingMarkersId=" + this.lastAntiphishingMarkersId : "") +
@@ -223,6 +237,7 @@ export class EventBusClient {
 
 		if (groupsToLastEventBatchIds.size === 0) {
 			this.isInitialSyncDone = true
+			await this.cache.setCacheSyncStatus(CacheSyncStatus.OnlineSyncDone)
 		}
 
 		const path = "/event?" + authQuery + (groupsToLastEventBatchIds.size > 0 ? groupsToLastEventBatchIdsQuery : "")
@@ -245,8 +260,10 @@ export class EventBusClient {
 	 * Sends a close event to the server and finally closes the connection.
 	 * The state of this event bus client is reset and the client is terminated (does not automatically reconnect) except reconnect == true
 	 */
-	close(closeOption: CloseEventBusOption) {
+	async close(closeOption: CloseEventBusOption) {
 		console.log(TAG, "ws close closeOption: ", closeOption, "state:", this.state)
+
+		await this.cache.setCacheSyncStatus(CacheSyncStatus.Offline)
 
 		switch (closeOption) {
 			case CloseEventBusOption.Terminate:
@@ -292,11 +309,6 @@ export class EventBusClient {
 		return p
 	}
 
-	private async decodeEntityEventValue<E extends Entity>(messageType: TypeRef<E>, untypedInstance: ServerModelUntypedInstance): Promise<E> {
-		const untypedInstanceSanitized = AttributeModel.removeNetworkDebuggingInfoIfNeeded(untypedInstance)
-		return await this.instancePipeline.decryptAndMap(messageType, untypedInstanceSanitized, null)
-	}
-
 	private onError(error: Event) {
 		console.log(TAG, "ws error type:", error.type, JSON.stringify(error), "state:", this.state)
 	}
@@ -311,7 +323,14 @@ export class EventBusClient {
 
 		switch (type) {
 			case MessageType.EntityUpdate: {
-				const entityUpdateData = await this.decodeEntityEventValue(WebsocketEntityDataTypeRef, JSON.parse(value))
+				if (this.eventQueue.eventQueue.length >= (this.flushCount + 1) * MAX_EVENT_QUEUE_LENGTH_BEFORE_FLUSHING) {
+					await this.processAccumulatedEventBatches()
+				}
+				const typeModel = await this.typeModelResolver.resolveServerTypeReference(WebsocketEntityDataTypeRef)
+				const entityUpdateData = await this.instancePipeline.decryptAndMap<WebsocketEntityData>(
+					IncomingServerJson.expectSingleInstance(value, typeModel),
+					null,
+				)
 				this.typeModelResolver.setServerApplicationTypesModelHash(entityUpdateData.applicationTypesHash)
 
 				// We only process entity updates for apps and types the clients know about.
@@ -344,13 +363,21 @@ export class EventBusClient {
 				break
 			}
 			case MessageType.UnreadCounterUpdate: {
-				const counterData = await this.decodeEntityEventValue(WebsocketCounterDataTypeRef, JSON.parse(value))
+				const typeModel = await this.typeModelResolver.resolveServerTypeReference(WebsocketCounterDataTypeRef)
+				const counterData = await this.instancePipeline.decryptAndMap<WebsocketCounterData>(
+					IncomingServerJson.expectSingleInstance(value, typeModel),
+					null,
+				)
 				this.typeModelResolver.setServerApplicationTypesModelHash(counterData.applicationTypesHash)
 				this.listener.onCounterChanged(counterData)
 				break
 			}
 			case MessageType.PhishingMarkers: {
-				const data = await this.decodeEntityEventValue(PhishingMarkerWebsocketDataTypeRef, JSON.parse(value))
+				const typeModel = await this.typeModelResolver.resolveServerTypeReference(PhishingMarkerWebsocketDataTypeRef)
+				const data = await this.instancePipeline.decryptAndMap<PhishingMarkerWebsocketData>(
+					IncomingServerJson.expectSingleInstance(value, typeModel),
+					null,
+				)
 				this.typeModelResolver.setServerApplicationTypesModelHash(data.applicationTypesHash)
 
 				this.lastAntiphishingMarkersId = data.lastId
@@ -358,7 +385,8 @@ export class EventBusClient {
 				break
 			}
 			case MessageType.LeaderStatus: {
-				const data = await this.decodeEntityEventValue(WebsocketLeaderStatusTypeRef, JSON.parse(value))
+				const typeModel = await this.typeModelResolver.resolveServerTypeReference(WebsocketLeaderStatusTypeRef)
+				const data = await this.instancePipeline.decryptAndMap<WebsocketLeaderStatus>(IncomingServerJson.expectSingleInstance(value, typeModel), null)
 				if (data.applicationTypesHash) {
 					this.typeModelResolver.setServerApplicationTypesModelHash(data.applicationTypesHash)
 				}
@@ -368,23 +396,28 @@ export class EventBusClient {
 				break
 			}
 			case MessageType.OperationStatusUpdate: {
-				const data = await this.decodeEntityEventValue(OperationStatusUpdateTypeRef, JSON.parse(value))
+				const typeModel = await this.typeModelResolver.resolveServerTypeReference(OperationStatusUpdateTypeRef)
+				const data = await this.instancePipeline.decryptAndMap<OperationStatusUpdate>(IncomingServerJson.expectSingleInstance(value, typeModel), null)
 				this.listener.onOperationStatusUpdate(data)
 				break
 			}
 			case MessageType.InitialSyncDone: {
-				console.log(TAG, "Reached final event, sync is done")
-
 				this.isInitialSyncDone = true
+				await this.processAccumulatedEventBatches()
+				this.flushCount = 0
+				await this.cache.setCacheSyncStatus(CacheSyncStatus.OnlineSyncDone)
+				console.log(TAG, "Reached final event, sync is done")
+				await this.waitForEmptyQueue()
 				// if we received no missed batches and lastMissedBatchId remains null, we should call the syncDone listener directly
 				if (this.lastMissedBatchId === null) {
 					this.listener.onSyncDone()
 				}
-				setTimeout(() => this.progressMonitor?.workDone(this.artificialWorkEstimate), PROGRESS_SYNC_DONE_TIMEOUT_DEBOUNCE_MS)
+				setTimeout(() => this.progressMonitor?.completed(), PROGRESS_SYNC_DONE_TIMEOUT_DEBOUNCE_MS)
 				break
 			}
 			case MessageType.InitialSyncWorkEstimate: {
 				const newWorkEstimate = Number.parseInt(value)
+				console.log(TAG, "InitialSyncWorkEstimate: ", newWorkEstimate)
 				if (newWorkEstimate === 0) {
 					break
 				}
@@ -392,9 +425,9 @@ export class EventBusClient {
 				if (this.progressMonitor == null) {
 					// add and finish some work (25) directly, to immediately show some progress and start estimating
 					this.progressMonitor = this.createProgressMonitor(newWorkEstimate + this.artificialWorkEstimate + this.initialWorkDone)
-					await this.progressMonitor.workDone(this.initialWorkDone)
+					this.progressMonitor.workDone(this.initialWorkDone)
 				} else {
-					await this.progressMonitor.updateTotalWork(this.progressMonitor.totalWork + newWorkEstimate)
+					this.progressMonitor.updateTotalWork(this.progressMonitor.totalWork + newWorkEstimate)
 				}
 				break
 			}
@@ -406,19 +439,21 @@ export class EventBusClient {
 
 	private async getParsedInstanceFromEntityEvent(
 		event: EntityUpdate,
-	): Promise<{ parsedInstance: Nullable<ServerModelParsedInstance>; parsedBlobInstance: Nullable<ServerModelParsedInstance> }> {
+	): Promise<{ parsedInstance: Nullable<DecryptedParsedInstance>; parsedBlobInstance: Nullable<DecryptedParsedInstance> }> {
 		const typeRef = new TypeRef<any>(event.application as AppName, parseInt(event.typeId))
 		if (event.instance != null) {
+			const typeModel = await this.typeModelResolver.resolveServerTypeReference(typeRef)
 			try {
-				const serverTypeModel = await this.typeModelResolver.resolveServerTypeReference(typeRef)
-				const untypedInstance = JSON.parse(event.instance) as ServerModelUntypedInstance
-				const untypedInstanceSanitized = AttributeModel.removeNetworkDebuggingInfoIfNeeded(untypedInstance)
-				const encryptedParsedInstance = await this.instancePipeline.typeMapper.applyJsTypes(serverTypeModel, untypedInstanceSanitized)
-				const entityAdapter = await EntityAdapter.from(serverTypeModel, encryptedParsedInstance, this.instancePipeline.modelMapper)
+				const serverJson = IncomingServerJson.expectSingleInstance(event.instance, typeModel)
+				const encryptedParsedInstance = await this.instancePipeline.typeMapper.parseServerJson(serverJson)
+				const entityAdapter = await EntityAdapter.fromEncryptedParsedInstance(
+					encryptedParsedInstance,
+					this.instancePipeline.modelMapper,
+					this.instancePipeline.cryptoMapper,
+				)
 				const migratedEntity = await this.entityMigrator.applyMigrations(typeRef, entityAdapter)
 				const sessionKey = await this.sessionKeyResolver.resolveSessionKey(migratedEntity)
 				const parsedInstance = await this.instancePipeline.cryptoMapper.decryptParsedInstance(
-					serverTypeModel,
 					encryptedParsedInstance,
 					sessionKey,
 					validateKdfNonceLength(entityAdapter._kdfNonce),
@@ -426,18 +461,14 @@ export class EventBusClient {
 				)
 
 				// we do not want to process the instance if there are _errors (when decrypting)
-				if (!hasError(parsedInstance)) {
+				if (!parsedInstance.hasError()) {
 					if (isSameTypeRef(MailTypeRef, typeRef) && event.blobInstance != null) {
+						const mailDetailsTypeModel = await this.typeModelResolver.resolveServerTypeReference(MailDetailsBlobTypeRef)
 						// handle MailDetails blobs
-						const mailDetailsBlobServerTypeModel = await this.typeModelResolver.resolveServerTypeReference(MailDetailsBlobTypeRef)
-						const mailDetailsBlobUntypedInstance = JSON.parse(event.blobInstance) as ServerModelUntypedInstance
-						const mailDetailsBlobUntypedInstanceSanitized = AttributeModel.removeNetworkDebuggingInfoIfNeeded(mailDetailsBlobUntypedInstance)
-						const mailDetailsBlobEncryptedParsedInstance = await this.instancePipeline.typeMapper.applyJsTypes(
-							mailDetailsBlobServerTypeModel,
-							mailDetailsBlobUntypedInstanceSanitized,
+						const mailDetailsBlobEncryptedParsedInstance = await this.instancePipeline.typeMapper.parseServerJson(
+							IncomingServerJson.expectSingleInstance(event.blobInstance, mailDetailsTypeModel),
 						)
 						const parsedBlobInstance = await this.instancePipeline.cryptoMapper.decryptParsedInstance(
-							mailDetailsBlobServerTypeModel,
 							mailDetailsBlobEncryptedParsedInstance,
 							sessionKey,
 							validateKdfNonceLength(entityAdapter._kdfNonce),
@@ -517,11 +548,10 @@ export class EventBusClient {
 
 	private async initEntityEvents(connectMode: ConnectMode): Promise<void> {
 		return this.initConnection()
-			.then(() => this.eventQueue.resume())
 			.catch(
-				ofClass(ConnectionError, (e) => {
+				ofClass(ConnectionError, async (e) => {
 					console.log(TAG, "ws not connected in connect(), close websocket", e)
-					this.close(CloseEventBusOption.Reconnect)
+					await this.close(CloseEventBusOption.Reconnect)
 				}),
 			)
 			.catch(
@@ -557,7 +587,6 @@ export class EventBusClient {
 				}),
 			)
 			.catch((e) => {
-				this.eventQueue.resume()
 				this.listener.onError(e)
 			})
 	}
@@ -678,11 +707,11 @@ export class EventBusClient {
 			}
 
 			if (!(await this.progressMonitor?.isDone())) {
-				await this.progressMonitor?.workDone(1)
+				this.progressMonitor?.workDone(1)
 			}
 
 			// call syncDone listener right after the last missed batch is processed
-			if (batch.batchId === this.lastMissedBatchId) {
+			if (batch.batchId === this.lastMissedBatchId && this.isInitialSyncDone) {
 				this.listener.onSyncDone()
 			}
 		} catch (e) {
@@ -727,6 +756,18 @@ export class EventBusClient {
 	}
 
 	async waitForEmptyQueue(): Promise<void> {
+		this.eventQueue.resume()
 		await this.eventQueue.waitForEmptyQueue()
+	}
+
+	private async processAccumulatedEventBatches() {
+		const allMissedEventsFlat = this.eventQueue.eventQueue.flatMap((batch) => batch.events)
+		await this.cache.updateCacheWithMissedEntityUpdates(allMissedEventsFlat)
+		// we set the instance and blobInstance to null to make sure that the event queue does not take up too much memory
+		allMissedEventsFlat.map((entityUpdate) => {
+			entityUpdate.instance = null
+			entityUpdate.blobInstance = null
+		})
+		this.flushCount += 1
 	}
 }

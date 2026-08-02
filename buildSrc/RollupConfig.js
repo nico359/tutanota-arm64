@@ -14,6 +14,8 @@ export const dependencyMap = {
 	luxon: path.normalize("./libs/luxon.js"),
 	linkifyjs: path.normalize("./libs/linkify.js"),
 	"linkify-html": path.normalize("./libs/linkify-html.js"),
+	"./tensorflow-custom": path.normalize("./libs/tensorflow.js"),
+	"./openid-client-custom": path.normalize("./libs/openid-client.js"),
 	cborg: path.normalize("./libs/cborg.js"),
 	// below this, the modules are only running in the desktop main thread.
 	"electron-updater": path.normalize("./libs/electron-updater.mjs"),
@@ -21,7 +23,8 @@ export const dependencyMap = {
 	jsqr: path.normalize("./libs/jsQR.js"),
 	"@signalapp/sqlcipher": path.normalize("./libs/node-sqlcipher.mjs"),
 	"@fingerprintjs/botd": path.normalize("./libs/botd.mjs"),
-	"./tensorflow-custom": path.normalize("./libs/tensorflow.js"),
+	"./imapflow-custom": path.normalize("./libs/imapflow.js"),
+	"./postalmime-custom": path.normalize("./libs/postal-mime.js"),
 }
 
 export let tsImportAliases = {
@@ -106,6 +109,7 @@ export const allowedImports = {
 		"settings",
 		"native-main",
 		"ui-extra",
+		"openid-client",
 	],
 	"calendar-settings": [
 		"polyfill-helpers",
@@ -177,6 +181,7 @@ export const allowedImports = {
 	"worker-search": ["common-min", "common", "worker", "worker-lazy"],
 	linkify: [],
 	qr: ["polyfill-helpers"],
+	"openid-client": [],
 	pdf: ["common-min", "qr"],
 	"material-color-utilities": [],
 	drive: ["common-min", "common", "boot", "gui-base", "main"],
@@ -319,7 +324,8 @@ export function getChunkName(moduleId, { getModuleInfo }) {
 		isIn("src/applications/mail-app/workerUtils/worker") ||
 		isIn("src/applications/calendar-app/worker") ||
 		isIn("src/applications/mail-app/workerUtils/offline") ||
-		isIn("src/applications/drive-app/workerUtils")
+		isIn("src/applications/drive-app/workerUtils") ||
+		isIn("src/applications/mail-app/workerUtils/imapimport")
 	) {
 		return "worker"
 	} else if (moduleId.includes("pow-worker") || moduleId.includes("ProofOfWorkCaptchaUtils")) {
@@ -364,6 +370,7 @@ export function getChunkName(moduleId, { getModuleInfo }) {
 		isIn("src/applications/common/subscription") ||
 		isIn("src/applications/common/ratings") ||
 		isIn("src/applications/common/termination") ||
+		isIn("src/applications/common/revocation") ||
 		isIn("src/applications/common/partner")
 	) {
 		// subscription and settings depend on each other right now.
@@ -397,6 +404,8 @@ export function getChunkName(moduleId, { getModuleInfo }) {
 		return "worker" // avoid that crypto stuff is only put into native
 	} else if (isIn("libs/jszip")) {
 		return "jszip"
+	} else if (isIn("libs/openid-client")) {
+		return "openid-client"
 	} else if (isIn("node_modules/@material/material-color-utilities")) {
 		return "material-color-utilities"
 	} else if (isIn("libs/jsQR") || isIn("libs/qrcode")) {
@@ -456,6 +465,8 @@ export function getChunkName(moduleId, { getModuleInfo }) {
 		return "main"
 	} else if (isIn("src/applications/common/calendar/import")) {
 		return "calendar-importer"
+	} else if (isIn("src/applications/common/calendar/")) {
+		return "common"
 	} else {
 		// Put all translations into "translation-code"
 		// Almost like in Rollup example: https://rollupjs.org/guide/en/#outputmanualchunks

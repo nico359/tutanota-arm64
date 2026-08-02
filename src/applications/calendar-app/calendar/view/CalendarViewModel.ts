@@ -1,10 +1,15 @@
-import { clone, getElementId, getListId, isSameId, listIdPart, OperationType } from "../../../../platform-kit/meta"
 import {
-	EntityUpdateData,
-	isUpdateFor,
-	isUpdateForTypeRef,
-	OnEntityUpdateReceivedPriority,
-} from "../../../../platform-kit/instance-pipeline/utils/EntityUpdateUtils"
+	clone,
+	elementIdToId,
+	getElementId,
+	getListId,
+	idToElementId,
+	isSameId,
+	isSameSingleId,
+	listIdPart,
+	OperationType,
+} from "../../../../platform-kit/meta"
+import { EntityUpdateData, isUpdateFor, isUpdateForTypeRef, ListenerPriority } from "../../../../platform-kit/instance-pipeline/utils/EntityUpdateUtils"
 import { CalendarEvent, CalendarEventTypeRef, CalendarGroupRoot, Contact, ContactTypeRef, GroupSettings } from "@tutao/entities/tutanota"
 import { CustomerInfoTypeRef, GroupInfo, ReceivedGroupInvitation } from "@tutao/entities/sys"
 import { GroupType, NewPaidPlans } from "../../../../entities/sys/Utils"
@@ -89,6 +94,8 @@ import { ImportInteractionHandler } from "../../../common/calendar/gui/ImportInt
 import { selectAndParseIcalFile } from "../../../common/calendar/gui/CalendarImporterDialog"
 import { EventSeriesResolver } from "../../../common/calendar/import/EventSeriesResolver"
 import { $Promisable } from "../../../mail-app/workerUtils/index/IndexerPromiseUtils"
+import { WebsocketConnectivityModel } from "../../../common/misc/WebsocketConnectivityModel"
+import { WsConnectionState } from "../../../../platform-kit/network/Constants"
 
 export interface EventWrapperFlags {
 	/**
@@ -231,6 +238,16 @@ export class CalendarViewModel implements EventDragHandlerCallbacks {
 
 	private scrollByListener: ScrollByListener = noOp
 
+	private readonly connectionStateListener = {
+		id: "CalendarViewModel",
+		priority: ListenerPriority.NORMAL,
+		onConnectionStateChanged: async (connectionState: WsConnectionState) => {
+			if (connectionState === WsConnectionState.connected) {
+				await this.preloadMonthsAroundSelectedDate(true)
+			}
+		},
+	}
+
 	constructor(
 		private readonly logins: LoginController,
 		private readonly createCalendarEventModel: CalendarEventModelFactory,
@@ -248,6 +265,7 @@ export class CalendarViewModel implements EventDragHandlerCallbacks {
 		private readonly contactModel: ContactModel,
 		private readonly groupSettingsModel: lazy<Promise<GroupSettingsModel>>,
 		private readonly operationProgressTracker: OperationProgressTracker,
+		private readonly connectivityModel: WebsocketConnectivityModel,
 	) {
 		this.calendarColorsMap = memoized((availableCalendars: ReadonlyArray<CalendarInfoBase>) => {
 			const calendarColors = new Map()
@@ -259,7 +277,7 @@ export class CalendarViewModel implements EventDragHandlerCallbacks {
 
 		this._transientEvents = []
 
-		const userId = logins.getUserController().user._id
+		const userId = elementIdToId(logins.getUserController().user._id)
 
 		this._hiddenCalendars = new Set(this.deviceConfig.getHiddenCalendars(userId))
 
@@ -276,17 +294,19 @@ export class CalendarViewModel implements EventDragHandlerCallbacks {
 				const groupRoots = Array.from(newInfos.values()).map((i) => i.groupRoot)
 				const lists = [...groupRoots.map((g) => g.longEvents), ...groupRoots.map((g) => g.shortEvents)]
 				const previewListId = getListId(event)
-				if (!lists.some((id) => isSameId(previewListId, id))) {
+				if (!lists.some((id) => isSameSingleId(previewListId, id))) {
 					this.updatePreviewedEvent(null)
 				}
 			}
 			this.preloadMonthsAroundSelectedDate()
 		})
 
-		eventController.addEntityListener({
-			onEntityUpdatesReceived: (updates) => this.entityEventReceived(updates),
-			priority: OnEntityUpdateReceivedPriority.NORMAL,
+		eventController.addEntityUpdatesListener({
+			id: "CalendarViewModel",
+			onEntityUpdatesReceived: (updates) => this.onEntityUpdatesReceived(updates),
+			priority: ListenerPriority.NORMAL,
 		})
+		this.connectivityModel.addConnectionStateListener(this.connectionStateListener)
 
 		calendarInvitationsModel.init()
 
@@ -380,7 +400,7 @@ export class CalendarViewModel implements EventDragHandlerCallbacks {
 	 * react to changes to the calendar data by making sure we have the current month + the two adjacent months
 	 * ready to be rendered
 	 */
-	private preloadMonthsAroundSelectedDate = debounce(200, async () => {
+	private preloadMonthsAroundSelectedDate = debounce(200, async (isForceReload: boolean = false) => {
 		// load all calendars. if there is no calendar yet, create one
 		// for each calendar we load short events for three months +3
 		const workPerCalendar = 3
@@ -400,7 +420,7 @@ export class CalendarViewModel implements EventDragHandlerCallbacks {
 			if (hasNewPaidPlan) {
 				await this.eventsRepository.loadContactsBirthdays()
 			}
-			await this.loadMonthsIfNeeded([new Date(thisMonthStart), nextMonthDate, previousMonthDate], progressMonitor, this.cancelSignal)
+			await this.loadMonthsIfNeeded([new Date(thisMonthStart), nextMonthDate, previousMonthDate], progressMonitor, this.cancelSignal, isForceReload)
 		} finally {
 			progressMonitor.completed()
 			this.doRedraw()
@@ -451,9 +471,9 @@ export class CalendarViewModel implements EventDragHandlerCallbacks {
 	 */
 	private canFullyEditEvent(event: CalendarEvent): boolean {
 		const userController = this.logins.getUserController()
-		const userMailGroup = userController.getUserMailGroupMembership().group
+		const userMailGroup = idToElementId(userController.getUserMailGroupMembership().group)
 		const mailboxDetailsArray = this.mailboxModel.mailboxDetails()
-		const mailboxDetails = assertNotNull(mailboxDetailsArray.find((md) => md.mailGroup._id === userMailGroup))
+		const mailboxDetails = assertNotNull(mailboxDetailsArray.find((md) => isSameId(md.mailGroup._id, userMailGroup)))
 		const ownMailAddresses = getEnabledMailAddressesWithUser(mailboxDetails, userController.userGroupInfo)
 		const eventType = getEventType(event, this.calendarInfos, ownMailAddresses, userController)
 		return eventType === EventType.OWN || eventType === EventType.SHARED_RW
@@ -556,7 +576,8 @@ export class CalendarViewModel implements EventDragHandlerCallbacks {
 	setHiddenCalendars(newHiddenCalendars: Set<Id>) {
 		this._hiddenCalendars = newHiddenCalendars
 
-		this.deviceConfig.setHiddenCalendars(this.logins.getUserController().user._id, [...newHiddenCalendars])
+		const userId = this.logins.getUserController().user._id
+		this.deviceConfig.setHiddenCalendars(elementIdToId(userId), [...newHiddenCalendars])
 	}
 
 	/**
@@ -717,7 +738,7 @@ export class CalendarViewModel implements EventDragHandlerCallbacks {
 				},
 				color,
 			}
-			addDaysForRecurringEvent(occurrencesPerDay, progenitorWrapper, generationRange, newEventModel.editModels.whenModel.zone)
+			addDaysForRecurringEvent(occurrencesPerDay, progenitorWrapper, generationRange, newEventModel.editModels.whenModel.calendarTimeZone)
 
 			const occurrencesLeft =
 				newEventModel.editModels.whenModel.repeatEndOccurrences -
@@ -789,10 +810,10 @@ export class CalendarViewModel implements EventDragHandlerCallbacks {
 		}
 	}
 
-	private async entityEventReceived<T>(updates: ReadonlyArray<EntityUpdateData>): Promise<void> {
+	private async onEntityUpdatesReceived<T>(updates: ReadonlyArray<EntityUpdateData>): Promise<void> {
 		for (const update of updates) {
 			if (isUpdateForTypeRef(CalendarEventTypeRef, update)) {
-				const eventId: IdTuple = [update.instanceListId, update.instanceId]
+				const eventId: IdTuple = [assertNotNull(update.instanceListId), update.instanceId]
 				const previewedEvent = this.previewedEvent()
 				if (previewedEvent != null && isUpdateFor(previewedEvent.event, update)) {
 					if (update.operation === OperationType.DELETE) {
@@ -821,7 +842,8 @@ export class CalendarViewModel implements EventDragHandlerCallbacks {
 					this.doRedraw()
 				}
 			} else if (isUpdateForTypeRef(ContactTypeRef, update) && this.isNewPaidPlan) {
-				await this.eventsRepository.handleContactEvent(update.operation, [update.instanceListId, update.instanceId])
+				const contactId: IdTuple = [assertNotNull(update.instanceListId), update.instanceId]
+				await this.eventsRepository.handleContactEvent(update.operation, contactId)
 				this.doRedraw()
 			} else if (isUpdateForTypeRef(CustomerInfoTypeRef, update)) {
 				this.logins
@@ -836,8 +858,8 @@ export class CalendarViewModel implements EventDragHandlerCallbacks {
 		return this.calendarModel.getCalendarInfosCreateIfNeeded()
 	}
 
-	loadMonthsIfNeeded(daysInMonths: Array<Date>, progressMonitor: ProgressMonitorInterface, canceled: Stream<boolean>): Promise<void> {
-		return this.eventsRepository.loadMonthsIfNeeded(daysInMonths, canceled, progressMonitor)
+	loadMonthsIfNeeded(daysInMonths: Array<Date>, progressMonitor: ProgressMonitorInterface, canceled: Stream<boolean>, isForceReload: boolean): Promise<void> {
+		return this.eventsRepository.loadMonthsIfNeeded(daysInMonths, canceled, progressMonitor, undefined, isForceReload)
 	}
 
 	private doRedraw() {
@@ -955,6 +977,10 @@ export class CalendarViewModel implements EventDragHandlerCallbacks {
 			this.timeZone,
 		)
 		await importer.import(groupRoot, calendarInfo, parsedEventAlarmTuples, CalendarImporter.classifyImportedEvents, calendarInfo.type)
+	}
+
+	deinit() {
+		this.connectivityModel.removeConnectionStateListener(this.connectionStateListener)
 	}
 }
 

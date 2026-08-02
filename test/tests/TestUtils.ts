@@ -1,26 +1,37 @@
 import { DbEncryptionData } from "../../src/applications/common/api/worker/search/SearchTypes.js"
 import { IndexerCore } from "../../src/applications/mail-app/workerUtils/index/IndexerCore.js"
 import { DbFacade, DbTransaction } from "../../src/applications/common/api/worker/search/DbFacade.js"
-import { assertNotNull, deepEqual, defer, isNotNull, Thunk, typedEntries } from "../../src/platform-kit/utils"
+import { assertNotNull, base64ToUint8Array, deepEqual, defer, isNotNull, Thunk, typedEntries, uint8ArrayToString } from "../../src/platform-kit/utils"
 import type { DesktopKeyStoreFacade } from "../../src/applications/common/desktop/DesktopKeyStoreFacade.js"
 import { mock } from "@tutao/otest"
 import { Aes256Key, aes256RandomKey, FIXED_INITIALIZATION_VECTOR } from "../../src/platform-kit/crypto"
 import { ScheduledPeriodicId, ScheduledTimeoutId, Scheduler } from "../../src/applications/common/api/common/utils/Scheduler.js"
 import { matchers, object, when } from "testdouble"
 import {
+	AggregatedEntity,
 	Cardinality,
 	clone,
 	create,
 	Entity,
 	generatedIdToTimestamp,
+	idToElementId,
 	ModelValue,
 	timestampToGeneratedId,
+	Type,
 	TypeModel,
 	TypeRef,
 	ValueType,
 } from "../../src/platform-kit/meta"
 import { type fetch as undiciFetch, type Response } from "undici"
-import { ClientModelInfo, InstancePipeline, ModelMapper, ServerModelInfo, ServerModels, TypeModelResolver } from "../../src/platform-kit/instance-pipeline"
+import {
+	ClientModelInfo,
+	ClientOnlyTypeModelResolver,
+	InstancePipeline,
+	ModelMapper,
+	ServerModelInfo,
+	ServerModels,
+	TypeModelResolver,
+} from "../../src/platform-kit/instance-pipeline"
 import { dummyResolver } from "./instance-pipeline/InstancePipelineTestUtils"
 import { accountingModelInfo, accountingTypeModels } from "@tutao/entities/accounting"
 import { baseModelInfo, baseTypeModels } from "@tutao/entities/base"
@@ -35,6 +46,8 @@ import { ClientPlatform } from "../../src/platform-kit/app-env/boot/ClientDetect
 import { KeyLoaderFacade } from "../../src/platform-kit/base/base-crypto/KeyLoaderFacade"
 import { BrowserData } from "../../src/platform-kit/app-env/boot/ClientConstants"
 import { SYMMETRIC_CIPHER_FACADE, SymmetricCipherFacade } from "../../src/platform-kit/crypto/instance-pipeline-crypto/SymmetricCipherFacade"
+import { OfflineMapper } from "../../src/platform-kit/instance-pipeline/OfflineMapper"
+import { ProgrammingError } from "../../src/platform-kit/app-env"
 
 export const browserDataStub: BrowserData = {
 	needsMicrotaskHack: false,
@@ -196,11 +209,21 @@ function resolveTypeReference(typeRef: TypeRef<any>): TypeModel {
 }
 
 // copy of the _getDefaultValue but with Date(0) being default date so that the tests are deterministic
-function getDefaultTestValue(valueName: string, value: ModelValue): any {
+function getDefaultTestValue(valueName: string, value: ModelValue, typeModel: TypeModel): any {
 	if (valueName === "_format") {
 		return "0"
 	} else if (valueName === "_id") {
-		return `${value.id}_id`
+		switch (typeModel.type) {
+			case Type.DataTransfer:
+				throw new ProgrammingError("No _id for dataTransfer")
+			case Type.Aggregated:
+				return `${value.id}_id`
+			case Type.Element:
+				return idToElementId(`${value.id}_id`)
+			case Type.ListElement:
+			case Type.BlobElement:
+				return [`${value.id}_listid`, `${value.id}_elementId`]
+		}
 	} else if (valueName === "_permissions") {
 		return `${value.id}_permissions`
 	} else if (value.cardinality === Cardinality.ZeroOrOne) {
@@ -244,7 +267,7 @@ export function createTestEntity<T extends Entity>(
 				const assocName = assocDef.name
 				switch (assocDef.type) {
 					case "AGGREGATION": {
-						const assocTypeRef = new TypeRef<Entity>(assocDef.dependency ?? typeRef.app, assocDef.refTypeId)
+						const assocTypeRef = new TypeRef<AggregatedEntity>(assocDef.dependency ?? typeRef.app, assocDef.refTypeId)
 						entity[assocName] = createTestEntity(assocTypeRef, undefined, opts)
 						break
 					}
@@ -282,17 +305,23 @@ export async function createTestEntityWithDummyResolver<T extends Entity>(typeRe
 	}
 }
 
-export function mockFetchRequest(mock: typeof undiciFetch, url: string, headers: Record<string, string>, status: number, jsonObject: unknown): Promise<void> {
+export function mockFetchRequest(
+	mockedFetch: typeof undiciFetch,
+	url: string,
+	headers: Record<string, string>,
+	status: number,
+	jsonObject: unknown,
+): Promise<void> {
 	const response = object<Writeable<Response>>()
 	response.ok = status >= 200 && status < 300
 	response.status = status
 	const jsonDefer = defer<void>()
-	when(response.json()).thenDo(() => {
+	when(response.text()).thenDo(() => {
 		jsonDefer.resolve()
 		return Promise.resolve(jsonObject)
 	})
 	when(
-		mock(
+		mockedFetch(
 			matchers.argThat((urlArg) => urlArg.toString() === url),
 			matchers.argThat((options) => {
 				return deepEqual(options.headers, headers)
@@ -334,6 +363,18 @@ export function removeOriginals<T extends Entity>(instance: T | null): T | null 
 	return instance
 }
 
+export function remove_typeFromEntity<T extends Entity>(instance: T | null): T | null {
+	if (isNotNull(instance) && typeof instance === "object") {
+		// @ts-ignore
+		delete instance["_type"]
+		for (const i of Object.values(instance).filter(isNotNull)) {
+			removeOriginals(i)
+			remove_typeFromEntity(i)
+		}
+	}
+	return instance
+}
+
 export function removeAggregateIds(instance: Entity, aggregate: boolean = false): Entity {
 	if (aggregate && instance["_id"] !== undefined) {
 		delete instance["_id"]
@@ -368,8 +409,7 @@ export function clientModelAsServerModel(clientModel: ClientModelInfo): ServerMo
 
 export function clientInitializedTypeModelResolver(): TypeModelResolver {
 	const clientModelInfo = makePopulatedClientModelInfo()
-	const serverModelInfo = clientModelAsServerModel(clientModelInfo)
-	return new TypeModelResolver(clientModelInfo, serverModelInfo)
+	return new ClientOnlyTypeModelResolver(clientModelInfo)
 }
 
 export function instancePipelineFromTypeModelResolver(
@@ -377,19 +417,19 @@ export function instancePipelineFromTypeModelResolver(
 	keyLoaderFacade: KeyLoaderFacade = object(),
 	symmetricCipherFacade: SymmetricCipherFacade = SYMMETRIC_CIPHER_FACADE,
 ): InstancePipeline {
-	return new InstancePipeline(
-		typeModelResolver.resolveClientTypeReference.bind(typeModelResolver),
-		typeModelResolver.resolveServerTypeReference.bind(typeModelResolver),
-		() => keyLoaderFacade,
-		symmetricCipherFacade,
-	)
+	return new InstancePipeline(typeModelResolver, () => keyLoaderFacade, symmetricCipherFacade)
+}
+
+export function base64Decode(base64: Base64): string {
+	return uint8ArrayToString("utf-8", base64ToUint8Array(base64))
 }
 
 export function modelMapperFromTypeModelResolver(typeModelResolver: TypeModelResolver): ModelMapper {
-	return new ModelMapper(
-		typeModelResolver.resolveClientTypeReference.bind(typeModelResolver),
-		typeModelResolver.resolveServerTypeReference.bind(typeModelResolver),
-	)
+	return new ModelMapper(typeModelResolver)
+}
+
+export function offlineMapperFromTypeModelResolver(typeModelResolver: TypeModelResolver): OfflineMapper {
+	return new OfflineMapper(typeModelResolver)
 }
 
 export async function withOverriddenEnv<F extends (...args: any[]) => any>(override: Partial<typeof env>, action: () => ReturnType<F>) {
@@ -417,5 +457,13 @@ export class IdGenerator {
 	getNext(incrementByMs: number = 60000): Id {
 		this.currentId = incrementId(this.currentId, incrementByMs)
 		return this.currentId
+	}
+}
+
+export async function measureAction(action: () => Promise<void>) {
+	const startTime = performance.now()
+	await action()
+	return {
+		time: performance.now() - startTime,
 	}
 }

@@ -15,7 +15,7 @@ import {
 	isOfflineStorageAvailable,
 	ProgrammingError,
 } from "../../../../platform-kit/app-env"
-import { CalendarEventTypeRef, ContactTypeRef, MailTypeRef } from "@tutao/entities/tutanota"
+import { CalendarEventTypeRef, ContactTypeRef, ImapFolderSyncStateTypeRef, ImportFileMailStateTypeRef, MailTypeRef } from "@tutao/entities/tutanota"
 import { UserTypeRef } from "@tutao/entities/sys"
 import type { CalendarFacade } from "../../../common/api/worker/facades/lazy/CalendarFacade.js"
 import type { GiftCardFacade } from "../../../common/api/worker/facades/lazy/GiftCardFacade.js"
@@ -24,6 +24,7 @@ import type { NativeInterface } from "../../../../app-kit/native-bridge/common/N
 import {
 	ExportFacadeSendDispatcher,
 	FileFacadeSendDispatcher,
+	ImapSyncSystemFacadeSendDispatcher,
 	InterWindowEventFacadeSendDispatcher,
 	NativeCryptoFacadeSendDispatcher,
 	NativePushFacadeSendDispatcher,
@@ -53,6 +54,8 @@ import {
 	OfflineStorageLastProcessedEventBatchStorageFacade,
 } from "../../../common/api/worker/LastProcessedEventBatchStorageFacade"
 import { OfflineStorage } from "../../../../app-kit/local-store/OfflineStorage"
+import { CachingOfflineStorage } from "../../../../app-kit/local-store/CachingOfflineStorage"
+
 import { AlarmFacade } from "../../../common/api/worker/facades/lazy/AlarmFacade"
 import { AesApp } from "../../../../app-kit/native-bridge/worker/AesApp.js"
 import { CacheStorage } from "../../../../app-kit/local-store/CacheStorage"
@@ -68,7 +71,6 @@ import type { MailExportFacade } from "../../../common/api/worker/facades/lazy/M
 import type { Indexer } from "../index/Indexer"
 import type { SearchFacade } from "../index/SearchFacade"
 import type { ContactIndexer } from "../index/ContactIndexer"
-import { MailOfflineCleaner } from "../offline/MailOfflineCleaner.js"
 import { EphemeralCacheStorage } from "../../../../app-kit/local-store/EphemeralCacheStorage.js"
 import { LocalTimeDateProvider } from "../../../common/api/worker/DateProvider.js"
 import { CacheManagementFacade } from "../../../common/api/worker/facades/lazy/CacheManagementFacade.js"
@@ -77,7 +79,6 @@ import { NamedClientModel } from "../../../../platform-kit/instance-pipeline"
 import { BrowserData } from "../../../../platform-kit/app-env/boot/ClientConstants"
 import { EntityClient } from "../../../../platform-kit/network/EntityClient"
 import { assertNotNull, DateProvider, lazyAsync, lazyMemoized } from "../../../../platform-kit/utils"
-import { random } from "../../../../platform-kit/crypto"
 import { MailLoginListener } from "./MailLoginListener"
 import { BaseLocator } from "../../../../platform-kit/base/BaseLocator.js"
 import { EventBusEventCoordinator } from "../../../common/api/worker/EventBusEventCoordinator.js"
@@ -86,6 +87,12 @@ import { createBaseLocator } from "../../../../platform-kit/base/BaseLocator"
 import { createRsaImplementation } from "../../../../app-kit/native-bridge/worker/RsaImplementation.js"
 import { TutanotaEntityMigrator } from "../../../common/api/worker/TutanotaEntityMigrator.js"
 import { initClientModels } from "../../../common/api/common/ClientModelInfoInitializer"
+import { ImapImporter } from "../imapimport/ImapImporter"
+import { CustomContactEventCacheHandler } from "./CustomContactEventCacheHandler"
+import { WebMailIndexer } from "../index/WebMailIndexer"
+import { CustomImportFileMailStateCacheHandler } from "./CustomImportFileMailStateCacheHandler"
+import { OfflineMapper } from "../../../../platform-kit/instance-pipeline/OfflineMapper"
+import { CustomImapFolderSyncStateCacheHandler } from "./CustomImapFolderSyncStateCacheHandler"
 
 assertWorkerOrNode()
 
@@ -136,6 +143,9 @@ export type WorkerLocatorType = {
 	_worker: WorkerImpl
 	_browserData: BrowserData
 	_apps: Array<NamedClientModel>
+
+	// IMAP mail import
+	imapImporter: lazyAsync<ImapImporter>
 }
 
 export const locator: WorkerLocatorType = {} as any
@@ -182,31 +192,38 @@ export async function initLocator(worker: WorkerImpl, browserData: BrowserData, 
 
 	// These lazy closures reference locator.base.* — safe because they're only called after createBaseLocator returns
 	const mailIndexer = lazyMemoized(async () => {
-		const { IndexedDbMailIndexerBackend } = await import("../index/IndexedDbMailIndexerBackend")
-		const { OfflineStorageMailIndexerBackend } = await import("../index/OfflineStorageMailIndexerBackend")
-		const { MailIndexer } = await import("../index/MailIndexer.js")
-		const bulkLoaderFactory = await prepareBulkLoaderFactory()
-		const mailDateProvider = new LocalTimeDateProvider()
+		const { defaultMailIndexerNewMailDownloader } = await import("../index/MailIndexer.js")
 		const mailFacade = await locator.mail()
+		const newMailDownloader = defaultMailIndexerNewMailDownloader(locator.base.cachingEntityClient, mailFacade)
+
 		if (isOfflineStorageAvailable()) {
+			const { OfflineMailIndexer } = await import("../index/OfflineMailIndexer.js")
 			const persistence = await offlineStorageIndexerPersistence()
-			return new MailIndexer(
-				mainInterface.infoMessageHandler,
-				bulkLoaderFactory,
+			const blob = await locator.blob()
+			const modelMapper = locator.base.instancePipeline.modelMapper
+			return new OfflineMailIndexer(
+				persistence,
+				blob,
 				locator.base.cachingEntityClient,
-				mailDateProvider,
 				mailFacade,
-				() => new OfflineStorageMailIndexerBackend(persistence),
+				locator.base.crypto,
+				locator.base.typeModelResolver,
+				mainInterface.infoMessageHandler,
+				newMailDownloader,
+				locator.base.instancePipeline,
 			)
 		} else {
+			const dateProvider = new LocalTimeDateProvider()
+			const { IndexedDbMailIndexerBackend } = await import("../index/IndexedDbMailIndexerBackend")
+			const { WebMailIndexer } = await import("../index/WebMailIndexer.js")
 			const core = await indexerCore()
-			return new MailIndexer(
+			return new WebMailIndexer(
 				mainInterface.infoMessageHandler,
 				locator.bulkMailLoader,
 				locator.base.cachingEntityClient,
-				mailDateProvider,
-				mailFacade,
-				(userId) => new IndexedDbMailIndexerBackend(core, userId, locator.base.typeModelResolver),
+				dateProvider,
+				(userId: Id) => new IndexedDbMailIndexerBackend(core, userId, locator.base.typeModelResolver),
+				newMailDownloader,
 			)
 		}
 	})
@@ -271,14 +288,24 @@ export async function initLocator(worker: WorkerImpl, browserData: BrowserData, 
 		locator.sqlCipherFacade = new SqlCipherFacadeSendDispatcher(locator.native)
 	}
 
+	const ephemeralStorageProvider = async () => {
+		const customCacheHandler = new CustomCacheHandlerMap({
+			ref: UserTypeRef,
+			handler: new CustomUserCacheHandler(locator.cacheStorage, await locator.spamClassifierStorageFacade()),
+		})
+		return new EphemeralCacheStorage(locator.base.instancePipeline.modelMapper, locator.base.typeModelResolver, customCacheHandler)
+	}
+
 	// offlineStorageProvider and ephemeralStorageProvider reference locator.base.* lazily — only called during login init
-	let offlineStorageProvider: () => Promise<OfflineStorage | null>
+	let offlineStorageProvider: () => Promise<CachingOfflineStorage | null>
 	if (isOfflineStorageAvailable()) {
 		offlineStorageProvider = async () => {
 			const { SearchTableDefinitions } = await import("../index/OfflineStoragePersistence.js")
 			const { AutosaveDraftsTableDefinitions } = await import("../../../common/api/worker/facades/lazy/OfflineStorageAutosaveFacade.js")
 			const { SpamClassificationTableDefinitions } = await import("../../../common/api/worker/facades/lazy/OfflineStorageSpamClassifierStorageFacade.js")
-
+			// fastCache does not need the CustomUserCacheHandler as the delegate on the CachingOfflineStorage already has it and will call the deleteAllOwnedBy
+			// on fastCache whenever the user is removed from a group
+			const fastCache = new EphemeralCacheStorage(locator.base.instancePipeline.modelMapper, locator.base.typeModelResolver, new CustomCacheHandlerMap())
 			const customCacheHandler = new CustomCacheHandlerMap(
 				{
 					ref: CalendarEventTypeRef,
@@ -289,33 +316,37 @@ export async function initLocator(worker: WorkerImpl, browserData: BrowserData, 
 					handler: new CustomMailEventCacheHandler(mailIndexer),
 				},
 				{
+					ref: ContactTypeRef,
+					handler: new CustomContactEventCacheHandler(contactIndexer),
+				},
+				{
 					ref: UserTypeRef,
 					handler: new CustomUserCacheHandler(locator.cacheStorage, await locator.spamClassifierStorageFacade()),
 				},
+				{
+					ref: ImportFileMailStateTypeRef,
+					handler: new CustomImportFileMailStateCacheHandler(mailIndexer, locator.base.cachingEntityClient),
+				},
+				{
+					ref: ImapFolderSyncStateTypeRef,
+					handler: new CustomImapFolderSyncStateCacheHandler(mailIndexer, locator.base.cachingEntityClient),
+				},
 			)
 
-			return new OfflineStorage(
+			const offlineStorage = new OfflineStorage(
 				locator.sqlCipherFacade,
 				new InterWindowEventFacadeSendDispatcher(worker),
-				dateProvider,
 				new OfflineStorageMigrator(createOfflineStorageMigrations(locator.sqlCipherFacade, locator.base.applicationTypesFacade)),
-				new MailOfflineCleaner(),
 				locator.base.instancePipeline.modelMapper,
 				locator.base.typeModelResolver,
+				new OfflineMapper(locator.base.typeModelResolver),
 				customCacheHandler,
 				Object.assign({}, KeyVerificationTableDefinitions, SearchTableDefinitions, AutosaveDraftsTableDefinitions, SpamClassificationTableDefinitions),
 			)
+			return new CachingOfflineStorage(offlineStorage, fastCache, locator.base.instancePipeline.modelMapper)
 		}
 	} else {
 		offlineStorageProvider = async () => null
-	}
-
-	const ephemeralStorageProvider = async () => {
-		const customCacheHandler = new CustomCacheHandlerMap({
-			ref: UserTypeRef,
-			handler: new CustomUserCacheHandler(locator.cacheStorage, await locator.spamClassifierStorageFacade()),
-		})
-		return new EphemeralCacheStorage(locator.base.instancePipeline.modelMapper, locator.base.typeModelResolver, customCacheHandler)
 	}
 
 	const maybeUninitializedStorage = new LateInitializedCacheStorageImpl(
@@ -446,6 +477,7 @@ export async function initLocator(worker: WorkerImpl, browserData: BrowserData, 
 			locator.base.crypto,
 			locator.base.blobAccessToken,
 			mainInterface.uploadProgressListener,
+			locator.base.typeModelResolver,
 		)
 	})
 
@@ -554,7 +586,7 @@ export async function initLocator(worker: WorkerImpl, browserData: BrowserData, 
 				core,
 				mainInterface.infoMessageHandler,
 				locator.base.cachingEntityClient,
-				await mailIndexer(),
+				(await mailIndexer()) as WebMailIndexer,
 				contact,
 				locator.base.typeModelResolver,
 				locator.base.keyLoader,
@@ -601,8 +633,35 @@ export async function initLocator(worker: WorkerImpl, browserData: BrowserData, 
 	}
 
 	const domainConfig = new DomainConfigProvider().getCurrentDomainConfig()
+	locator.imapImporter = lazyMemoized(async () => {
+		const { ImportMailFacade } = await import("../../../common/api/worker/facades/lazy/ImportMailFacade.js")
+		const { ImapFacade } = await import("../../../common/api/worker/facades/lazy/ImapFacade.js")
+		const mailFacade = await locator.mail()
+		const blobFacade = await locator.blob()
+		const importMailFacade = new ImportMailFacade(
+			mailFacade,
+			locator.base.serviceExecutor,
+			locator.base.cachingEntityClient,
+			blobFacade,
+			locator.base.crypto,
+			locator.base.keyLoader,
+			locator.base.instancePipeline,
+			locator.base.cryptoWrapper,
+		)
+		const imapFacade = new ImapFacade(
+			mailFacade,
+			locator.base.serviceExecutor,
+			locator.base.cachingEntityClient,
+			locator.base.keyLoader,
+			locator.base.cryptoWrapper,
+		)
+
+		return new ImapImporter(new ImapSyncSystemFacadeSendDispatcher(worker), imapFacade, importMailFacade)
+	})
+
 	const eventBusCoordinator = new EventBusEventCoordinator(
 		locator.mail,
+		locator.imapImporter,
 		locator.base.user,
 		locator.base.cachingEntityClient,
 		mainInterface.eventController,
@@ -686,11 +745,4 @@ export async function resetLocator(): Promise<void> {
 
 if (typeof self !== "undefined") {
 	;(self as unknown as WorkerGlobalScope).locator = locator // export in worker scope
-}
-
-/*
- * @returns true if webassembly is supported
- */
-export function isWebAssemblySupported() {
-	return typeof WebAssembly === "object" && typeof WebAssembly.instantiate === "function"
 }

@@ -6,11 +6,11 @@ import {
 	getElementId,
 	getLetId,
 	getListId,
+	idToElementId,
 	isSameId,
-	isSameTypeRef,
+	isSameSingleId,
 	listIdPart,
 	OperationType,
-	StrippedEntity,
 } from "@tutao/meta"
 import { assertWorkerOrNode, CryptoProtocolVersion, EncryptionAuthStatus, isApp, isDesktop, MailAuthenticationStatus, ProgrammingError } from "@tutao/app-env"
 import {
@@ -55,7 +55,7 @@ import { EntityClient } from "../../../../../../platform-kit/network/EntityClien
 import { getEnabledMailAddressesForGroupInfo, getUserGroupMemberships, isAliasEnabledForGroupInfo } from "../../../../../../platform-kit/network/GroupUtils.js"
 import { htmlToText } from "../../../common/utils/IndexUtils.js"
 import { MailBodyTooLargeError } from "../../../common/error/MailBodyTooLargeError.js"
-import { OwnerEncSessionKeyProvider, UNCOMPRESSED_MAX_SIZE } from "@tutao/instance-pipeline"
+import { OwnerEncSessionKeyProvider } from "@tutao/instance-pipeline"
 import { IServiceExecutor } from "../../../../../../platform-kit/network/ServiceRequest.js"
 import { UserFacade } from "../../../../../../platform-kit/base/facades/UserFacade.js"
 import { NativeFileApp } from "../../../../../../app-kit/native-bridge/common/FileApp.js"
@@ -102,6 +102,7 @@ import {
 	createManageLabelServiceDeleteIn,
 	createManageLabelServiceLabelData,
 	createManageLabelServicePostIn,
+	createManageLabelServicePutIn,
 	createMoveMailData,
 	createNewDraftAttachment,
 	createPopulateClientSpamTrainingDataPostIn,
@@ -124,8 +125,6 @@ import {
 	ExternalUserService,
 	File,
 	FileTypeRef,
-	InternalRecipientKeyData,
-	InternalRecipientKeyDataTypeRef,
 	ListUnsubscribeService,
 	Mail,
 	MailDetails,
@@ -146,11 +145,10 @@ import {
 	ReportMailService,
 	ResolveConversationsService,
 	SendDraftParameters,
+	SendDraftParametersParams,
 	SendDraftReturn,
 	SendDraftService,
 	SimpleMoveMailService,
-	SymEncInternalRecipientKeyData,
-	SymEncInternalRecipientKeyDataTypeRef,
 	TutanotaPropertiesTypeRef,
 	UnreadMailStateService,
 } from "@tutao/entities/tutanota"
@@ -177,6 +175,8 @@ import { EntityUpdateData, isUpdateForTypeRef } from "../../../../../../platform
 import { DataFile } from "../../../../../../entities/tutanota/MailBundle"
 import { aesEncrypt } from "../../../../../../platform-kit/crypto/instance-pipeline-crypto/Aes"
 import { DEFAULT_EXTRA_SERVICE_PARAMS } from "../../../../../../platform-kit/instance-pipeline/RestClientOptions"
+import { UNCOMPRESSED_MAX_SIZE } from "../../../../../../platform-kit/instance-pipeline/Compression"
+import { parseKeyVersion } from "../../../../../../platform-kit/crypto/CryptoUtils"
 
 assertWorkerOrNode()
 type Attachments = ReadonlyArray<File | DataFile | FileReference>
@@ -229,7 +229,7 @@ export class MailFacade {
 		private readonly publicEncryptionKeyProvider: PublicEncryptionKeyProvider,
 	) {}
 
-	async createMailFolder(name: string, parent: IdTuple | null, ownerGroupId: Id): Promise<void> {
+	async createMailFolder(name: string, parent: IdTuple | null, ownerGroupId: Id): Promise<IdTuple> {
 		const mailGroupKey = await this.keyLoaderFacade.getCurrentSymGroupKey(ownerGroupId)
 
 		const sk = aes256RandomKey()
@@ -237,11 +237,12 @@ export class MailFacade {
 		const newFolder = createCreateMailFolderData({
 			folderName: name,
 			parentFolder: parent,
-			ownerEncSessionKey: ownerEncSessionKey.key,
-			ownerGroup: ownerGroupId,
-			ownerKeyVersion: ownerEncSessionKey.encryptingKeyVersion.toString(),
 		})
-		await this.serviceExecutor.post(MailFolderService, newFolder, { ...DEFAULT_EXTRA_SERVICE_PARAMS, sessionKey: sk })
+		newFolder.ownerEncSessionKey = ownerEncSessionKey.key
+		newFolder.ownerGroup = ownerGroupId
+		newFolder.ownerKeyVersion = ownerEncSessionKey.encryptingKeyVersion.toString()
+		const postReturn = await this.serviceExecutor.post(MailFolderService, newFolder, { ...DEFAULT_EXTRA_SERVICE_PARAMS, sessionKey: sk })
+		return postReturn.newFolder
 	}
 
 	/**
@@ -253,13 +254,6 @@ export class MailFacade {
 		if (newName !== folder.name) {
 			folder.name = newName
 			await this.entityClient.update(folder)
-		}
-	}
-
-	async updateListUnsubscribe(mail: Mail): Promise<void> {
-		if (mail.listUnsubscribe !== null) {
-			mail.listUnsubscribe = false
-			await this.entityClient.update(mail)
 		}
 	}
 
@@ -317,7 +311,6 @@ export class MailFacade {
 		const service = createDraftCreateData({
 			previousMessageId: previousMessageId,
 			conversationType: conversationType,
-			ownerEncSessionKey: ownerEncSessionKey.key,
 			draftData: createDraftData({
 				subject,
 				compressedBodyText: bodyText,
@@ -333,8 +326,9 @@ export class MailFacade {
 				bodyText: "",
 				removedAttachments: [],
 			}),
-			ownerKeyVersion: ownerEncSessionKey.encryptingKeyVersion.toString(),
 		})
+		service.ownerEncSessionKey = ownerEncSessionKey.key
+		service.ownerKeyVersion = ownerEncSessionKey.encryptingKeyVersion.toString()
 		const createDraftReturn = await this.serviceExecutor.post(DraftService, service, { ...DEFAULT_EXTRA_SERVICE_PARAMS, sessionKey: sk })
 		return this.entityClient.load(MailTypeRef, createDraftReturn.draft)
 	}
@@ -572,8 +566,8 @@ export class MailFacade {
 						existingFile: getLetId(providedFile),
 						ownerEncFileSessionKey: ownerEncFileSessionKey.key,
 						newFile: null,
-						ownerKeyVersion: ownerEncFileSessionKey.encryptingKeyVersion.toString(),
 					})
+					attachment.ownerKeyVersion = ownerEncFileSessionKey.encryptingKeyVersion.toString()
 					return attachment
 				})
 			} else {
@@ -598,7 +592,7 @@ export class MailFacade {
 		mailGroupKey: VersionedKey,
 	): DraftAttachment {
 		const ownerEncFileSessionKey = this.cryptoWrapper.encryptKeyWithVersionedKey(mailGroupKey, fileSessionKey)
-		return createDraftAttachment({
+		const draftAttachment = createDraftAttachment({
 			newFile: createNewDraftAttachment({
 				encFileName: this.cryptoWrapper.encryptString(fileSessionKey, providedFile.name),
 				encMimeType: this.cryptoWrapper.encryptString(fileSessionKey, providedFile.mimeType),
@@ -606,15 +600,16 @@ export class MailFacade {
 				encCid: providedFile.cid == null ? null : this.cryptoWrapper.encryptString(fileSessionKey, providedFile.cid),
 			}),
 			ownerEncFileSessionKey: ownerEncFileSessionKey.key,
-			ownerKeyVersion: ownerEncFileSessionKey.encryptingKeyVersion.toString(),
 			existingFile: null,
 		})
+		draftAttachment.ownerKeyVersion = ownerEncFileSessionKey.encryptingKeyVersion.toString()
+		return draftAttachment
 	}
 
 	async sendDraft(draft: Mail, recipients: Array<Recipient>, language: string, sendAt: Date | null, allowUndo: boolean = false): Promise<SendDraftReturn> {
 		const senderMailGroupId = await this._getMailGroupIdForMailAddress(this.userFacade.getLoggedInUser(), draft.sender.address)
 		const bucketKey = aes256RandomKey()
-		const parameters: StrippedEntity<SendDraftParameters> = {
+		const parameters: SendDraftParametersParams = {
 			language: language,
 			mail: draft._id,
 			mailSessionKey: null,
@@ -818,7 +813,7 @@ export class MailFacade {
 
 	private async addRecipientKeyData(
 		bucketKey: AesKey,
-		sendDraftParameters: StrippedEntity<SendDraftParameters>,
+		sendDraftParameters: SendDraftParametersParams,
 		recipients: Array<Recipient>,
 		senderMailGroupId: Id,
 	): Promise<void> {
@@ -833,7 +828,7 @@ export class MailFacade {
 
 			// copy password information if this is an external contact
 			// otherwise load the key information from the server
-			const isSharedMailboxSender = !isSameId(this.userFacade.getGroupId(GroupType.Mail), senderMailGroupId)
+			const isSharedMailboxSender = !isSameSingleId(this.userFacade.getGroupId(GroupType.Mail), senderMailGroupId)
 
 			if (recipient.type === RecipientType.EXTERNAL) {
 				const passphrase = this.getContactPassword(recipient.contact)
@@ -853,13 +848,13 @@ export class MailFacade {
 					mailAddress: recipient.address,
 					kdfVersion: kdfType,
 					ownerEncBucketKey: ownerEncBucketKey.key,
-					ownerKeyVersion: ownerEncBucketKey.encryptingKeyVersion.toString(),
 					passwordVerifier: passwordVerifier,
 					salt: salt,
 					saltHash: sha256Hash(salt),
 					pwEncCommunicationKey: encryptKey(passwordKey, externalGroupKeys.currentExternalUserGroupKey.object),
 					userGroupKeyVersion: String(externalGroupKeys.currentExternalUserGroupKey.version),
 				})
+				data.ownerKeyVersion = ownerEncBucketKey.encryptingKeyVersion.toString()
 				sendDraftParameters.secureExternalRecipientKeyData.push(data)
 			} else {
 				const keyData = await this.crypto.encryptBucketKeyForInternalRecipient(
@@ -872,10 +867,10 @@ export class MailFacade {
 				if (keyData == null) {
 					// cannot add recipient because of notFoundError
 					// we do not throw here because we want to collect all not found recipients first
-				} else if (isSameTypeRef(keyData._type, SymEncInternalRecipientKeyDataTypeRef)) {
-					sendDraftParameters.symEncInternalRecipientKeyData.push(keyData as SymEncInternalRecipientKeyData)
-				} else if (isSameTypeRef(keyData._type, InternalRecipientKeyDataTypeRef)) {
-					sendDraftParameters.internalRecipientKeyData.push(keyData as InternalRecipientKeyData)
+				} else if (keyData.symEncRecipientKeyData != null) {
+					sendDraftParameters.symEncInternalRecipientKeyData.push(keyData.symEncRecipientKeyData)
+				} else if (keyData.pubEncRecipientKeyData != null) {
+					sendDraftParameters.internalRecipientKeyData.push(keyData.pubEncRecipientKeyData)
 				}
 			}
 		}
@@ -893,7 +888,7 @@ export class MailFacade {
 	 * @VisibleForTesting
 	 * @param sendDraftParameters The send draft parameters for the mail that should be sent
 	 */
-	isTutaCryptMail(sendDraftParameters: StrippedEntity<SendDraftParameters>) {
+	isTutaCryptMail(sendDraftParameters: SendDraftParametersParams) {
 		// if an secure external recipient is involved in the conversation we do not use asymmetric encryption
 		if (sendDraftParameters.symEncInternalRecipientKeyData.length > 0 || sendDraftParameters.secureExternalRecipientKeyData.length) {
 			return false
@@ -937,15 +932,15 @@ export class MailFacade {
 			throw e
 		}
 
-		const externalUser = await this.entityClient.load(UserTypeRef, externalUserReference.user)
+		const externalUser = await this.entityClient.load(UserTypeRef, idToElementId(externalUserReference.user))
 		const externalUserGroupId = externalUserReference.userGroup
 		const externalMailGroupId = assertNotNull(
 			externalUser.memberships.find((m) => m.groupType === GroupType.Mail),
 			"no mail group membership on external user",
 		).group
 
-		const externalMailGroup = await this.entityClient.load(GroupTypeRef, externalMailGroupId)
-		const externalUserGroup = await this.entityClient.load(GroupTypeRef, externalUserGroupId)
+		const externalMailGroup = await this.entityClient.load(GroupTypeRef, idToElementId(externalMailGroupId))
+		const externalUserGroup = await this.entityClient.load(GroupTypeRef, idToElementId(externalUserGroupId))
 		const requiredInternalUserGroupKeyVersion = cryptoUtils.parseKeyVersion(externalUserGroup.adminGroupKeyVersion ?? "0")
 		const requiredExternalUserGroupKeyVersion = cryptoUtils.parseKeyVersion(externalMailGroup.adminGroupKeyVersion ?? "0")
 		const internalUserEncExternalUserKey = assertNotNull(externalUserGroup.adminGroupEncGKey, "no adminGroupEncGKey on external user group")
@@ -987,7 +982,7 @@ export class MailFacade {
 				this.deferredDraftId != null &&
 				update.operation === OperationType.UPDATE &&
 				isUpdateForTypeRef(MailTypeRef, update) &&
-				isSameId(this.deferredDraftId, [update.instanceListId, update.instanceId])
+				isSameId(this.deferredDraftId, [assertNotNull(update.instanceListId), update.instanceId])
 			) {
 				return this.entityClient
 					.load(MailTypeRef, this.deferredDraftId)
@@ -1002,6 +997,7 @@ export class MailFacade {
 						}),
 					)
 			}
+			return Promise.resolve()
 		}).then(noOp)
 	}
 
@@ -1083,12 +1079,12 @@ export class MailFacade {
 
 	_getMailGroupIdForMailAddress(user: User, mailAddress: string): Promise<Id> {
 		return promiseFilter(getUserGroupMemberships(user, GroupType.Mail), (groupMembership) => {
-			return this.entityClient.load(GroupTypeRef, groupMembership.group).then((mailGroup) => {
+			return this.entityClient.load(GroupTypeRef, idToElementId(groupMembership.group)).then((mailGroup) => {
 				if (mailGroup.user == null) {
 					return this.entityClient
 						.load(GroupInfoTypeRef, groupMembership.groupInfo)
 						.then((mailGroupInfo) => isAliasEnabledForGroupInfo(mailGroupInfo, mailAddress))
-				} else if (isSameId(mailGroup.user, user._id)) {
+				} else if (isSameId(idToElementId(mailGroup.user), user._id)) {
 					return this.entityClient
 						.load(GroupInfoTypeRef, user.userGroup.groupInfo)
 						.then((userGroupInfo) => isAliasEnabledForGroupInfo(userGroupInfo, mailAddress))
@@ -1212,27 +1208,26 @@ export class MailFacade {
 	/**
 	 * Create a label (aka MailSet aka {@link MailSet} of kind {@link MailSetKind.LABEL}) for the group {@param mailGroupId}.
 	 */
-	async createLabel(mailGroupId: Id, labelData: { name: string; color: string }) {
+	async createLabel(mailGroupId: Id, labelData: { name: string; color: string; parentLabelId?: IdTuple }) {
 		const mailGroupKey = await this.keyLoaderFacade.getCurrentSymGroupKey(mailGroupId)
 		const sk = aes256RandomKey()
 		const ownerEncSessionKey = this.cryptoWrapper.encryptKeyWithVersionedKey(mailGroupKey, sk)
 
-		await this.serviceExecutor.post(
-			ManageLabelService,
-			createManageLabelServicePostIn({
-				ownerGroup: mailGroupId,
-				ownerEncSessionKey: ownerEncSessionKey.key,
-				ownerKeyVersion: String(ownerEncSessionKey.encryptingKeyVersion),
-				data: createManageLabelServiceLabelData({
-					name: labelData.name,
-					color: labelData.color,
-				}),
+		const data = createManageLabelServicePostIn({
+			data: createManageLabelServiceLabelData({
+				name: labelData.name,
+				color: labelData.color,
+				parentLabel: labelData.parentLabelId ? labelData.parentLabelId : null,
 			}),
-			{
-				...DEFAULT_EXTRA_SERVICE_PARAMS,
-				sessionKey: sk,
-			},
-		)
+		})
+		data.ownerGroup = mailGroupId
+		data.ownerEncSessionKey = ownerEncSessionKey.key
+		data.ownerKeyVersion = String(ownerEncSessionKey.encryptingKeyVersion)
+		const manageLabelPostOut = await this.serviceExecutor.post(ManageLabelService, data, {
+			...DEFAULT_EXTRA_SERVICE_PARAMS,
+			sessionKey: sk,
+		})
+		return manageLabelPostOut.label
 	}
 
 	/*
@@ -1241,11 +1236,31 @@ export class MailFacade {
 	 * @param name possible new name for label
 	 * @param color possible new color for label
 	 */
-	async updateLabel(label: MailSet, name: string, color: string) {
-		if (name !== label.name || color !== label.color) {
-			label.name = name
-			label.color = color
-			await this.entityClient.update(label)
+	async updateLabel(label: MailSet, name: string, color: string, parentLabelId?: IdTuple) {
+		const isOwnParent = isSameId(label._id, parentLabelId ?? null)
+		const isDifferentParent = label.parentFolder != null && parentLabelId != null && !isSameId(label.parentFolder, parentLabelId)
+		const isNewParent = label.parentFolder == null && parentLabelId != null
+		const isUnsettingParent = label.parentFolder != null && parentLabelId == null
+		const isColorChange = label.color !== color
+		const isNameChange = label.name !== name
+
+		if (!isOwnParent && (isDifferentParent || isNewParent || isUnsettingParent || isColorChange || isNameChange)) {
+			const updateFolder = createManageLabelServiceLabelData({
+				color: assertNotNull(color),
+				name: name,
+				parentLabel: parentLabelId ?? null,
+			})
+			const manageLabelServicePutIn = createManageLabelServicePutIn({
+				data: updateFolder,
+				label: label._id,
+			})
+			const ownerKeyVersion = parseKeyVersion(assertNotNull(label._ownerKeyVersion))
+			const mailGroupKey = await this.keyLoaderFacade.loadSymGroupKey(assertNotNull(label._ownerGroup), ownerKeyVersion)
+			const sessionKey = this.cryptoWrapper.decryptKey(mailGroupKey, assertNotNull(label._ownerEncSessionKey))
+			await this.serviceExecutor.put(ManageLabelService, manageLabelServicePutIn, {
+				...DEFAULT_EXTRA_SERVICE_PARAMS,
+				sessionKey,
+			})
 		}
 	}
 
@@ -1299,18 +1314,17 @@ export class MailFacade {
 			const mailGroupKey = await this.keyLoaderFacade.getCurrentSymGroupKey(mailGroupId)
 			const sk = aes256RandomKey()
 			const ownerEncSessionKey = this.cryptoWrapper.encryptKeyWithVersionedKey(mailGroupKey, sk)
-			processInboxData.push(
-				createProcessInboxDatum({
-					ownerEncVectorSessionKey: ownerEncSessionKey.key,
-					ownerKeyVersion: ownerEncSessionKey.encryptingKeyVersion.toString(),
-					encVectorLegacy: aesEncrypt(sk, vectorLegacy),
-					encVectorWithServerClassifiers: aesEncrypt(sk, vectorWithServerClassifiers),
-					classifierType,
-					mailId,
-					targetMoveFolder,
-					ownerEncMailSessionKeys: unencryptedProcessInboxDatum.ownerEncMailSessionKeys,
-				}),
-			)
+			const processInboxDatum = createProcessInboxDatum({
+				ownerEncVectorSessionKey: ownerEncSessionKey.key,
+				encVectorLegacy: aesEncrypt(sk, vectorLegacy),
+				encVectorWithServerClassifiers: aesEncrypt(sk, vectorWithServerClassifiers),
+				classifierType,
+				mailId,
+				targetMoveFolder,
+				ownerEncMailSessionKeys: unencryptedProcessInboxDatum.ownerEncMailSessionKeys,
+			})
+			processInboxDatum.ownerKeyVersion = ownerEncSessionKey.encryptingKeyVersion.toString()
+			processInboxData.push(processInboxDatum)
 		}
 		return processInboxData
 	}
@@ -1342,17 +1356,16 @@ export class MailFacade {
 			const sk = aes256RandomKey()
 			const ownerEncSessionKey = this.cryptoWrapper.encryptKeyWithVersionedKey(mailGroupKey, sk)
 			const { isSpam, confidence, mailId, vector, vectorNewFormat } = unencryptedProcessInboxDatum
-			populateClientSpamTrainingData.push(
-				createPopulateClientSpamTrainingDatum({
-					ownerEncVectorSessionKey: ownerEncSessionKey.key,
-					ownerKeyVersion: ownerEncSessionKey.encryptingKeyVersion.toString(),
-					encVectorLegacy: aesEncrypt(sk, vector),
-					encVectorWithServerClassifiers: aesEncrypt(sk, vectorNewFormat),
-					isSpam,
-					mailId,
-					confidence,
-				}),
-			)
+			const populateClientSpamTrainingDatum = createPopulateClientSpamTrainingDatum({
+				ownerEncVectorSessionKey: ownerEncSessionKey.key,
+				encVectorLegacy: aesEncrypt(sk, vector),
+				encVectorWithServerClassifiers: aesEncrypt(sk, vectorNewFormat),
+				isSpam,
+				mailId,
+				confidence,
+			})
+			populateClientSpamTrainingDatum.ownerKeyVersion = ownerEncSessionKey.encryptingKeyVersion.toString()
+			populateClientSpamTrainingData.push(populateClientSpamTrainingDatum)
 		}
 		return populateClientSpamTrainingData
 	}
@@ -1464,7 +1477,7 @@ function recipientToDraftRecipient(recipient: PartialRecipient): DraftRecipient 
 	})
 }
 
-function recipientToEncryptedMailAddress(recipient: PartialRecipient): EncryptedMailAddress {
+export function recipientToEncryptedMailAddress(recipient: PartialRecipient): EncryptedMailAddress {
 	return createEncryptedMailAddress({
 		name: recipient.name ?? "",
 		address: recipient.address,

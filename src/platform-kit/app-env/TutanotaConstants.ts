@@ -3,15 +3,15 @@ import { isAdminClient, isApp, isDesktop } from "./Env"
 
 export type Country = any
 
-type ObjectPropertyKey = string | number | symbol
-export const reverse = <K extends ObjectPropertyKey, V extends ObjectPropertyKey>(objectMap: Record<K, V>): Record<V, K> =>
-	Object.keys(objectMap).reduce(
-		(r, k) => {
-			const v = objectMap[k as any as K]
-			return Object.assign(r, { [v]: k })
-		},
-		{} as Record<V, K>,
-	)
+export function enumKeyByValue<T extends Record<string, string>>(e: T, value: T[keyof T]): keyof T {
+	const key = Object.keys(e).find((k) => e[k] === value)
+
+	if (key === undefined) {
+		throw new Error(`Unknown enum value: ${value}`)
+	}
+
+	return key
+}
 
 type ConstType = {
 	INITIAL_UPGRADE_REMINDER_INTERVAL_MS: number
@@ -76,6 +76,7 @@ export enum ApprovalStatus {
 	PAID_SUBSCRIPTION_NEEDED = "8",
 	INITIAL_PAYMENT_PENDING = "9",
 	NO_ACTIVITY = "10",
+	DOWNGRADE_FAILED = "11",
 }
 
 export enum CustomDomainValidationResult {
@@ -184,7 +185,7 @@ export enum FeatureType {
 	AffiliatePartner = "12",
 	KnowledgeBase = "13",
 	Newsletter = "14",
-	Unused15 = "15",
+	AllowUpgradeWithInvoice = "15", // allows the customer to do the upgrade to personal paid while having invoice payment method
 	Unused16 = "16",
 	MultipleUsers = "17", // Multi-user support for new personal plans.
 	KeyVerification = "18", // Enables key verification for internal testing and volunteers
@@ -193,6 +194,7 @@ export enum FeatureType {
 	ReceivesNoTutaNewsletters = "21",
 	DriveInternalBeta = "22", // Enables drive access for internal testing
 	SolutionPartner = "23",
+	ImapSyncMigration = "24",
 }
 
 export const GENERATED_ID_MAX_TIMESTAMP: number = Math.pow(2, 42) - 1 // maximum Timestamp is 42 bit long (see GeneratedIdData.java)
@@ -579,6 +581,10 @@ export const Keys = Object.freeze({
 		code: "f1",
 		name: "F1",
 	},
+	F2: {
+		code: "f2",
+		name: "F2",
+	},
 	F5: {
 		code: "f5",
 		name: "F5",
@@ -720,9 +726,7 @@ export const DEFAULT_ERROR = "defaultError"
 
 export const BIRTHDAY_CALENDAR_BASE_ID = "birthday_calendar"
 export const DEFAULT_BIRTHDAY_CALENDAR_COLOR = "FF9933"
-
 export const MAX_LABELS_PER_MAIL = 5
-
 export const TUTA_MAIL_GOOGLE_PLAY_URL = "https://play.google.com/store/apps/details?id=de.tutao.tutanota"
 export const TUTA_MAIL_APP_STORE_URL = "https://apps.apple.com/app/secure-mail-client-tuta/id922429609"
 export const TUTA_CALENDAR_GOOGLE_PLAY_URL = "https://play.google.com/store/apps/details?id=de.tutao.calendar"
@@ -836,10 +840,6 @@ export enum CredentialEncryptionMode {
 	 */
 	APP_PASSWORD = "APP_PASSWORD",
 }
-
-export const UsageTestParticipationModeToName = reverse(UsageTestParticipationMode)
-export const UsageTestMetricTypeToName = reverse(UsageTestMetricType)
-export const UsageTestStateToName = reverse(UsageTestState)
 
 export function getClientType(): ClientType {
 	return isApp() ? ClientType.App : isDesktop() || isAdminClient() ? ClientType.Desktop : ClientType.Browser

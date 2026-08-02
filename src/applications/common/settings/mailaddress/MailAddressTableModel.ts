@@ -12,13 +12,13 @@ import { MailboxPropertiesTypeRef } from "@tutao/entities/tutanota"
 import { GroupInfo, GroupInfoTypeRef, MailAddressAliasServiceReturn, User } from "@tutao/entities/sys"
 import { isTutaMailAddress } from "../../mailFunctionality/SharedMailUtils.js"
 import {
-	EntityEventsListener,
+	EntityUpdatesListener,
 	EntityUpdateData,
 	isUpdateFor,
 	isUpdateForTypeRef,
-	OnEntityUpdateReceivedPriority,
+	ListenerPriority,
 } from "../../../../platform-kit/instance-pipeline/utils/EntityUpdateUtils"
-import { OperationType } from "@tutao/meta"
+import { elementIdToId, OperationType } from "@tutao/meta"
 import { LimitReachedError } from "@tutao/rest-client/error"
 
 export enum AddressStatus {
@@ -57,7 +57,7 @@ export class MailAddressTableModel {
 	aliasCount: MailAddressAliasServiceReturn | null = null
 
 	init: () => Promise<void> = lazyMemoized(async () => {
-		this.eventController.addEntityListener(this.entityEventsReceived)
+		this.eventController.addEntityUpdatesListener(this.entityUpdatesListener)
 
 		// important: "not on legacy plan" is true for free plans
 		const userController = this.logins.getUserController()
@@ -81,7 +81,7 @@ export class MailAddressTableModel {
 	) {}
 
 	dispose() {
-		this.eventController.removeEntityListener(this.entityEventsReceived)
+		this.eventController.removeEntityUpdatesListener(this.entityUpdatesListener)
 	}
 
 	userCanModifyAliases(): boolean {
@@ -156,7 +156,7 @@ export class MailAddressTableModel {
 
 	async setPrimaryAddress(address: string): Promise<void> {
 		const oldPrimaryAddress = assertNotNull(this.userInfo.userGroupInfo.mailAddress)
-		await this.mailAddressFacade.setPrimaryMailAddress(this.userInfo.user._id, address)
+		await this.mailAddressFacade.setPrimaryMailAddress(elementIdToId(this.userInfo.user._id), address)
 
 		const defaultSender = this.logins.getUserController().props.defaultSender
 		if (defaultSender && defaultSender === oldPrimaryAddress) {
@@ -169,7 +169,8 @@ export class MailAddressTableModel {
 		return this.userInfo.userGroupInfo.name
 	}
 
-	private entityEventsReceived: EntityEventsListener = {
+	private entityUpdatesListener: EntityUpdatesListener = {
+		id: "MailAddressTableModel",
 		onEntityUpdatesReceived: async (updates: ReadonlyArray<EntityUpdateData>) => {
 			for (const update of updates) {
 				if (isUpdateForTypeRef(MailboxPropertiesTypeRef, update) && update.operation === OperationType.UPDATE) {
@@ -181,7 +182,7 @@ export class MailAddressTableModel {
 			}
 			this.redraw()
 		},
-		priority: OnEntityUpdateReceivedPriority.NORMAL,
+		priority: ListenerPriority.NORMAL,
 	}
 
 	private async loadNames() {

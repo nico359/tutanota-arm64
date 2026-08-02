@@ -66,14 +66,9 @@ import { getNullableSharedGroupName, getSharedGroupName } from "../../common/sha
 import { styles } from "../../../ui/styles"
 import { windowFacade } from "../../common/misc/WindowFacade"
 import { Header } from "../../../ui/Header"
-import {
-	EntityEventsListener,
-	EntityUpdateData,
-	isUpdateForTypeRef,
-	OnEntityUpdateReceivedPriority,
-} from "../../../platform-kit/instance-pipeline/utils/EntityUpdateUtils"
+import { EntityUpdatesListener, EntityUpdateData, isUpdateForTypeRef, ListenerPriority } from "../../../platform-kit/instance-pipeline/utils/EntityUpdateUtils"
 import { NavButtonAttrs, NavButtonColor } from "../../../ui/base/NavButton"
-import { clone, getEtId } from "@tutao/meta"
+import { clone, elementIdToId, getEtId } from "@tutao/meta"
 import { showProgressDialog } from "../../../ui/dialogs/ProgressDialog"
 import { CustomerInfoTypeRef, CustomerTypeRef, GroupInfoTypeRef, ReceivedGroupInvitation, User } from "@tutao/entities/sys"
 import { SETTINGS_PREFIX } from "../../../ui/utils/RouteChange"
@@ -83,11 +78,13 @@ import { Dialog } from "../../../ui/base/Dialog.js"
 import { createUserAreaGroupDeleteData, TemplateGroupService, UserSettingsGroupRootTypeRef } from "@tutao/entities/tutanota"
 import { ButtonType } from "../../../ui/base/Button"
 import { renderHeaderButtons } from "../../calendar-app/gui/HeaderButtons"
+import ImapImportSettingsViewer from "./imapimport/ImapImportSettingsViewer.js"
 
 assertMainOrNode()
 
 export class SettingsView extends BaseTopLevelView implements TopLevelView<SettingsViewAttrs> {
 	viewSlider: ViewSlider
+
 	private readonly _settingsFoldersColumn: ViewColumn
 	private readonly _settingsColumn: ViewColumn
 	private readonly _settingsDetailsColumn: ViewColumn
@@ -195,12 +192,32 @@ export class SettingsView extends BaseTopLevelView implements TopLevelView<Setti
 						if (isDesktop()) {
 							return new DesktopMailImportSettingsViewer(() => mailLocator.getMailImporter())
 						} else {
-							return new WebMailImportSettingsViewer()
+							return new WebMailImportSettingsViewer(true)
 						}
 					},
 					undefined,
 				),
 			)
+
+			const userController = this.logins.getUserController()
+			const customer = userController.getCustomer()
+			if (customer && isCustomizationEnabledForCustomer(customer, FeatureType.ImapSyncMigration)) {
+				this._userFolders.push(
+					new SettingsFolder(
+						() => "migration_title",
+						() => Icons.DownloadFilled,
+						"migration",
+						() => {
+							if (isDesktop()) {
+								return new ImapImportSettingsViewer(() => mailLocator.getImapMailImportController())
+							} else {
+								return new WebMailImportSettingsViewer(false)
+							}
+						},
+						undefined,
+					),
+				)
+			}
 		})
 
 		this._userFolders.push(
@@ -258,8 +275,9 @@ export class SettingsView extends BaseTopLevelView implements TopLevelView<Setti
 					this._templateInvitations.dispose()
 				},
 				view: () => {
+					const loggedOnUserId = this.logins.getUserController().user._id
 					const [ownTemplates, sharedTemplates] = partition(this._templateFolders, (folder) =>
-						isSharedGroupOwner(folder.data.group, this.logins.getUserController().user),
+						isSharedGroupOwner(folder.data.group, elementIdToId(loggedOnUserId)),
 					)
 
 					const templateInvitations = this._templateInvitations.invitations()
@@ -528,7 +546,7 @@ export class SettingsView extends BaseTopLevelView implements TopLevelView<Setti
 	}
 
 	oncreate(vnode: Vnode<SettingsViewAttrs>) {
-		locator.eventController.addEntityListener(this.entityListener)
+		locator.eventController.addEntityUpdatesListener(this.entityUpdatesListener)
 		this.populateAdminFolders().then(() => {
 			// We have to wait for the mailSets to be initialized before setting the URL,
 			// otherwise we won't find the requested folder and will just pick the default folder
@@ -541,14 +559,15 @@ export class SettingsView extends BaseTopLevelView implements TopLevelView<Setti
 	}
 
 	onremove(vnode: VnodeDOM<SettingsViewAttrs>) {
-		locator.eventController.removeEntityListener(this.entityListener)
+		locator.eventController.removeEntityUpdatesListener(this.entityUpdatesListener)
 	}
 
-	private entityListener: EntityEventsListener = {
+	private entityUpdatesListener: EntityUpdatesListener = {
+		id: "SettingsView",
 		onEntityUpdatesReceived: (updates: EntityUpdateData[], eventOwnerGroupId: Id) => {
-			return this.entityEventsReceived(updates, eventOwnerGroupId)
+			return this.onEntityUpdatesReceived(updates, eventOwnerGroupId)
 		},
-		priority: OnEntityUpdateReceivedPriority.NORMAL,
+		priority: ListenerPriority.NORMAL,
 	}
 
 	view({ attrs }: Vnode<SettingsViewAttrs>): Children {
@@ -733,11 +752,13 @@ export class SettingsView extends BaseTopLevelView implements TopLevelView<Setti
 	}
 
 	_getUserOwnedTemplateSettingsFolder(): SettingsFolder<unknown> {
-		return this._templateFolders.find((folder) => isSharedGroupOwner(folder.data.group, this.logins.getUserController().user)) || this._dummyTemplateFolder
+		const loggedInUserId = this.logins.getUserController().user._id
+		return this._templateFolders.find((folder) => isSharedGroupOwner(folder.data.group, elementIdToId(loggedInUserId))) || this._dummyTemplateFolder
 	}
 
 	_allSettingsFolders(): ReadonlyArray<SettingsFolder<unknown>> {
-		const hasOwnTemplates = this._templateFolders.some((folder) => isSharedGroupOwner(folder.data.group, this.logins.getUserController().user))
+		const loggedInUserId = this.logins.getUserController().user._id
+		const hasOwnTemplates = this._templateFolders.some((folder) => isSharedGroupOwner(folder.data.group, elementIdToId(loggedInUserId)))
 
 		return [
 			...this._userFolders,
@@ -764,7 +785,7 @@ export class SettingsView extends BaseTopLevelView implements TopLevelView<Setti
 		this.showBusinessSettings((await this.logins.getUserController().reloadCustomer()).businessUse === true)
 	}
 
-	async entityEventsReceived<T>(updates: ReadonlyArray<EntityUpdateData>, eventOwnerGroupId: Id): Promise<void> {
+	async onEntityUpdatesReceived<T>(updates: ReadonlyArray<EntityUpdateData>, eventOwnerGroupId: Id): Promise<void> {
 		for (const update of updates) {
 			if (isUpdateForTypeRef(CustomerTypeRef, update)) {
 				await this.updateShowBusinessSettings()
@@ -912,7 +933,7 @@ export class SettingsView extends BaseTopLevelView implements TopLevelView<Setti
 	async _makeTemplateFolders(): Promise<Array<SettingsFolder<TemplateGroupInstance>>> {
 		const userController = this.logins.getUserController()
 		const templateMemberships = userController.getTemplateMemberships()
-		return promiseMap(await loadTemplateGroupInstances(templateMemberships, locator.entityClient), (groupInstance) => {
+		return promiseMap(await loadTemplateGroupInstances(templateMemberships, locator.entityClient), async (groupInstance) => {
 			const sharedGroupName = getNullableSharedGroupName(groupInstance.groupInfo, userController.userSettingsGroupRoot, true)
 			return new SettingsFolder(
 				() => (sharedGroupName ? lang.makeTranslation("templateGroupDefaultName_label", sharedGroupName) : "templateGroupDefaultName_label"),
@@ -940,7 +961,7 @@ export class SettingsView extends BaseTopLevelView implements TopLevelView<Setti
 
 		if (isCustomizationEnabledForCustomer(customer, FeatureType.KnowledgeBase)) {
 			const templateMemberships = (this.logins.getUserController() && this.logins.getUserController().getTemplateMemberships()) || []
-			return promiseMap(await loadTemplateGroupInstances(templateMemberships, locator.entityClient), (groupInstance) => {
+			return promiseMap(await loadTemplateGroupInstances(templateMemberships, locator.entityClient), async (groupInstance) => {
 				const sharedGroupName = getNullableSharedGroupName(groupInstance.groupInfo, userController.userSettingsGroupRoot, true)
 				return new SettingsFolder(
 					() => (sharedGroupName ? lang.makeTranslation("templateGroupDefaultName_label", sharedGroupName) : "templateGroupDefaultName_label"),

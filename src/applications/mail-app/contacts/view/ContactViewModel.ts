@@ -6,11 +6,13 @@ import { compareContacts } from "./ContactGuiUtils.js"
 import { ListState } from "../../../../ui/base/List.js"
 import { assertNotNull, lazyMemoized } from "../../../../platform-kit/utils"
 import Stream from "mithril/stream"
-import { Router } from "../../../../ui/ScopedRouter.js"
+import { Router } from "../../../../ui/ScopedThrottledRouter.js"
 import { Contact, ContactTypeRef } from "@tutao/entities/tutanota"
 import { ListAutoSelectBehavior } from "../../../common/misc/DeviceConfig.js"
 import { getElementId } from "../../../../platform-kit/meta"
-import { EntityEventsListener, isUpdateForTypeRef, OnEntityUpdateReceivedPriority } from "../../../../platform-kit/instance-pipeline/utils/EntityUpdateUtils"
+import { EntityUpdatesListener, isUpdateForTypeRef, ListenerPriority } from "../../../../platform-kit/instance-pipeline/utils/EntityUpdateUtils"
+import { ConnectionStateListener, WebsocketConnectivityModel } from "../../../common/misc/WebsocketConnectivityModel"
+import { WsConnectionState } from "../../../../platform-kit/network/Constants"
 
 /** ViewModel for the overall contact view. */
 export class ContactViewModel {
@@ -26,6 +28,7 @@ export class ContactViewModel {
 		private readonly eventController: EventController,
 		private readonly router: Router,
 		private readonly updateUi: () => unknown,
+		private readonly connectivityModel: WebsocketConnectivityModel,
 	) {}
 
 	readonly listModel: ListElementListModel<Contact> = new ListElementListModel<Contact>({
@@ -59,12 +62,36 @@ export class ContactViewModel {
 	}
 
 	private readonly initOnce = lazyMemoized(() => {
-		this.eventController.addEntityListener(this.entityListener)
+		this.eventController.addEntityUpdatesListener(this.entityUpdatesListener)
+		this.connectivityModel.addConnectionStateListener(this.connectivityListener)
 		this.listModelStateStream = this.listModel.stateStream.map(() => {
 			this.updateUi()
 			this.updateUrl()
 		})
 	})
+
+	private readonly entityUpdatesListener: EntityUpdatesListener = {
+		id: "ContactViewModel",
+		onEntityUpdatesReceived: async (updates) => {
+			for (const update of updates) {
+				const { instanceListId, instanceId, operation } = update
+				if (isUpdateForTypeRef(ContactTypeRef, update) && instanceListId === this.contactListId) {
+					await this.listModel.onEntityUpdateReceived(instanceListId, instanceId, operation)
+				}
+			}
+		},
+		priority: ListenerPriority.NORMAL,
+	}
+
+	private readonly connectivityListener: ConnectionStateListener = {
+		id: "ContactViewModel",
+		priority: ListenerPriority.NORMAL,
+		onConnectionStateChanged: async (connectionState) => {
+			if (connectionState === WsConnectionState.connected) {
+				await this.listModel?.reload()
+			}
+		},
+	}
 
 	private updateUrl() {
 		const contactId =
@@ -77,18 +104,6 @@ export class ContactViewModel {
 		} else {
 			this.router.routeTo(`/contact/:listId`, { listId: this.contactListId })
 		}
-	}
-
-	private readonly entityListener: EntityEventsListener = {
-		onEntityUpdatesReceived: async (updates) => {
-			for (const update of updates) {
-				const { instanceListId, instanceId, operation } = update
-				if (isUpdateForTypeRef(ContactTypeRef, update) && instanceListId === this.contactListId) {
-					await this.listModel.entityEventReceived(instanceListId, instanceId, operation)
-				}
-			}
-		},
-		priority: OnEntityUpdateReceivedPriority.NORMAL,
 	}
 
 	async loadAndSelect(contactId: Id) {
@@ -112,7 +127,8 @@ export class ContactViewModel {
 	}
 
 	dispose() {
-		this.eventController.removeEntityListener(this.entityListener)
+		this.eventController.removeEntityUpdatesListener(this.entityUpdatesListener)
+		this.connectivityModel.removeConnectionStateListener(this.connectivityListener)
 		this.listModelStateStream?.end(true)
 		this.listModelStateStream = null
 	}

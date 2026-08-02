@@ -323,6 +323,9 @@ export class MainStyles {
 				".border-top": {
 					"border-top": `1px solid ${theme.outline_variant}`,
 				},
+				".outline": {
+					outline: `1px solid ${theme.outline}`,
+				},
 				"#shadow-mail-body": {
 					"container-type": "inline-size",
 				},
@@ -492,11 +495,17 @@ export class MainStyles {
 				".mb-negative-12": {
 					"margin-bottom": px(-size.spacing_12),
 				},
+				".mr-negative-4": {
+					"margin-right": px(-size.spacing_4),
+				},
 				".mr-negative-8": {
 					"margin-right": px(-size.spacing_8),
 				},
 				".mr-negative-24": {
 					"margin-right": px(-size.spacing_24),
+				},
+				".ml-negative-4": {
+					"margin-left": px(-size.spacing_4),
 				},
 				".ml-negative-8": {
 					"margin-left": px(-size.spacing_8),
@@ -677,9 +686,6 @@ export class MainStyles {
 					bottom: px(size.spacing_12),
 					right: px(size.spacing_24),
 				},
-				".mr-negative-4": {
-					"margin-right": px(-size.base_4),
-				},
 				// common setting
 				".text-ellipsis": {
 					overflow: "hidden",
@@ -805,6 +811,12 @@ export class MainStyles {
 				},
 				".content-black": {
 					color: "black",
+				},
+				".provider-selector": {
+					"box-sizing": "border-box",
+				},
+				".provider-selector > button": {
+					color: theme.on_surface,
 				},
 				".content-fg": {
 					color: theme.on_surface,
@@ -1473,6 +1485,14 @@ export class MainStyles {
 				".icon-32 > svg": {
 					height: px(size.icon_32),
 					width: px(size.icon_32),
+				},
+				".icon-40": {
+					height: px(size.icon_40),
+					width: px(size.icon_40),
+				},
+				".icon-40 > svg": {
+					height: px(size.icon_40),
+					width: px(size.icon_40),
 				},
 				".icon-64": {
 					height: px(size.icon_64),
@@ -2499,8 +2519,11 @@ export class MainStyles {
 				".list-checkbox": {
 					opacity: "0.4",
 				},
-				".calendar-alternate-background": {
+				".alternate-background": {
 					background: `${theme.surface_container} !important`,
+				},
+				".surface-background": {
+					background: `${theme.surface} !important`,
 				},
 				".calendar-day:hover": {
 					background: theme.surface_container,
@@ -2711,6 +2734,11 @@ export class MainStyles {
 					// slash in content is content alt. so that it's ignored by screen readers
 					content: '"#" / ""',
 					color: theme.on_surface,
+				},
+				".custom-color-container .hex-code-text-field .inputWrapper::before": {
+					"margin-top": "6px",
+					"margin-bottom": "4px",
+					"padding-right": "4px",
 				},
 				".calendar-invite-field": {
 					"min-width": "80px",
@@ -3015,7 +3043,7 @@ export class MainStyles {
 					"border-radius": px(size.radius_8),
 					color: theme.on_surface,
 					width: "100%",
-					padding: px(size.spacing_8),
+					padding: px(size.spacing_12),
 					transition: `background-color .1s ease-out`,
 					"caret-color": theme.primary,
 				},
@@ -3030,8 +3058,8 @@ export class MainStyles {
 				},
 				".text-editor-placeholder": {
 					position: "absolute",
-					top: px(size.spacing_8),
-					left: px(size.spacing_8),
+					top: px(size.spacing_12),
+					left: px(size.spacing_12),
 					color: theme.on_surface_variant,
 				},
 				".tutaui-switch": {
@@ -3042,8 +3070,8 @@ export class MainStyles {
 				".tutaui-toggle-pill": {
 					position: "relative",
 					display: "block",
-					width: "45.5px",
-					height: "28px",
+					width: "52px",
+					height: "32px",
 					"background-color": theme.surface_container_high,
 					"border-radius": px(size.spacing_8 * 4),
 					border: `2px solid ${theme.outline}`,
@@ -3052,14 +3080,14 @@ export class MainStyles {
 				".tutaui-toggle-pill:after": {
 					position: "absolute",
 					content: "''",
-					width: "21px",
-					height: "21px",
+					width: "16px",
+					height: "16px",
 					top: "50%",
 					"-webkit-transform": "translateY(-50%)",
 					"-moz-transform": "translateY(-50%)",
 					"-ms-transform": "translateY(-50%)",
 					transform: "translateY(-50%)",
-					margin: "0 4px",
+					margin: "0 8px",
 					"background-color": theme.outline,
 					"border-radius": "50%",
 					left: 0,
@@ -3378,6 +3406,21 @@ export class MainStyles {
 					display: "flex",
 					"justify-content": "space-between",
 					"min-height": px(component_size.button_height_lg),
+				},
+				".hover-panel": {
+					position: "absolute",
+					border: `2px solid ${theme.outline}`,
+					"max-width": "250px",
+					"z-index": 1,
+				},
+				".event-editor-section": {
+					height: "48px",
+				},
+				".ml-auto": {
+					"margin-left": "auto",
+				},
+				".mr-auto": {
+					"margin-left": "auto",
 				},
 			}
 		})

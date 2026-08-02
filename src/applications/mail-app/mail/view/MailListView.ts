@@ -26,12 +26,13 @@ import { theme } from "../../../../ui/theme.js"
 import { VirtualRow } from "../../../../ui/base/ListUtils.js"
 import { isKeyPressed } from "../../../../ui/utils/KeyManager.js"
 import { mailLocator } from "../../mailLocator.js"
-import { canDoDragAndDropExport } from "./MailViewerUtils.js"
+import { canDoDragAndDropExport, getSenderOrRecipientHeading } from "./MailViewerUtils.js"
 import { isDraft, isMailMovable, isOfTypeOrSubfolderOf } from "../model/MailChecks.js"
-import { DropType } from "../../../../ui/base/GuiUtils"
+import { DropType, renderDragElement } from "../../../../ui/base/GuiUtils"
 import { ListElementListModel } from "../../../common/misc/ListElementListModel"
 import { generateExportFileName } from "../export/emlUtils.js"
 import { makeTrackedProgressMonitor } from "../../../common/api/common/utils/ProgressMonitor"
+import { AsyncResultStateOptions } from "../../../../platform-kit/utils/AsyncResult"
 
 assertMainOrNode()
 
@@ -66,11 +67,6 @@ export class MailListView implements Component<MailListViewAttrs> {
 	showingDraft: boolean = false
 	showingArchive: boolean = false
 	private attrs: MailListViewAttrs
-
-	private get mailViewModel(): MailViewModel {
-		return this.attrs.mailViewModel
-	}
-
 	private readonly renderConfig: RenderConfig<Mail, MailRow> = {
 		itemHeight: component_size.list_row_height,
 		multiselectionAllowed: MultiselectMode.Enabled,
@@ -116,7 +112,12 @@ export class MailListView implements Component<MailListViewAttrs> {
 		this.view = this.view.bind(this)
 	}
 
+	private get mailViewModel(): MailViewModel {
+		return this.attrs.mailViewModel
+	}
+
 	// NOTE we do all of the electron drag handling directly inside MailListView, because we currently have no need to generalise
+
 	// would strongly suggest with starting generalising this first if we ever need to support dragging more than just mails
 	_newDragStart(event: DragEvent, row: Mail, selected: ReadonlySet<Mail>) {
 		if (!row) return
@@ -136,6 +137,13 @@ export class MailListView implements Component<MailListViewAttrs> {
 
 			this._doExportDrag(draggedMails)
 		} else if (styles.isDesktopLayout()) {
+			// provide the element that will be displayed as a dragged item
+			// it has to be in the DOM
+
+			const name = getSenderOrRecipientHeading(row, true)
+			const el = renderDragElement(name, Icons.MailFilled, selected.size, row.subject)
+			event.dataTransfer?.setDragImage(el, 10, 10)
+
 			// Desktop layout only because it doesn't make sense to drag mails to mailSets when the folder list and mail list aren't visible at the same time
 			event.dataTransfer?.setData(DropType.Mail, getElementId(mailUnderCursor))
 		} else {
@@ -235,21 +243,21 @@ export class MailListView implements Component<MailListViewAttrs> {
 			const key = mapKey(mail)
 			const existing = this.exportedMails.get(key)
 
-			if (!existing || existing.result.state().status === "failure") {
+			if (!existing || existing.result.state().state === AsyncResultStateOptions.Failure) {
 				// Something went wrong last time we tried to drag this file,
 				// so try again (not confident that it will work this time, though)
 				handleNotDownloaded(mail)
 			} else {
 				const state = existing.result.state()
 
-				switch (state.status) {
+				switch (state.state) {
 					// Mail is still being prepared, already has a file path assigned to it
-					case "pending": {
-						handleDownloaded(existing.fileName, state.promise)
-						continue
+					case AsyncResultStateOptions.Pending: {
+						handleDownloaded(existing.fileName, state.promise!)
+						break
 					}
 
-					case "complete": {
+					case AsyncResultStateOptions.Complete: {
 						// We have downloaded it, but we need to check if it still exists
 						const exists = await locator.fileApp.checkFileExistsInExportDir(existing.fileName)
 
@@ -301,18 +309,6 @@ export class MailListView implements Component<MailListViewAttrs> {
 		])
 		// combine the list of newly downloaded and previously downloaded files
 		return newFiles.concat(existingFiles)
-	}
-
-	// listeners to indicate the when mod key is held, dragging will do something
-	private readonly onKeyDown = (event: KeyboardEvent) => {
-		if (isDragAndDropModifierHeld(event)) {
-			this._listDom?.classList.add("drag-mod-key")
-		}
-	}
-
-	private readonly onKeyUp = (event: KeyboardEvent) => {
-		// The event doesn't have a
-		this._listDom?.classList.remove("drag-mod-key")
 	}
 
 	view(vnode: Vnode<MailListViewAttrs>): Children {
@@ -386,6 +382,18 @@ export class MailListView implements Component<MailListViewAttrs> {
 						} satisfies ListAttrs<Mail, MailRow>),
 			),
 		)
+	}
+
+	// listeners to indicate the when mod key is held, dragging will do something
+	private readonly onKeyDown = (event: KeyboardEvent) => {
+		if (isDragAndDropModifierHeld(event)) {
+			this._listDom?.classList.add("drag-mod-key")
+		}
+	}
+
+	private readonly onKeyUp = (event: KeyboardEvent) => {
+		// The event doesn't have a
+		this._listDom?.classList.remove("drag-mod-key")
 	}
 
 	private renderListHeader(purgeButtonAttrs: ButtonAttrs): Children {

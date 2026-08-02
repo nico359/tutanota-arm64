@@ -28,8 +28,9 @@ import {
 } from "@tutao/entities/usage"
 import { CustomerProperties, CustomerPropertiesTypeRef, CustomerTypeRef } from "@tutao/entities/sys"
 import { ClientTypeModelResolver } from "@tutao/instance-pipeline"
-import { EntityUpdateData, isUpdateForTypeRef, OnEntityUpdateReceivedPriority } from "../../../platform-kit/instance-pipeline/utils/EntityUpdateUtils"
+import { EntityUpdateData, isUpdateForTypeRef, ListenerPriority } from "../../../platform-kit/instance-pipeline/utils/EntityUpdateUtils"
 import { DEFAULT_EXTRA_SERVICE_PARAMS } from "../../../platform-kit/instance-pipeline/RestClientOptions"
+import { idToElementId } from "@tutao/meta"
 
 const PRESELECTED_LIKERT_VALUE = null
 
@@ -173,15 +174,16 @@ export class UsageTestModel implements PingAdapter {
 		private readonly usageTestController: () => UsageTestController,
 		private readonly typeModelResolver: ClientTypeModelResolver,
 	) {
-		eventController.addEntityListener({
+		eventController.addEntityUpdatesListener({
+			id: "UsageTestModel",
 			onEntityUpdatesReceived: (updates: ReadonlyArray<EntityUpdateData>) => {
-				return this.entityEventsReceived(updates)
+				return this.onEntityUpdatesReceived(updates)
 			},
-			priority: OnEntityUpdateReceivedPriority.NORMAL,
+			priority: ListenerPriority.NORMAL,
 		})
 	}
 
-	async entityEventsReceived(updates: ReadonlyArray<EntityUpdateData>) {
+	async onEntityUpdatesReceived(updates: ReadonlyArray<EntityUpdateData>) {
 		for (const update of updates) {
 			if (isUpdateForTypeRef(CustomerPropertiesTypeRef, update)) {
 				await this.loginController.waitForFullLogin()
@@ -212,8 +214,8 @@ export class UsageTestModel implements PingAdapter {
 	}
 
 	private async updateCustomerProperties() {
-		const customer = await this.entityClient.load(CustomerTypeRef, neverNull(this.loginController.getUserController().user.customer))
-		this.customerProperties = await this.entityClient.load(CustomerPropertiesTypeRef, neverNull(customer.properties))
+		const customer = await this.entityClient.load(CustomerTypeRef, idToElementId(neverNull(this.loginController.getUserController().user.customer)))
+		this.customerProperties = await this.entityClient.load(CustomerPropertiesTypeRef, idToElementId(neverNull(customer.properties)))
 	}
 
 	/**

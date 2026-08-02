@@ -1,6 +1,6 @@
 import type { LoginController } from "../api/main/LoginController"
 import { Dialog } from "../../../ui/base/Dialog"
-import { generatedIdToTimestamp } from "@tutao/meta"
+import { elementIdToId, generatedIdToTimestamp } from "@tutao/meta"
 import { lang, LanguageCode, languageCodeToTag, LanguageNames, MaybeTranslation } from "../../../ui/utils/LanguageViewModel"
 import {
 	AccessBlockedError,
@@ -20,19 +20,18 @@ import { UserError } from "../api/main/UserError"
 import { noOp, ofClass } from "@tutao/utils"
 import { showUserError } from "./ErrorHandlerImpl"
 import type { ReferralData, SubscriptionParameters } from "../subscription/UpgradeSubscriptionWizard"
-import { locator } from "../api/main/CommonLocator"
 import { CredentialAuthenticationError } from "../api/common/error/CredentialAuthenticationError"
 import { Params } from "mithril"
 import { LoginState } from "../login/LoginViewModel.js"
 import { showApprovalNeededMessageDialog } from "./ApprovalNeededMessageDialog.js"
-import { deviceConfig } from "./DeviceConfig"
 import { Customer } from "@tutao/entities/sys"
-import { AvailablePlans, AvailablePlanType, NewBusinessPlans, SubscriptionType } from "../../../entities/sys/Utils"
+import { AvailablePlans, AvailablePlanType, NewBusinessPlans, PlanType, SubscriptionType } from "../../../entities/sys/Utils"
 
 import { CacheMode } from "../../../platform-kit/instance-pipeline/RestClientOptions"
+import { client, ClientPlatform } from "../../../platform-kit/app-env/boot/ClientDetector"
 
 function getAccountAgeInMs(customer: Customer) {
-	return new Date().getTime() - generatedIdToTimestamp(customer._id)
+	return new Date().getTime() - generatedIdToTimestamp(elementIdToId(customer._id))
 }
 
 const TWO_DAYS_MS = 48 * 60 * 60 * 1000
@@ -98,13 +97,15 @@ export async function checkApprovalStatus(logins: LoginController, includeInvoic
 			import("../subscription/UpgradeSubscriptionWizard").then((module) =>
 				module.showUpgradeWizard({
 					logins,
-
 					// this user started a paid signup but never completed it, so we don't count
 					// it as an upgrade
 					upgradePromptType: null,
 				}),
 			)
 		}
+		return false
+	} else if (status === ApprovalStatus.DOWNGRADE_FAILED) {
+		await Dialog.message("downgradeFailed_msg")
 		return false
 	} else {
 		return true
@@ -182,38 +183,6 @@ export function getLoginErrorStateAndMessage(error: Error): { errorMessage: Mayb
 	}
 }
 
-export async function showSignupDialog(urlParams: Params) {
-	const { canSubscribeToPlan } = await import("../subscription/utils/SubscriptionUtils")
-
-	const subscriptionParams = getSubscriptionParameters(urlParams)
-	const registrationDataId = getRegistrationDataIdFromParams(urlParams)
-	const referralData = getReferralCodeFromParams(urlParams)
-	const availablePlans = getAvailablePlansFromSubscriptionParameters(subscriptionParams).filter(canSubscribeToPlan)
-	// We assume that if a user comes from our website for signup, the language selected on the website should take precedence over the browser language.
-	// As we initialize the language with the browser's one in the app.ts already, we try to overwrite it by the website language here.
-	const websiteLang = getWebsiteLangFromParams(urlParams)
-	if (websiteLang) {
-		// need to set the language in LanguageViewModel *and* deviceConfig, to keep app language and language dropdown view in sync
-		lang.setLanguage(websiteLang)
-		deviceConfig.setLanguage(websiteLang.code)
-	}
-
-	await showProgressDialog(
-		"loading_msg",
-		locator.worker.initialized.then(async () => {
-			const { loadSignupWizard } = await import("../subscription/UpgradeSubscriptionWizard")
-			await loadSignupWizard(subscriptionParams, registrationDataId, referralData, availablePlans)
-		}),
-	).catch(
-		ofClass(UserError, async (e) => {
-			const m = await import("mithril")
-			await showUserError(e)
-			// redirects if there were invalid parameters, e.g. for referral codes and campaignIds
-			m.route.set("/signup")
-		}),
-	)
-}
-
 export function getWebsiteLangFromParams(urlParams: Params): { code: LanguageCode; languageTag: string } | null {
 	if (typeof urlParams.websiteLang !== "string") return null
 	const code = urlParams.websiteLang
@@ -235,6 +204,8 @@ export function getAvailablePlansFromSubscriptionParameters(params: Subscription
 			case SubscriptionType.Personal:
 			case SubscriptionType.PaidPersonal:
 				return AvailablePlans
+			case SubscriptionType.FreeOnly:
+				return [PlanType.Free]
 		}
 	} catch (e) {
 		// If params.type is not a valid subscription type, return the default value
@@ -250,6 +221,8 @@ export function stringToSubscriptionType(string: string): SubscriptionType {
 			return SubscriptionType.Personal
 		case "privatepaid":
 			return SubscriptionType.PaidPersonal
+		case "freeonly":
+			return SubscriptionType.FreeOnly
 		default:
 			throw new Error(`Failed to get subscription type: ${string}`)
 	}
@@ -308,4 +281,7 @@ export async function showGiftCardDialog(urlHash: string) {
 export async function showRecoverDialog(mailAddress: string, resetAction: ResetAction) {
 	const dialog = await import("../login/recover/RecoverLoginDialog")
 	dialog.show(mailAddress, resetAction)
+}
+export function isFreeSignupOnly() {
+	return client.getClientPlatform() === ClientPlatform.ANDROID_CALENDAR_APP
 }

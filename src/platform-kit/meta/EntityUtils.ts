@@ -9,15 +9,30 @@ import {
 	compare,
 	downcast,
 	hexToBase64,
+	isNotNull,
+	Nullable,
 	pad,
 	repeat,
 	uint8ArrayToBase64,
 	uint8arrayToBase64UrlCustomId,
 } from "@tutao/utils"
-import { clone, isSameTypeRef, TypeRef } from "./index"
-import { ElementEntity, Entity, ModelValue, ParsedInstance, SomeEntity, TypeModel } from "./EntityTypes.js"
+import {
+	AggregatedEntity,
+	AnyEntityId,
+	BlobElementEntity,
+	BlobElementId,
+	ElementEntity,
+	ElementId,
+	isSameTypeRef,
+	ListElementEntity,
+	ListElementId,
+	TypeRef,
+	ValueTypeEnum,
+} from "./index"
+import { Entity, ModelValue, PersistentEntity, TypeModel } from "./EntityTypes.js"
 import { Cardinality, ValueType } from "./EntityConstants.js"
 import { ProgrammingError } from "@tutao/app-env"
+import { assertNull } from "../utils/Utils"
 
 /**
  * the maximum ID for elements stored on the server (number with the length of 10 bytes) => 2^80 - 1
@@ -56,53 +71,18 @@ export const LOAD_MULTIPLE_LIMIT = 100
 export const POST_MULTIPLE_LIMIT = 100
 export const DELETE_MULTIPLE_LIMIT = 100
 
-/**
- * an entity that only contains the actual user data and can not be used to refer to any existing entity.
- */
-export type Stripped<T extends Partial<SomeEntity>> = Omit<
-	T,
-	| "_id"
-	| "_area"
-	| "_owner"
-	| "_ownerGroup"
-	| "_ownerEncSessionKey"
-	| "_kdfNonce"
-	| "_ownerKeyVersion"
-	| "ownerGroup"
-	| "ownerEncSessionKey"
-	| "ownerKeyVersion"
-	| "_permissions"
-	| "_errors"
-	| "_format"
-	| "_type"
-	| "_original"
->
-
 type OptionalEntity<T extends Entity> = T & {
-	_id?: Id | IdTuple
+	_id?: T extends AggregatedEntity
+		? Id
+		: T extends ElementEntity
+			? ElementId
+			: T extends ListElementEntity
+				? ListElementId
+				: T extends BlobElementEntity
+					? ListElementId
+					: never
 	_ownerGroup?: Id
 }
-
-export type StrippedEntity<T extends Entity> =
-	| Omit<
-			T,
-			| "_id"
-			| "_ownerGroup"
-			| "_ownerEncSessionKey"
-			| "_ownerKeyVersion"
-			| "_kdfNonce"
-			| "ownerGroup"
-			| "ownerEncSessionKey"
-			| "ownerKeyVersion"
-			| "_permissions"
-			| "_errors"
-			| "_format"
-			| "_type"
-			| "_area"
-			| "_owner"
-			| "_original"
-	  >
-	| OptionalEntity<T>
 
 export const enum EntityIdEncoding {
 	Base64Ext,
@@ -159,25 +139,19 @@ export function base64UrlIdToUint8array(id: Id): Uint8Array {
 	return base64ToUint8Array(base64UrlToBase64(id))
 }
 
-export function compareNewestFirst(id1: Id | IdTuple, id2: Id | IdTuple, encoding: EntityIdEncoding): number {
-	let firstId = id1 instanceof Array ? id1[1] : id1
-	let secondId = id2 instanceof Array ? id2[1] : id2
-
-	if (firstId === secondId) {
+export function compareNewestFirst(id1: Id, id2: Id, encoding: EntityIdEncoding): number {
+	if (id1 === id2) {
 		return 0
 	} else {
-		return firstBiggerThanSecond(firstId, secondId, encoding) ? -1 : 1
+		return firstBiggerThanSecond(id1, id2, encoding) ? -1 : 1
 	}
 }
 
-export function compareOldestFirst(id1: Id | IdTuple, id2: Id | IdTuple, encoding: EntityIdEncoding): number {
-	let firstId = id1 instanceof Array ? id1[1] : id1
-	let secondId = id2 instanceof Array ? id2[1] : id2
-
-	if (firstId === secondId) {
+export function compareOldestFirst(id1: Id, id2: Id, encoding: EntityIdEncoding): number {
+	if (id1 === id2) {
 		return 0
 	} else {
-		return firstBiggerThanSecond(firstId, secondId, encoding) ? 1 : -1
+		return firstBiggerThanSecond(id1, id2, encoding) ? 1 : -1
 	}
 }
 
@@ -196,38 +170,56 @@ export function sortCompareById<T extends ListElement>(entity1: T, entity2: T, e
  * @param id2
  * @returns True if the ids are the same, false otherwise
  */
-export function isSameId(id1: (Id | IdTuple) | null, id2: (Id | IdTuple) | null): boolean {
+export function isSameId<I extends AnyEntityId>(id1: I | null, id2: I | null): boolean {
 	if (id1 === null || id2 === null) {
 		return false
-	} else if (id1 instanceof Array && id2 instanceof Array) {
-		return id1[0] === id2[0] && id1[1] === id2[1]
+	} else if (isNotNull(id1[0]) && isNotNull(id2[0])) {
+		return isSameIdTuple([id1[0], id1[1]], [id2[0], id2[1]])
 	} else {
-		return id1 === id2
+		return isSameSingleId(id1[1], id2[1])
 	}
 }
 
-export function haveSameId(entity1: SomeEntity, entity2: SomeEntity): boolean {
+export function isSameSingleId(id1: Id | null, id2: Id | null): boolean {
+	if (id1 === null || id2 === null) return false
+	return id1 === id2
+}
+
+export function isSameIdTuple(id1: IdTuple | null, id2: IdTuple | null) {
+	if (id1 === null || id2 === null) return false
+	else return id1[0] === id2[0] && id1[1] === id2[1]
+}
+
+export function haveSameId(entity1: PersistentEntity, entity2: PersistentEntity): boolean {
 	return isSameId(entity1._id, entity2._id)
 }
 
-export function containsId(ids: ReadonlyArray<Id | IdTuple>, id: Id | IdTuple): boolean {
+export function containsId(ids: ReadonlyArray<AnyEntityId>, id: AnyEntityId): boolean {
 	return ids.some((idInArray) => isSameId(idInArray, id))
 }
 
 export interface Element {
-	_id: Id
+	_id: ElementId
 }
 
 export interface ListElement {
-	_id: IdTuple
+	_id: ListElementId
 }
 
 export interface BlobElement {
-	_id: IdTuple
+	_id: BlobElementId
+}
+
+export function idToElementId(id: Id): ElementId {
+	return [null, id]
+}
+
+export function stringifyId(id: AnyEntityId): string {
+	return id.filter(isNotNull).join("/")
 }
 
 export function getEtId(entity: Element): Id {
-	return entity._id
+	return elementIdToId(entity._id)
 }
 
 export function getLetId(entity: ListElement): IdTuple {
@@ -254,11 +246,16 @@ export function elementIdPart(id: IdTuple): Id {
 	return id[1]
 }
 
+export function elementIdToId(id: AnyEntityId): Id {
+	assertNull(id[0], `Expected to be ElementId but got: ${stringifyId(id)}`)
+	return id[1]
+}
+
 /**
  * Takes an iterator of list element entities and returns their ids in an array.
  * @param entities
  */
-export function getIds<T extends SomeEntity>(entities: Iterable<T>): Array<T["_id"]> {
+export function getIds<T extends PersistentEntity>(entities: Iterable<T>): Array<T["_id"]> {
 	const ids: Array<T["_id"]> = []
 	for (const entity of entities) {
 		ids.push(entity._id)
@@ -266,13 +263,17 @@ export function getIds<T extends SomeEntity>(entities: Iterable<T>): Array<T["_i
 	return ids
 }
 
-export function create<T>(typeModel: TypeModel, typeRef: TypeRef<T>, createDefaultValue: (name: string, value: ModelValue) => any = _getDefaultValue): T {
+export function create<T>(
+	typeModel: TypeModel,
+	typeRef: TypeRef<T>,
+	createDefaultValue: (name: string, value: ModelValue, typeModel: TypeModel) => any = _getDefaultValue,
+): T {
 	let i: Record<string, any> = {
 		_type: typeRef,
 	}
 
 	for (const [valueIdStr, value] of Object.entries(typeModel.values)) {
-		i[value.name] = createDefaultValue(value.name, value)
+		i[value.name] = createDefaultValue(value.name, value, typeModel)
 	}
 
 	for (const [associationIdStr, association] of Object.entries(typeModel.associations)) {
@@ -289,7 +290,7 @@ export function create<T>(typeModel: TypeModel, typeRef: TypeRef<T>, createDefau
 	return i as T
 }
 
-function _getDefaultValue(valueName: string, value: ModelValue): any {
+function _getDefaultValue(valueName: string, value: ModelValue, typeModel: TypeModel): any {
 	if (valueName === "_format") {
 		return "0"
 	} else if (valueName === "_id") {
@@ -300,23 +301,24 @@ function _getDefaultValue(valueName: string, value: ModelValue): any {
 		return null
 	} else {
 		switch (value.type) {
-			case ValueType.Bytes:
+			case ValueTypeEnum.Bytes:
 				return new Uint8Array(0)
 
-			case ValueType.Date:
+			case ValueTypeEnum.Date:
 				return new Date()
 
-			case ValueType.Number:
+			case ValueTypeEnum.Number:
 				return "0"
 
-			case ValueType.String:
+			case ValueTypeEnum.String:
+			case ValueType.CompressedString:
 				return ""
 
-			case ValueType.Boolean:
+			case ValueTypeEnum.Boolean:
 				return false
 
-			case ValueType.CustomId:
-			case ValueType.GeneratedId:
+			case ValueTypeEnum.CustomId:
+			case ValueTypeEnum.GeneratedId:
 				return null
 			// we have to use null although the value must be set to something different
 		}
@@ -379,20 +381,7 @@ export function generatedIdToTimestamp(base64Ext: Id): number {
 	return numberResult
 }
 
-const base64extEncodedIdLength = GENERATED_MAX_ID.length
-const base64extAlphabet = "-0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcdefghijklmnopqrstuvwxyz"
-
-export function isValidGeneratedId(id: Id | IdTuple): boolean {
-	const test = (id: string) => id.length === base64extEncodedIdLength && Array.from(id).every((char) => base64extAlphabet.includes(char))
-
-	return typeof id === "string" ? test(id) : id.every(test)
-}
-
-export function isElementEntity(e: SomeEntity): e is ElementEntity {
-	return typeof e._id === "string"
-}
-
-export function assertIsEntity<T extends SomeEntity>(entity: SomeEntity, type: TypeRef<T>): entity is T {
+export function assertIsEntity<T extends PersistentEntity>(entity: PersistentEntity, type: TypeRef<T>): entity is T {
 	if (isSameTypeRef(entity._type, type)) {
 		return true
 	} else {
@@ -400,63 +389,8 @@ export function assertIsEntity<T extends SomeEntity>(entity: SomeEntity, type: T
 	}
 }
 
-export function assertIsEntity2<T extends SomeEntity>(type: TypeRef<T>): (entity: SomeEntity) => entity is T {
+export function assertIsEntity2<T extends PersistentEntity>(type: TypeRef<T>): (entity: PersistentEntity) => entity is T {
 	return (e): e is T => assertIsEntity(e, type)
-}
-
-/**
- * Remove some hidden technical fields from the entity.
- *
- * Only use for new entities, the {@param entity} won't be usable for updates anymore after this.
- */
-export function removeTechnicalFields<E extends Partial<SomeEntity>>(entity: E) {
-	// we want to restrict outer function to entity types, but internally we also want to handle aggregates
-	function _removeTechnicalFields(erased: Record<string, any>) {
-		for (const key of Object.keys(erased)) {
-			if (TECHNICAL_FIELDS.includes(key)) {
-				delete erased[key]
-			} else {
-				const value = erased[key]
-				if (value instanceof Object) {
-					_removeTechnicalFields(value)
-				}
-			}
-		}
-	}
-
-	_removeTechnicalFields(entity)
-	return entity
-}
-
-/**
- * get a clone of a (partial) entity that does not contain any fields that would indicate that it was ever persisted anywhere.
- * @param entity the entity to strip
- */
-export function getStrippedClone<E extends SomeEntity>(entity: StrippedEntity<E>): StrippedEntity<E> {
-	const cloned = clone(entity)
-	removeTechnicalFields(cloned)
-	removeIdentityFields(cloned)
-	return cloned
-}
-
-/**
- * remove fields that do not contain user defined data but are related to finding/accessing the entity on the server
- */
-function removeIdentityFields<E extends Partial<SomeEntity>>(entity: E) {
-	function _removeIdentityFields(erased: Record<string, any>) {
-		for (const key of Object.keys(erased)) {
-			if (IDENTITY_FIELDS.includes(key)) {
-				delete erased[key]
-			} else {
-				const value = erased[key]
-				if (value instanceof Object) {
-					_removeIdentityFields(value)
-				}
-			}
-		}
-	}
-
-	_removeIdentityFields(entity)
 }
 
 /**
@@ -569,15 +503,14 @@ export function localToServerIdEncoding(typeModel: TypeModel, elementId: Id): Id
  * @param key only returns true if there is an error for this key. Other errors will be ignored if the key is defined.
  * @returns {boolean} true if error was found (for the given key).
  */
-export function hasError<K>(instance: Entity | ParsedInstance, key?: K): boolean {
-	const downCastedInstance = downcast(instance)
-	if (!instance) {
+export function hasError<K>(instance: Nullable<Entity>, key?: K): boolean {
+	if (instance == null) {
 		return true
-	} else {
-		const hasNonEmptyErrorObject = !!downCastedInstance._errors && !isErrorObjectEmpty(downCastedInstance._errors)
-
-		return hasNonEmptyErrorObject && (!key || !!downCastedInstance._errors.key)
 	}
+	const downCastedInstance = downcast(instance)
+	const hasNonEmptyErrorObject = !!downCastedInstance._errors && !isErrorObjectEmpty(downCastedInstance._errors)
+
+	return hasNonEmptyErrorObject && (!key || !!downCastedInstance._errors.key)
 }
 
 function isErrorObjectEmpty(obj: Record<string, unknown>): boolean {

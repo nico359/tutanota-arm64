@@ -1,15 +1,15 @@
 import m, { Children, Component, Vnode } from "mithril"
-import { px, size } from "../../size.js"
-import { ExpanderButton, ExpanderPanel } from "../Expander.js"
-import { LegacyTextField } from "../LegacyTextField.js"
-import { lang } from "../../utils/LanguageViewModel.js"
-import { hexToHSL, hslToHex, isValidCSSHexColor, MAX_HUE_ANGLE, normalizeHueAngle } from "../Color.js"
-import { ColorPickerModel } from "./ColorPickerModel.js"
-import { client } from "../../../platform-kit/app-env/boot/ClientDetector.js"
-import { isDarkTheme, theme } from "../../theme.js"
-import { assertNotNull, clamp, filterInt } from "../../../platform-kit/utils"
-import { Keys, TabIndex } from "../../../platform-kit/app-env"
+import { ColorPickerModel } from "./ColorPickerModel"
+import { isDarkTheme, theme } from "../../theme"
+import { hexToHSL, hslToHex, isValidCSSHexColor, MAX_HUE_ANGLE, normalizeHueAngle } from "../Color"
+import { assertNotNull, clamp, filterInt } from "@tutao/utils"
+import { px, size } from "../../size"
+import { Checkbox } from "../Checkbox"
+import { lang } from "../../utils/LanguageViewModel"
+import { TextField } from "../TextField"
+import { Keys, TabIndex } from "@tutao/app-env"
 import { isKeyPressed } from "../../utils/KeyManager"
+import { client } from "../../../platform-kit/app-env/boot/ClientDetector"
 
 const HUE_GRADIENT_BORDER_WIDTH = 1
 const HUE_GRADIENT_HEIGHT = 40
@@ -97,22 +97,13 @@ export class ColorPickerView implements Component<ColorPickerViewAttrs> {
 					}),
 				),
 			),
-			m("", [
-				m(ExpanderButton, {
-					label: "advanced_label",
-					expanded: this.isAdvanced,
-					onExpandedChange: (expanded) => this.handleOnExpandedChange(expanded, attrs),
-					style: {
-						marginLeft: "auto",
-					},
+			m(".flex.mt-16.items-center.justify-between", [
+				m(Checkbox, {
+					label: () => lang.getTranslationText("advanced_label"),
+					checked: this.isAdvanced,
+					onChecked: (checked) => this.handleOnExpandedChange(checked, attrs),
 				}),
-				m(
-					ExpanderPanel,
-					{
-						expanded: this.isAdvanced,
-					},
-					this.renderCustomColorContainer(attrs),
-				),
+				this.isAdvanced ? m("", this.renderCustomColorContainer(attrs)) : null,
 			]),
 		])
 	}
@@ -138,10 +129,9 @@ export class ColorPickerView implements Component<ColorPickerViewAttrs> {
 
 	private renderCustomColorContainer(attrs: ColorPickerViewAttrs) {
 		return m(".custom-color-container.flex.items-start.gap-12", [
-			m("", [
-				m(LegacyTextField, {
+			m(".hex-code-text-field", [
+				m(TextField, {
 					value: this.customColorHex.replace("#", ""),
-					label: "hexCode_label",
 					oninput: (v) => this.handleCustomHexInput(v, attrs),
 				}),
 				!isValidCSSHexColor(this.customColorHex) && m(".small", lang.get("invalidInputFormat_msg")),
@@ -154,7 +144,7 @@ export class ColorPickerView implements Component<ColorPickerViewAttrs> {
 					this.postionSliderOnHue(assertNotNull(this.hueImgDom), assertNotNull(this.hueSliderDom))
 					attrs.onselect(color)
 				},
-				className: ".mt-12",
+				className: ".mt-24",
 			}),
 		])
 	}

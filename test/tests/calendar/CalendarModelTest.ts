@@ -23,7 +23,7 @@ import { MailboxModel } from "../../../src/applications/common/mailFunctionality
 import { ExternalCalendarFacade } from "../../../src/app-kit/native-bridge/common/generatedipc/types"
 import { DeviceConfig } from "../../../src/applications/common/misc/DeviceConfig.js"
 import { SyncTracker } from "../../../src/applications/common/api/main/SyncTracker.js"
-import { LanguageViewModel } from "../../../src/ui/utils/LanguageViewModel.js"
+import { lang, LanguageViewModel } from "../../../src/ui/utils/LanguageViewModel.js"
 import { NativePushServiceApp } from "../../../src/applications/common/native/NativePushServiceApp.js"
 import { AlarmScheduler } from "../../../src/applications/common/calendar/date/AlarmScheduler"
 import { IServiceExecutor } from "../../../src/platform-kit/network/ServiceRequest"
@@ -55,14 +55,16 @@ import {
 	RepeatRuleTypeRef,
 	User,
 	UserAlarmInfoListType,
+	UserAlarmInfoListTypeTypeRef,
 	UserAlarmInfoTypeRef,
 } from "@tutao/entities/sys"
-import { clone, elementIdPart, getListId, listIdPart } from "../../../src/platform-kit/meta"
+import { clone, elementIdPart, elementIdToId, getListId, idToElementId, listIdPart } from "../../../src/platform-kit/meta"
 import { ProgressMonitorInterface } from "../../../src/platform-kit/network/ProgressMonitorInterface"
 import { EntityUpdateData } from "../../../src/platform-kit/instance-pipeline/utils/EntityUpdateUtils"
 import { GroupType } from "../../../src/entities/sys/Utils"
 import { CalendarAttendeeStatus, CalendarMethod } from "../../../src/entities/tutanota/Utils"
 import { IcsCalendarEvent, ParsedCalendarData, ParsedEventAlarmTuple } from "../../../src/applications/calendar-app/calendar/export/CalendarParser"
+import en from "../../../src/ui/translations/en"
 
 o.spec("CalendarModel", function () {
 	const { anything } = matchers
@@ -124,6 +126,11 @@ o.spec("CalendarModel", function () {
 	let userGroupInfo: GroupInfo
 	let contactModelMock: ContactModel
 
+	o.before(() => {
+		// CalendarModel needs LanguageViewModel initialized
+		lang.init(en)
+	})
+
 	o.beforeEach(function () {
 		notificationsMock = object()
 		eventControllerMock = object()
@@ -147,7 +154,10 @@ o.spec("CalendarModel", function () {
 		when(loginControllerMock.getUserController()).thenReturn(userControllerMock)
 		const userId = "user-id"
 		userMock = object<User>()
-		userMock._id = userId
+		userMock._id = idToElementId(userId)
+		userMock.alarmInfoList = createTestEntity(UserAlarmInfoListTypeTypeRef, {
+			alarms: "user-alarm-list-id",
+		})
 		userControllerMock.user = userMock
 
 		userControllerMock.getCalendarMemberships = () => {
@@ -165,7 +175,7 @@ o.spec("CalendarModel", function () {
 		// when(userControllerMock.getCalendarMemberships()).thenReturn([calendarGroupMembership])
 
 		calendarGroupRoot = createTestEntity(CalendarGroupRootTypeRef, {
-			_id: calendarGroupMembership.group,
+			_id: idToElementId(calendarGroupMembership.group),
 			longEvents: "longEvents",
 			shortEvents: "shortEvents",
 		})
@@ -173,17 +183,18 @@ o.spec("CalendarModel", function () {
 		const calendarGroupInfo = createTestEntity(GroupInfoTypeRef, {
 			_id: calendarGroupMembership.groupInfo,
 			group: calendarGroupMembership.group,
+			groupType: GroupType.Calendar,
 		})
 
 		groupMemberMock = createTestEntity(GroupMemberTypeRef, {
 			_id: ["group-member-list-id", "group-member-element-id"],
-			group: calendarGroupRoot._id,
-			user: userMock._id,
+			group: elementIdToId(calendarGroupRoot._id),
+			user: elementIdToId(userMock._id),
 			userGroupInfo: calendarGroupInfo._id,
 		})
 
 		const calendarGroup = createTestEntity(GroupTypeRef, {
-			_id: calendarGroupMembership.group,
+			_id: idToElementId(calendarGroupMembership.group),
 			members: "group-member-list-id",
 		})
 
@@ -227,7 +238,7 @@ o.spec("CalendarModel", function () {
 		baseExistingProgenitor = createTestEntity(CalendarEventTypeRef, {
 			_id: ["listId", "eventId"],
 			uid,
-			_ownerGroup: calendarGroupRoot._id,
+			_ownerGroup: elementIdToId(calendarGroupRoot._id),
 			summary: "v1",
 			organizer: createTestEntity(EncryptedMailAddressTypeRef, {
 				address: ORGANIZER,
@@ -252,7 +263,7 @@ o.spec("CalendarModel", function () {
 		})
 
 		baseCalendarEventUidIndexEntry = object()
-		baseCalendarEventUidIndexEntry.ownerGroup = calendarGroupRoot._id
+		baseCalendarEventUidIndexEntry.ownerGroup = elementIdToId(calendarGroupRoot._id)
 		baseCalendarEventUidIndexEntry.progenitor = baseExistingProgenitor as CalendarEventProgenitor
 		baseCalendarEventUidIndexEntry.alteredInstances = []
 	})
@@ -746,6 +757,8 @@ o.spec("CalendarModel", function () {
 				location: baseExistingProgenitor.location,
 				repeatRule: baseExistingProgenitor.repeatRule,
 				recurrenceId: baseExistingProgenitor.recurrenceId,
+				startTimeZone: baseExistingProgenitor.startTimeZone,
+				endTimeZone: baseExistingProgenitor.endTimeZone,
 			}
 		})
 
@@ -791,6 +804,33 @@ o.spec("CalendarModel", function () {
 			o(updatedEvent.sequence).equals(sentEvent.sequence)
 			o(updatedEvent.pendingInvitation).equals(false)
 			o(oldEvent).deepEquals(baseExistingProgenitor)
+		})
+	})
+
+	o.spec("loadAlarms", function () {
+		o.test("Load only alarms owned by the user", async function () {
+			const otherUserAlarmListId = "not-owned-alarm-list"
+			const userOwnedAlarms: IdTuple[] = [
+				[userMock.alarmInfoList!.alarms, "alarm-1"],
+				[userMock.alarmInfoList!.alarms, "alarm-1"],
+			]
+			const eventAlarmInfosIds: IdTuple[] = [...userOwnedAlarms, [otherUserAlarmListId, "not-owned-alarm-1"], [otherUserAlarmListId, "not-owned-alarm-1"]]
+
+			await calendarModel.loadAlarms(eventAlarmInfosIds, userMock)
+
+			verify(entityClientMock.loadMultiple(UserAlarmInfoTypeRef, userMock.alarmInfoList!.alarms, userOwnedAlarms.map(elementIdPart)), { times: 1 })
+		})
+
+		o.test("Result in an empty list when user has no alarms assigned to the event", async function () {
+			const otherUserAlarmListId = "not-owned-alarm-list"
+			const eventAlarmInfosIds: IdTuple[] = [
+				[otherUserAlarmListId, "not-owned-alarm-1"],
+				[otherUserAlarmListId, "not-owned-alarm-1"],
+			]
+
+			await calendarModel.loadAlarms(eventAlarmInfosIds, userMock)
+
+			verify(entityClientMock.loadMultiple(UserAlarmInfoTypeRef, matchers.anything(), matchers.anything()), { times: 0 })
 		})
 	})
 })

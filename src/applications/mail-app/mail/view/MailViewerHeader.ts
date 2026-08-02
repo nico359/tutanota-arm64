@@ -36,6 +36,8 @@ import { LabelsPopupViewModel } from "./LabelsPopupViewModel"
 import { File } from "@tutao/entities/tutanota"
 import { InboxRuleType, NewsletterBannerRule } from "../../../../entities/tutanota/Utils"
 import { canSeeTutaLinks } from "../../../common/gui/base/TutaLinkUtils"
+import { DownloadPostProcessing } from "../../../common/file/FileController"
+import { elementIdToId } from "@tutao/meta"
 
 export type MailAddressDropdownCreator = (args: {
 	mailAddress: MailAddressAndName
@@ -388,7 +390,7 @@ export class MailViewerHeader implements Component<MailViewerHeaderAttrs> {
 	private renderEventBanner(viewModel: MailViewerViewModel): Children {
 		const eventAttachment = viewModel.getCalendarEventAttachment()
 		const groupColors: Map<Id, string> = getGroupColors(
-			viewModel.logins.getUserController().user._id,
+			elementIdToId(viewModel.logins.getUserController().user._id),
 			viewModel.logins.getUserController().userSettingsGroupRoot,
 		)
 
@@ -664,11 +666,12 @@ export class MailViewerHeader implements Component<MailViewerHeaderAttrs> {
 			return m(AttachmentBubble, {
 				attachment,
 				remove: null,
-				download:
-					isAndroidApp() || isDesktop()
-						? () => viewModel.downloadAndOpenAttachment(attachment, false)
-						: () => viewModel.downloadAndOpenAttachment(attachment, true),
-				open: isAndroidApp() || isDesktop() ? () => viewModel.downloadAndOpenAttachment(attachment, true) : null,
+				download: viewModel.attachmentDownloader.canDownloadAttachment(attachment)
+					? () => viewModel.downloadAndOpenAttachment(attachment, DownloadPostProcessing.Write)
+					: null,
+				open: viewModel.attachmentDownloader.canOpenAttachment(attachment)
+					? () => viewModel.downloadAndOpenAttachment(attachment, DownloadPostProcessing.Open)
+					: null,
 				fileImport: viewModel.canImportFile(attachment) ? () => importFile(attachment) : null,
 				type: attachmentType,
 			})

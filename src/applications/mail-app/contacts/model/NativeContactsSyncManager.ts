@@ -23,9 +23,10 @@ import { showProgressDialog } from "../../../../ui/dialogs/ProgressDialog.js"
 import { lang } from "../../../../ui/utils/LanguageViewModel"
 import { locator } from "../../../common/api/main/CommonLocator"
 import { assertMainOrNode, isApp, isIOSApp, ProgrammingError } from "../../../../platform-kit/app-env"
-import { EntityUpdateData, isUpdateForTypeRef, OnEntityUpdateReceivedPriority } from "../../../../platform-kit/instance-pipeline/utils/EntityUpdateUtils"
+import { EntityUpdateData, isUpdateForTypeRef, ListenerPriority } from "../../../../platform-kit/instance-pipeline/utils/EntityUpdateUtils"
 import {
 	Contact,
+	ContactParams,
 	ContactTypeRef,
 	createContact,
 	createContactAddress,
@@ -36,7 +37,7 @@ import {
 	createContactRelationship,
 	createContactWebsite,
 } from "@tutao/entities/tutanota"
-import { elementIdPart, getElementId, OperationType, StrippedEntity } from "../../../../platform-kit/meta"
+import { elementIdPart, getElementId, OperationType } from "../../../../platform-kit/meta"
 import { GroupType } from "../../../../entities/sys/Utils"
 
 assertMainOrNode()
@@ -52,13 +53,14 @@ export class NativeContactsSyncManager {
 		private readonly contactModel: ContactModel,
 		private readonly deviceConfig: DeviceConfig,
 	) {
-		this.eventController.addEntityListener({
-			onEntityUpdatesReceived: (updates) => this.nativeContactEntityEventsListener(updates),
-			priority: OnEntityUpdateReceivedPriority.NORMAL,
+		this.eventController.addEntityUpdatesListener({
+			id: "NativeContactsSyncManager",
+			onEntityUpdatesReceived: (updates) => this.onEntityUpdatesReceived(updates),
+			priority: ListenerPriority.NORMAL,
 		})
 	}
 
-	private async nativeContactEntityEventsListener(events: ReadonlyArray<EntityUpdateData>) {
+	private async onEntityUpdatesReceived(events: ReadonlyArray<EntityUpdateData>) {
 		await this.entityUpdateLock
 
 		await this.processContactEventUpdate(events)
@@ -308,7 +310,7 @@ export class NativeContactsSyncManager {
 		// We need to wait until the user is fully logged in to handle encrypted entities
 		await this.loginController.waitForFullLogin()
 		for (const contact of syncResult.createdOnDevice) {
-			const newContact = createContact(this.createContactFromNative(contact))
+			const newContact = this.createContactFromNative(contact)
 			const entityId = await this.entityClient.setup(listId, newContact, null, null)
 			const loginUsername = this.loginController.getUserController().loginUsername
 			// save the contact right away so that we don't lose the server id to native contact mapping if we don't process entity update quickly enough
@@ -358,11 +360,8 @@ export class NativeContactsSyncManager {
 		entityUpdateDefer.resolve()
 	}
 
-	private createContactFromNative(contact: StructuredContact): StrippedEntity<Contact> {
-		return {
-			_ownerGroup: getFirstOrThrow(
-				this.loginController.getUserController().user.memberships.filter((membership) => membership.groupType === GroupType.Contact),
-			).group,
+	private createContactFromNative(contact: StructuredContact): Contact {
+		const newContact = createContact({
 			oldBirthdayDate: null,
 			presharedPassword: null,
 			oldBirthdayAggregate: null,
@@ -390,7 +389,11 @@ export class NativeContactsSyncManager {
 			comment: contact.notes,
 			title: contact.title ?? "",
 			role: contact.role,
-		}
+		})
+		newContact._ownerGroup = getFirstOrThrow(
+			this.loginController.getUserController().user.memberships.filter((membership) => membership.groupType === GroupType.Contact),
+		).group
+		return newContact
 	}
 
 	private mergeNativeContactWithTutaContact(contact: StructuredContact, partialContact: Contact): Contact {

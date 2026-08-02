@@ -20,7 +20,7 @@ import { styles } from "../../../../ui/styles"
 import { layout_size, px, size } from "../../../../ui/size"
 import { Icon, IconSize } from "../../../../ui/base/Icon"
 import { lang, Translation } from "../../../../ui/utils/LanguageViewModel"
-import { collidesWith, formatEventTimes } from "../../../calendar-app/calendar/gui/CalendarGuiUtils"
+import { collidesWith } from "../../../calendar-app/calendar/gui/CalendarGuiUtils"
 import { Icons } from "../../../../ui/base/icons/Icons"
 import { BannerButton } from "../../../../ui/base/buttons/BannerButton"
 import { ReplyButtons } from "../../../calendar-app/calendar/gui/eventpopup/EventPreviewView"
@@ -38,9 +38,11 @@ import { isKeyPressed } from "../../../../ui/utils/KeyManager"
 import { fromStrippedCalendarEventAttendee, makeCalendarEventFromIcsCalendarEvent } from "../../../common/calendar/import/ImportExportUtils"
 import { CalendarEvent, createCalendarEventAttendee, Mail } from "@tutao/entities/tutanota"
 import { CalendarAttendeeStatus, CalendarMethod } from "../../../../entities/tutanota/Utils"
-import { Keys, ProgrammingError, SECOND_IN_MILLIS, TabIndex } from "@tutao/app-env"
+import { EventTextTimeOption, Keys, ProgrammingError, SECOND_IN_MILLIS, TabIndex } from "@tutao/app-env"
 import { clone, GENERATED_MIN_ID } from "@tutao/meta"
 import { IcsCalendarEvent } from "../../../calendar-app/calendar/export/CalendarParser"
+import { getTimeZone } from "../../../common/calendar/date/CalendarUtils"
+import { formatEventTime } from "../../../calendar-app/calendar/gui/DateTimeTextFormatterUtils"
 
 export type EventBannerImplAttrs = Omit<EventBannerAttrs, "iCalContents"> & {
 	iCalContents: ParsedIcalFileContentData
@@ -138,6 +140,8 @@ export class EventBannerImpl implements ClassComponent<EventBannerImplAttrs> {
 
 		const timeColumnWidth = layout_size.calendar_hour_width_mobile + size.spacing_16
 
+		const calendarTimeZone = getTimeZone()
+
 		/* Event Banner */
 		return m(
 			".border-radius-8.border-sm.grid.full-width.mb-8",
@@ -187,7 +191,7 @@ export class EventBannerImpl implements ClassComponent<EventBannerImplAttrs> {
 					event.organizer?.address
 						? m(".flex.items-center.small.mt-8", [
 								m("span.b", lang.getTranslation("when_label").text),
-								m("span.ml-4", formatEventTimes(getStartOfDay(event.startTime), event, "")),
+								m("span.ml-4", formatEventTime(event, EventTextTimeOption.START_END_TIME, false, calendarTimeZone)),
 							])
 						: null,
 					replySection,
@@ -296,6 +300,7 @@ export class EventBannerImpl implements ClassComponent<EventBannerImplAttrs> {
 														hideRightBorder: true,
 														showLeftBorderAtFirstColumn: false,
 													},
+													showTimeZonesAtEventBubble: false,
 												} satisfies CalendarTimeGridAttributes),
 											),
 										])

@@ -1,10 +1,12 @@
 import {
-	AttributeModel,
+	AnyEntityId,
+	AttributeName,
 	BlobElementEntity,
 	collapseId,
 	CUSTOM_MIN_ID,
 	ElementEntity,
 	elementIdPart,
+	elementIdToId,
 	Entity,
 	expandId,
 	firstBiggerThanSecond,
@@ -13,14 +15,15 @@ import {
 	getElementId,
 	getServerIdEncodingForType,
 	getTypeString,
+	idToElementId,
 	isCustomIdType,
 	ListElementEntity,
 	listIdPart,
 	localToServerIdEncoding,
 	parseTypeString,
-	ServerModelParsedInstance,
+	PersistentEntity,
 	serverToLocalIdEncoding,
-	SomeEntity,
+	ServerTypeModel,
 	Type as TypeId,
 	TypeModel,
 	TypeRef,
@@ -31,7 +34,6 @@ import {
 	assert,
 	assertNotNull,
 	Category,
-	DateProvider,
 	getFirstOrThrow,
 	groupBy,
 	groupByAndMap,
@@ -42,20 +44,22 @@ import {
 	syncMetrics,
 	typedEntries,
 	typedValues,
-} from "../../platform-kit/utils"
+} from "@tutao/utils"
 import { TokenOrNestedTokens } from "cborg/interface"
 import { OfflineStorageMigrator } from "./OfflineStorageMigrator.js"
 import { CustomCacheHandlerMap } from "./CustomCacheHandler.js"
-import { OutOfSyncError } from "../../platform-kit/app-env/OutOfSyncError.js"
+import { isAdminClient, isBrowser, isDesktop, isTest, OutOfSyncError } from "@tutao/app-env"
 import { sql, SqlFragment } from "./Sql.js"
-import { ModelMapper, TypeModelResolver } from "../../platform-kit/instance-pipeline"
-import { isAdminClient, isBrowser, isDesktop, isTest } from "../../platform-kit/app-env"
+import { DecryptedParsedInstance, ModelMapper, TypeModelResolver } from "@tutao/instance-pipeline"
 import { CacheStorage, LastUpdateTime } from "./CacheStorage"
 import { FormattedQuery, TaggedSqlValue } from "./Types"
 import { tagSqlValue, untagSqlObject, untagSqlValue } from "./SqlValue"
 import type { SqlValue } from "./Types.ts"
 import { SqlCipherFacade } from "@tutao/native-bridge/generatedIpc/types"
-import { OfflineStorageInitArgs } from "../../platform-kit/base/facades/CacheStorageLateInitializer"
+import { OfflineStorageArgs } from "../../platform-kit/base/facades/CacheStorageLateInitializer"
+import { OfflineEntity, OfflineMapper } from "../../platform-kit/instance-pipeline/OfflineMapper"
+
+import { CacheSyncStatus } from "../../platform-kit/instance-pipeline/utils/EntityUpdateUtils"
 
 /**
  * this is the value of SQLITE_MAX_VARIABLE_NUMBER in sqlite3.c
@@ -72,7 +76,7 @@ type StorableInstance = {
 	encodedElementId: Base64Ext
 	ownerGroup: Id
 	serializedInstance: Uint8Array
-	instance: ServerModelParsedInstance
+	instance: DecryptedParsedInstance
 }
 
 const tableNameByTypeId: Map<string, string> = new Map([
@@ -194,17 +198,15 @@ export interface OfflineStorageTable {
 export class OfflineStorage implements CacheStorage {
 	private userId: Id | null = null
 	private databaseKey: Uint8Array | null = null
-	private timeRangeDate: Date | null = null
 	private readonly allTables: Record<string, OfflineStorageTable>
 
 	constructor(
 		private readonly sqlCipherFacade: SqlCipherFacade,
 		private readonly interWindowEventSender: LocalUserDataInvalidator,
-		private readonly dateProvider: DateProvider,
 		private readonly migrator: OfflineStorageMigrator,
-		private readonly cleaner: OfflineStorageCleaner,
 		private readonly modelMapper: ModelMapper,
 		private readonly typeModelResolver: TypeModelResolver,
+		private readonly offlineMapper: OfflineMapper,
 		private readonly customCacheHandler: CustomCacheHandlerMap,
 		additionalTables: Record<string, OfflineStorageTable>,
 	) {
@@ -216,7 +218,7 @@ export class OfflineStorage implements CacheStorage {
 		return this.userId != null
 	}
 
-	async getWholeListParsed(typeRef: TypeRef<unknown>, listId: string): Promise<ServerModelParsedInstance[]> {
+	async getWholeListParsed(typeRef: TypeRef<unknown>, listId: string): Promise<DecryptedParsedInstance[]> {
 		const { query, params } = sql`SELECT entity
 									  FROM list_entities
 									  WHERE type = ${getTypeString(typeRef)}
@@ -224,29 +226,28 @@ export class OfflineStorage implements CacheStorage {
 		const items = (await this.sqlCipherFacade.all(query, params)) ?? []
 
 		const instanceBytes = items.map((row) => row.entity.value as Uint8Array)
-		return await this.deserializeList(instanceBytes)
+		return await this.deserializeList(instanceBytes, typeRef)
 	}
 
-	async get<T extends Entity>(typeRef: TypeRef<T>, listId: string | null, id: string): Promise<T | null> {
+	async get<T extends PersistentEntity>(typeRef: TypeRef<T>, listId: string | null, id: string): Promise<T | null> {
 		const parsedInstance = await this.getParsed(typeRef, listId, id)
 		if (parsedInstance == null) {
 			return null
 		}
-		return await this.modelMapper.mapToInstance<T>(typeRef, parsedInstance)
+		return await this.modelMapper.mapToInstance<T>(parsedInstance)
 	}
 
 	async provideMultiple<T extends ListElementEntity>(typeRef: TypeRef<T>, listId: string, elementIds: string[]): Promise<T[]> {
 		const parsedInstances = await this.provideMultipleParsed(typeRef, listId, elementIds)
-		return await this.modelMapper.mapToInstances(typeRef, parsedInstances)
+		return await this.modelMapper.mapToInstances(parsedInstances)
 	}
 
 	/**
 	 * @return {boolean} whether the database was newly created or not
 	 */
-	async init({ userId, databaseKey, timeRangeDate, forceNewDatabase }: OfflineStorageInitArgs): Promise<boolean> {
+	async init({ userId, databaseKey, forceNewDatabase }: OfflineStorageArgs): Promise<boolean> {
 		this.userId = userId
 		this.databaseKey = databaseKey
-		this.timeRangeDate = timeRangeDate
 		if (forceNewDatabase) {
 			if (isDesktop()) {
 				await this.interWindowEventSender.localUserDataInvalidated(userId)
@@ -289,22 +290,17 @@ export class OfflineStorage implements CacheStorage {
 	async deinit() {
 		this.userId = null
 		this.databaseKey = null
-		this.timeRangeDate = null
 		await this.sqlCipherFacade.closeDb()
 	}
 
-	async deleteIfExists<T extends SomeEntity>(
-		typeRef: TypeRef<T>,
-		listId: T extends ListElementEntity | BlobElementEntity ? Id : null,
-		elementId: Id,
-	): Promise<void> {
-		const fullId: T["_id"] = listId == null ? elementId : [listId, elementId]
-		await this.deleteByIds(typeRef, [fullId])
+	async deleteIfExists<T extends PersistentEntity>(typeRef: TypeRef<T>, listId: Nullable<Id>, elementId: Id): Promise<void> {
+		const fullId: AnyEntityId = listId == null ? idToElementId(elementId) : [listId, elementId]
+		await this.deleteMultiple(typeRef, [fullId])
 	}
 
-	async deleteAllOfType(typeRef: TypeRef<SomeEntity>): Promise<void> {
+	async deleteAllOfType(typeRef: TypeRef<PersistentEntity>): Promise<void> {
 		const type = getTypeString(typeRef)
-		const typeModel = await this.typeModelResolver.resolveClientTypeReference(typeRef)
+		const typeModel = await this.typeModelResolver.resolveServerTypeReference(typeRef)
 		let formattedQuery
 		switch (typeModel.type) {
 			case TypeId.Element:
@@ -329,13 +325,13 @@ export class OfflineStorage implements CacheStorage {
 		const taggedRows = await this.sqlCipherFacade.all(formattedQuery.query, formattedQuery.params)
 		const rows = taggedRows.map(untagSqlObject) as { listId?: Id; elementId: Id }[]
 		const ids = rows.map((row) => collapseId(row.listId ?? null, localToServerIdEncoding(typeModel, row.elementId)))
-		await this.deleteByIds(typeRef, ids)
+		await this.deleteMultiple(typeRef, ids)
 	}
 
 	/**
 	 * Remove all ranges (and only ranges, without associated data) for the specified {@param typeRef}.
 	 */
-	async deleteAllRangesOfType(typeRef: TypeRef<SomeEntity>): Promise<void> {
+	async deleteAllRangesOfType(typeRef: TypeRef<PersistentEntity>): Promise<void> {
 		const type = getTypeString(typeRef)
 		await this.deleteAllRangesForType(type)
 	}
@@ -347,13 +343,13 @@ export class OfflineStorage implements CacheStorage {
 		await this.sqlCipherFacade.run(query, params)
 	}
 
-	async getParsed(typeRef: TypeRef<unknown>, listId: Id | null, id: Id): Promise<ServerModelParsedInstance | null> {
+	async getParsed(typeRef: TypeRef<any>, listId: Id | null, id: Id): Promise<DecryptedParsedInstance | null> {
 		const tm = syncMetrics?.beginMeasurement(Category.GetDb)
 		const type = getTypeString(typeRef)
-		const typeModel = await this.typeModelResolver.resolveClientTypeReference(typeRef)
-		const encodedElementId = serverToLocalIdEncoding(typeModel, id)
+		const serverTypeModel = await this.typeModelResolver.resolveServerTypeReference(typeRef)
+		const encodedElementId = serverToLocalIdEncoding(serverTypeModel, id)
 		let formattedQuery
-		switch (typeModel.type) {
+		switch (serverTypeModel.type) {
 			case TypeId.Element:
 				formattedQuery = sql`SELECT entity
 									 from element_entities
@@ -378,16 +374,16 @@ export class OfflineStorage implements CacheStorage {
 				throw new Error("must be a persistent type")
 		}
 		const dbResult = await this.sqlCipherFacade.get(formattedQuery.query, formattedQuery.params)
-		const result = dbResult?.entity ? await this.deserialize(dbResult.entity.value as Uint8Array) : null
+		const result = dbResult?.entity ? await this.deserialize(dbResult.entity.value as Uint8Array, typeRef) : null
 		tm?.endMeasurement()
 		return result
 	}
 
-	async provideMultipleParsed<T extends ListElementEntity>(typeRef: TypeRef<T>, listId: Id, elementIds: Id[]): Promise<Array<ServerModelParsedInstance>> {
+	async provideMultipleParsed<T extends ListElementEntity>(typeRef: TypeRef<T>, listId: Id, elementIds: Id[]): Promise<Array<DecryptedParsedInstance>> {
 		const tm = syncMetrics?.beginMeasurement(Category.ProvideMultipleDb)
 
 		if (elementIds.length === 0) return []
-		const typeModel = await this.typeModelResolver.resolveClientTypeReference(typeRef)
+		const typeModel = await this.typeModelResolver.resolveServerTypeReference(typeRef)
 		const encodedElementIds = elementIds.map((elementId) => serverToLocalIdEncoding(typeModel, elementId))
 
 		const type = getTypeString(typeRef)
@@ -414,14 +410,17 @@ export class OfflineStorage implements CacheStorage {
 			}
 		})
 
-		const result = await this.deserializeList(serializedList.map((r) => r.entity.value as Uint8Array))
+		const result = await this.deserializeList(
+			serializedList.map((r) => r.entity.value as Uint8Array),
+			typeRef,
+		)
 		tm?.endMeasurement()
 		return result
 	}
 
 	async getIdsInRange<T extends ListElementEntity>(typeRef: TypeRef<T>, listId: Id): Promise<Array<Id>> {
 		const type = getTypeString(typeRef)
-		const typeModel = await this.typeModelResolver.resolveClientTypeReference(typeRef)
+		const typeModel = await this.typeModelResolver.resolveServerTypeReference(typeRef)
 		const range = await this.getRange(typeRef, listId)
 		if (range == null) {
 			throw new Error(`no range exists for ${type} and list ${listId}`)
@@ -443,7 +442,7 @@ export class OfflineStorage implements CacheStorage {
 	async getRangeForList<T extends ListElementEntity>(typeRef: TypeRef<T>, listId: Id): Promise<Range | null> {
 		let range = await this.getRange(typeRef, listId)
 		if (range == null) return range
-		const typeModel = await this.typeModelResolver.resolveClientTypeReference(typeRef)
+		const typeModel = await this.typeModelResolver.resolveServerTypeReference(typeRef)
 		return {
 			lower: localToServerIdEncoding(typeModel, range.lower),
 			upper: localToServerIdEncoding(typeModel, range.upper),
@@ -451,7 +450,7 @@ export class OfflineStorage implements CacheStorage {
 	}
 
 	async isElementIdInCacheRange<T extends ListElementEntity>(typeRef: TypeRef<T>, listId: Id, elementId: Id): Promise<boolean> {
-		const typeModel = await this.typeModelResolver.resolveClientTypeReference(typeRef)
+		const typeModel = await this.typeModelResolver.resolveServerTypeReference(typeRef)
 		const encodedElementId = serverToLocalIdEncoding(typeModel, elementId)
 
 		const range = await this.getRange(typeRef, listId)
@@ -464,9 +463,9 @@ export class OfflineStorage implements CacheStorage {
 		start: Id,
 		count: number,
 		reverse: boolean,
-	): Promise<ServerModelParsedInstance[]> {
+	): Promise<DecryptedParsedInstance[]> {
 		const tm = syncMetrics?.beginMeasurement(Category.ProvideRangeDb)
-		const typeModel = await this.typeModelResolver.resolveClientTypeReference(typeRef)
+		const typeModel = await this.typeModelResolver.resolveServerTypeReference(typeRef)
 		const encodedStartId = serverToLocalIdEncoding(typeModel, start)
 		const type = getTypeString(typeRef)
 		let formattedQuery
@@ -487,23 +486,26 @@ export class OfflineStorage implements CacheStorage {
 		}
 		const { query, params } = formattedQuery
 		const serializedList: ReadonlyArray<Record<string, TaggedSqlValue>> = await this.sqlCipherFacade.all(query, params)
-		const result = await this.deserializeList(serializedList.map((r) => r.entity.value as Uint8Array))
+		const result = await this.deserializeList(
+			serializedList.map((r) => r.entity.value as Uint8Array),
+			typeRef,
+		)
 		tm?.endMeasurement()
 		return result
 	}
 
 	async provideFromRange<T extends ListElementEntity>(typeRef: TypeRef<T>, listId: Id, start: Id, count: number, reverse: boolean): Promise<Array<T>> {
 		const parsed = await this.provideFromRangeParsed(typeRef, listId, start, count, reverse)
-		return await this.modelMapper.mapToInstances(typeRef, parsed)
+		return await this.modelMapper.mapToInstances(parsed)
 	}
 
-	async put(typeRef: TypeRef<SomeEntity>, instance: ServerModelParsedInstance): Promise<void> {
+	async put(typeRef: TypeRef<PersistentEntity>, instance: DecryptedParsedInstance): Promise<void> {
 		const tm = syncMetrics?.beginMeasurement(Category.PutDb)
 		await this.putMultiple(typeRef, [instance])
 		tm?.endMeasurement()
 	}
 
-	async putMultiple(typeRef: TypeRef<SomeEntity>, instances: ServerModelParsedInstance[]): Promise<void> {
+	async putMultiple(typeRef: TypeRef<PersistentEntity>, instances: DecryptedParsedInstance[]): Promise<void> {
 		const tm = instances.length > 1 ? syncMetrics?.beginMeasurement(Category.PutMultipleDb) : null
 		const handler = this.getCustomCacheHandlerMap().get(typeRef)
 		const typeModel = await this.typeModelResolver.resolveServerTypeReference(typeRef)
@@ -525,8 +527,8 @@ export class OfflineStorage implements CacheStorage {
 		for (const [listId, storableInstances] of groupedByListId) {
 			for (const storable of storableInstances) {
 				if (handler?.onBeforeCacheUpdate) {
-					const typedInstance = await this.modelMapper.mapToInstance(typeRef, storable.instance)
-					await handler.onBeforeCacheUpdate(typedInstance as SomeEntity)
+					const typedInstance = await this.modelMapper.mapToInstance<PersistentEntity>(storable.instance)
+					await handler.onBeforeCacheUpdate(typedInstance)
 				}
 			}
 
@@ -589,16 +591,17 @@ export class OfflineStorage implements CacheStorage {
 	}
 
 	private async toStorables(
-		instances: Array<ServerModelParsedInstance>,
-		typeModel: TypeModel,
+		instances: Array<DecryptedParsedInstance>,
+		typeModel: ServerTypeModel,
 		typeString: string,
 		table: string,
 	): Promise<Array<StorableInstance>> {
 		const storables = await Promise.all(
 			instances.map(async (instance): Promise<Nullable<StorableInstance>> => {
-				const { listId, elementId } = expandId(AttributeModel.getAttribute<IdTuple | Id>(instance, "_id", typeModel))
-				const ownerGroup = AttributeModel.getAttribute<Id>(instance, "_ownerGroup", typeModel)
-				const serializedInstance = await this.serialize(instance)
+				const { listId, elementId } = expandId(instance.getAttributeByName("_id").asAnyEntityId())
+				const ownerGroup = instance.getAttributeByName("_ownerGroup").asId()
+
+				const serializedInstance = this.serialize(instance)
 				return {
 					typeString,
 					table,
@@ -661,7 +664,7 @@ export class OfflineStorage implements CacheStorage {
 	}
 
 	async setLowerRangeForList<T extends ListElementEntity>(typeRef: TypeRef<T>, listId: Id, lowerId: Id): Promise<void> {
-		let typeModel = await this.typeModelResolver.resolveClientTypeReference(typeRef)
+		let typeModel = await this.typeModelResolver.resolveServerTypeReference(typeRef)
 		lowerId = serverToLocalIdEncoding(typeModel, lowerId)
 		const type = getTypeString(typeRef)
 		const { query, params } = sql`UPDATE ranges
@@ -672,7 +675,7 @@ export class OfflineStorage implements CacheStorage {
 	}
 
 	async setUpperRangeForList<T extends ListElementEntity>(typeRef: TypeRef<T>, listId: Id, upperId: Id): Promise<void> {
-		upperId = serverToLocalIdEncoding(await this.typeModelResolver.resolveClientTypeReference(typeRef), upperId)
+		upperId = serverToLocalIdEncoding(await this.typeModelResolver.resolveServerTypeReference(typeRef), upperId)
 		const type = getTypeString(typeRef)
 		const { query, params } = sql`UPDATE ranges
 									  SET upper = ${upperId}
@@ -682,7 +685,7 @@ export class OfflineStorage implements CacheStorage {
 	}
 
 	async setNewRangeForList<T extends ListElementEntity>(typeRef: TypeRef<T>, listId: Id, lower: Id, upper: Id): Promise<void> {
-		const typeModel = await this.typeModelResolver.resolveClientTypeReference(typeRef)
+		const typeModel = await this.typeModelResolver.resolveServerTypeReference(typeRef)
 		lower = serverToLocalIdEncoding(typeModel, lower)
 		upper = serverToLocalIdEncoding(typeModel, upper)
 
@@ -737,13 +740,13 @@ export class OfflineStorage implements CacheStorage {
 		const items = (await this.sqlCipherFacade.all(query, params)) ?? []
 
 		const instanceBytes = items.map((row) => row.entity.value as Uint8Array)
-		const parsedInstances = await this.deserializeList(instanceBytes)
-		return await this.modelMapper.mapToInstances(typeRef, parsedInstances)
+		const parsedInstances = await this.deserializeList(instanceBytes, typeRef)
+		return await this.modelMapper.mapToInstances(parsedInstances)
 	}
 
 	async getWholeList<T extends ListElementEntity>(typeRef: TypeRef<T>, listId: Id): Promise<Array<T>> {
 		const parsedInstances = await this.getWholeListParsed(typeRef, listId)
-		return await this.modelMapper.mapToInstances(typeRef, parsedInstances)
+		return await this.modelMapper.mapToInstances(parsedInstances)
 	}
 
 	async dumpMetadata(): Promise<Partial<OfflineDbMeta>> {
@@ -785,7 +788,7 @@ export class OfflineStorage implements CacheStorage {
 		const groupedByType = groupBy(rows, (row) => row.type)
 		for (const [type, rows] of groupedByType) {
 			const typeRef = parseTypeString(type) as TypeRef<BlobElementEntity>
-			await this.deleteByIds(
+			await this.deleteMultiple(
 				typeRef,
 				rows.map((row) => [row.listId, row.elementId]),
 			)
@@ -821,7 +824,7 @@ export class OfflineStorage implements CacheStorage {
 						   WHERE type = ${type}
 							 AND listId IN ${paramList(c)}`,
 			)
-			await this.deleteByIds(
+			await this.deleteMultiple(
 				typeRef,
 				rows.map((row) => [row.listId, row.elementId]),
 			)
@@ -837,11 +840,11 @@ export class OfflineStorage implements CacheStorage {
 		const groupedByType = groupByAndMap(
 			rows,
 			(row) => row.type,
-			(row) => row.elementId,
+			(row) => idToElementId(row.elementId),
 		)
 		for (const [type, ids] of groupedByType) {
 			const typeRef = parseTypeString(type) as TypeRef<ElementEntity>
-			await this.deleteByIds(typeRef, ids)
+			await this.deleteMultiple(typeRef, ids)
 		}
 	}
 
@@ -869,16 +872,6 @@ export class OfflineStorage implements CacheStorage {
 		return encoded && cborg.decode(encoded.value.value as Uint8Array)
 	}
 
-	/**
-	 * Clear out unneeded data from the offline database (i.e. old data).
-	 * This will be called after login (CachePostLoginActions.ts) to ensure fast login time.
-	 * @param timeRangeDate the maximum age that mails should be to be kept in the database
-	 * @param userId id of the current user. default, last stored userId
-	 */
-	async clearExcludedData(timeRangeDate: Date | null = this.timeRangeDate, userId: Id = this.getUserId()): Promise<void> {
-		await this.cleaner.cleanOfflineDb(this, timeRangeDate, userId, this.dateProvider.now())
-	}
-
 	private async createTables() {
 		for (const { definition } of typedValues(this.allTables)) {
 			await this.sqlCipherFacade.run(definition, [])
@@ -900,13 +893,13 @@ export class OfflineStorage implements CacheStorage {
 	 * A neat helper which can delete types in any lists as long as they belong to the same type.
 	 * Will invoke {@link CustomCacheHandler#onBeforeCacheDeletion}.
 	 */
-	private async deleteByIds<T extends SomeEntity>(typeRef: TypeRef<T>, ids: T["_id"][]) {
+	async deleteMultiple(typeRef: TypeRef<PersistentEntity>, ids: Array<AnyEntityId>) {
 		if (isEmpty(ids)) {
 			return
 		}
 
 		const type = getTypeString(typeRef)
-		const typeModel = await this.typeModelResolver.resolveClientTypeReference(typeRef)
+		const typeModel = await this.typeModelResolver.resolveServerTypeReference(typeRef)
 
 		const handler = this.getCustomCacheHandlerMap().get(typeRef)
 		if (handler && handler.onBeforeCacheDeletion) {
@@ -918,7 +911,7 @@ export class OfflineStorage implements CacheStorage {
 			case TypeId.Element:
 				await this.runChunked(
 					MAX_SAFE_SQL_VARS - 1,
-					(ids as Id[]).map((id) => serverToLocalIdEncoding(typeModel, id)),
+					ids.map((id) => serverToLocalIdEncoding(typeModel, elementIdToId(id))),
 					(c) => sql`DELETE
 							   FROM element_entities
 							   WHERE type = ${type}
@@ -927,7 +920,7 @@ export class OfflineStorage implements CacheStorage {
 				break
 			case TypeId.ListElement:
 				{
-					const byListId = groupByAndMap(ids as IdTuple[], listIdPart, (id) => serverToLocalIdEncoding(typeModel, elementIdPart(id)))
+					const byListId = groupByAndMap(ids, listIdPart, (id) => serverToLocalIdEncoding(typeModel, elementIdPart(id as IdTuple)))
 					for (const [listId, elementIds] of byListId) {
 						await this.runChunked(
 							MAX_SAFE_SQL_VARS - 2,
@@ -962,19 +955,19 @@ export class OfflineStorage implements CacheStorage {
 		}
 	}
 
-	async deleteIn<T extends SomeEntity>(
-		typeRef: TypeRef<T>,
-		listId: T extends ListElementEntity | BlobElementEntity ? Id : null,
-		elementIds: Id[],
-	): Promise<void> {
+	async deleteIn<T extends PersistentEntity>(typeRef: TypeRef<T>, listId: Nullable<Id>, elementIds: Id[]): Promise<void> {
 		if (isEmpty(elementIds)) return
 
-		const fullIds: T["_id"][] = listId == null ? elementIds : elementIds.map((id) => [listId, id])
-		await this.deleteByIds(typeRef, fullIds)
+		const fullIds: Array<AnyEntityId> = listId == null ? elementIds.map(idToElementId) : elementIds.map((id) => [listId, id])
+		await this.deleteMultiple(typeRef, fullIds)
+	}
+
+	async setCacheSyncStatus(cacheSyncStatus: CacheSyncStatus): Promise<void> {
+		// no-op
 	}
 
 	async updateRangeForList<T extends ListElementEntity>(typeRef: TypeRef<T>, listId: Id, rawCutoffId: Id): Promise<void> {
-		const typeModel = await this.typeModelResolver.resolveClientTypeReference(typeRef)
+		const typeModel = await this.typeModelResolver.resolveServerTypeReference(typeRef)
 		const isCustomId = isCustomIdType(typeModel)
 		const encodedCutoffId = serverToLocalIdEncoding(typeModel, rawCutoffId)
 
@@ -1014,11 +1007,12 @@ export class OfflineStorage implements CacheStorage {
 		}
 	}
 
-	private async serialize(parsedInstance: ServerModelParsedInstance): Promise<Uint8Array> {
+	private serialize(instance: DecryptedParsedInstance): Uint8Array {
+		const offlineEntity = this.offlineMapper.toOfflineEntity(instance)
 		try {
-			return cborg.encode(parsedInstance, { typeEncoders: customTypeEncoders })
+			return cborg.encode(offlineEntity.getStorableRecord(), { typeEncoders: customTypeEncoders })
 		} catch (e) {
-			console.log("[OfflineStorage] failed to encode entity with attribute ids: " + Object.keys(parsedInstance))
+			console.log("[OfflineStorage] failed to encode entity with attribute ids: " + Object.keys(offlineEntity))
 			throw e
 		}
 	}
@@ -1026,20 +1020,23 @@ export class OfflineStorage implements CacheStorage {
 	/**
 	 * Convert the type from CBOR representation to the runtime type
 	 */
-	private async deserialize(loaded: Uint8Array): Promise<ServerModelParsedInstance | null> {
+	private async deserialize<T extends Entity>(loaded: Uint8Array, typeRef: TypeRef<T>): Promise<DecryptedParsedInstance | null> {
+		const serverTypeModel = await this.typeModelResolver.resolveServerTypeReference(typeRef)
 		try {
-			return cborg.decode(loaded, { tags: customTypeDecoders })
+			const savedEntity = cborg.decode(loaded, { tags: customTypeDecoders }) as Record<AttributeName, unknown>
+			const offlineEntity = OfflineEntity.readingFromStorage(serverTypeModel, savedEntity)
+			return this.offlineMapper.toParsedEntity(offlineEntity)
 		} catch (e) {
 			console.log(`Error with CBOR decode. Trying to decode (of type: ${typeof loaded}): ${loaded}`)
 			return null
 		}
 	}
 
-	private async deserializeList(loaded: Array<Uint8Array>): Promise<Array<ServerModelParsedInstance>> {
+	private async deserializeList(loaded: Array<Uint8Array>, typeRef: TypeRef<any>): Promise<Array<DecryptedParsedInstance>> {
 		// manually reimplementing promiseMap to make sure we don't hit the scheduler since there's nothing actually async happening
-		const result: Array<ServerModelParsedInstance> = []
+		const result: Array<DecryptedParsedInstance> = []
 		for (const entity of loaded) {
-			const deserialized = await this.deserialize(entity)
+			const deserialized = await this.deserialize(entity, typeRef)
 			if (deserialized != null) {
 				result.push(deserialized)
 			}
@@ -1105,13 +1102,6 @@ function firstIdBigger(...args: [string, "elementId"] | ["elementId", string]): 
 		l = "?"
 	}
 	return new SqlFragment(`(CASE WHEN length(${l}) > length(${r}) THEN 1 WHEN length(${l}) < length(${r}) THEN 0 ELSE ${l} > ${r} END)`, [v, v, v])
-}
-
-export interface OfflineStorageCleaner {
-	/**
-	 * Delete instances from db that are older than timeRangeDays.
-	 */
-	cleanOfflineDb(offlineStorage: OfflineStorage, timeRangeDate: Date | null, userId: Id, now: number): Promise<void>
 }
 
 export async function tableExists(sqlCipherFacade: SqlCipherFacade, table: string): Promise<boolean> {

@@ -1,11 +1,6 @@
 import { ApprovalStatus, assertMainOrNode, daysToMillis, minutesToMillis, ProgrammingError } from "@tutao/app-env"
-import { elementIdPart, getElementId, isSameId, OperationType } from "@tutao/meta"
-import {
-	EntityEventsListener,
-	EntityUpdateData,
-	isUpdateForTypeRef,
-	OnEntityUpdateReceivedPriority,
-} from "../../../platform-kit/instance-pipeline/utils/EntityUpdateUtils"
+import { elementIdPart, elementIdToId, getElementId, idToElementId, isSameId, isSameSingleId, OperationType } from "@tutao/meta"
+import { EntityUpdatesListener, EntityUpdateData, isUpdateForTypeRef, ListenerPriority } from "../../../platform-kit/instance-pipeline/utils/EntityUpdateUtils"
 import {
 	ContactTypeRef,
 	ConversationEntry,
@@ -47,6 +42,7 @@ import {
 	getFromMap,
 	isMailAddress,
 	LazyLoaded,
+	mapAndFilterNull,
 	neverNull,
 	noOp,
 	ofClass,
@@ -171,6 +167,9 @@ export class SendMailModel {
 	private attachments: Array<Attachment> = []
 	// We want to keep track of these for use in the mail editor, to allowing undo of deleting images
 	private removedInlineImages: Array<Attachment> = []
+	// Non-inline attachments in mails received from other providers (like Gmail) may include cid.
+	// These are excluded when removing inline attachments that are unreferenced in the mail body
+	private nonInlineAttachmentsCids: Set<string> = new Set<string>()
 
 	private replyTos: Array<ResolvableRecipient> = []
 
@@ -225,16 +224,15 @@ export class SendMailModel {
 		this.selectedNotificationLanguage = getAvailableLanguageCode(userProps.notificationMailLanguage || lang.code)
 		this.updateAvailableNotificationTemplateLanguages()
 
-		this.eventController.addEntityListener(this.entityEventReceived)
+		this.eventController.addEntityUpdatesListener(this.entityUpdatesListener)
 	}
 
-	private readonly entityEventReceived: EntityEventsListener = {
+	private readonly entityUpdatesListener: EntityUpdatesListener = {
+		id: "SendMailModel",
 		onEntityUpdatesReceived: async (updates: ReadonlyArray<EntityUpdateData>) => {
-			for (const update of updates) {
-				await this.handleEntityEvent(update)
-			}
+			await this.onEntityUpdatesReceived(updates)
 		},
-		priority: OnEntityUpdateReceivedPriority.NORMAL,
+		priority: ListenerPriority.NORMAL,
 	}
 
 	/**
@@ -384,7 +382,7 @@ export class SendMailModel {
 				cc,
 				bcc,
 				confidential: isConfidential,
-				mailGroupId: this.mailboxDetails.mailGroup._id,
+				mailGroupId: elementIdToId(this.mailboxDetails.mailGroup._id),
 				senderAddress: this.senderAddress,
 				locallySavedTime: Date.now(),
 				editedTime: this.mailSavedAt,
@@ -632,6 +630,11 @@ export class SendMailModel {
 		this.attachments = []
 
 		if (attachments) {
+			this.nonInlineAttachmentsCids = new Set(
+				mapAndFilterNull(attachments, (attachment) => {
+					return attachment.cid == null || this.loadedInlineImages.has(attachment.cid) ? null : attachment.cid
+				}),
+			)
 			this.attachFiles(attachments)
 		}
 
@@ -795,7 +798,7 @@ export class SendMailModel {
 	}
 
 	dispose() {
-		this.eventController.removeEntityListener(this.entityEventReceived)
+		this.eventController.removeEntityUpdatesListener(this.entityUpdatesListener)
 
 		revokeInlineImages(this.loadedInlineImages)
 	}
@@ -809,6 +812,10 @@ export class SendMailModel {
 
 	getRemovedInlineImages(): Array<Attachment> {
 		return this.removedInlineImages
+	}
+
+	getNonInlineAttachmentsCids(): Set<string> {
+		return this.nonInlineAttachmentsCids
 	}
 
 	/** @throws UserError in case files are too big to add */
@@ -1270,13 +1277,13 @@ export class SendMailModel {
 	private sendApprovalMail(body: string): Promise<unknown> {
 		const listId = "---------c--"
 		const m = createApprovalMail({
-			_id: [listId, stringToBase64UrlCustomId(this.senderAddress)],
-			_ownerGroup: this.user().user.userGroup.group,
 			text: `Subject: ${this.getSubject()}<br>${body}`,
 			date: null,
 			range: null,
 			customer: null,
 		})
+		m._id = [listId, stringToBase64UrlCustomId(this.senderAddress)]
+		m._ownerGroup = this.user().user.userGroup.group
 		return this.entity.setup(listId, m).catch(ofClass(NotAuthorizedError, (e) => console.log("not authorized for approval message")))
 	}
 
@@ -1365,69 +1372,72 @@ export class SendMailModel {
 		)
 	}
 
-	async handleEntityEvent(update: EntityUpdateData): Promise<void> {
-		const { operation, instanceId, instanceListId } = update
-		let contactId: IdTuple = [neverNull(instanceListId), instanceId]
-		let changed = false
+	async onEntityUpdatesReceived(updates: ReadonlyArray<EntityUpdateData>): Promise<void> {
+		for (const update of updates) {
+			const { operation, instanceId, instanceListId } = update
+			let contactId: IdTuple = [neverNull(instanceListId), instanceId]
+			let changed = false
 
-		if (isUpdateForTypeRef(ContactTypeRef, update)) {
-			await this.recipientsResolved.getAsync()
+			if (isUpdateForTypeRef(ContactTypeRef, update)) {
+				await this.recipientsResolved.getAsync()
 
-			if (operation === OperationType.UPDATE) {
-				const contact = await this.entity.load(ContactTypeRef, contactId)
+				if (operation === OperationType.UPDATE) {
+					const contact = await this.entity.load(ContactTypeRef, contactId)
 
-				for (const fieldType of typedValues(RecipientField)) {
-					const matching = this.getRecipientList(fieldType).filter((recipient) => recipient.contact && isSameId(recipient.contact._id, contact._id))
-					for (const recipient of matching) {
-						// if the mail address no longer exists on the contact then delete the recipient
-						if (!contact.mailAddresses.some((ma) => cleanMatch(ma.address, recipient.address))) {
-							changed = changed || this.removeRecipient(recipient, fieldType, true)
-						} else {
-							// else just modify the recipient
-							recipient.setName(getContactDisplayName(contact))
-							recipient.setContact(contact)
-							changed = true
+					for (const fieldType of typedValues(RecipientField)) {
+						const matching = this.getRecipientList(fieldType).filter(
+							(recipient) => recipient.contact && isSameId(recipient.contact._id, contact._id),
+						)
+						for (const recipient of matching) {
+							// if the mail address no longer exists on the contact then delete the recipient
+							if (!contact.mailAddresses.some((ma) => cleanMatch(ma.address, recipient.address))) {
+								changed = changed || this.removeRecipient(recipient, fieldType, true)
+							} else {
+								// else just modify the recipient
+								recipient.setName(getContactDisplayName(contact))
+								recipient.setContact(contact)
+								changed = true
+							}
+						}
+					}
+				} else if (operation === OperationType.DELETE) {
+					for (const fieldType of typedValues(RecipientField)) {
+						const recipients = this.getRecipientList(fieldType)
+
+						const toDelete = recipients.filter((recipient) => (recipient.contact && isSameId(recipient.contact._id, contactId)) || false)
+
+						for (const r of toDelete) {
+							changed = changed || this.removeRecipient(r, fieldType, true)
 						}
 					}
 				}
-			} else if (operation === OperationType.DELETE) {
-				for (const fieldType of typedValues(RecipientField)) {
-					const recipients = this.getRecipientList(fieldType)
-
-					const toDelete = recipients.filter((recipient) => (recipient.contact && isSameId(recipient.contact._id, contactId)) || false)
-
-					for (const r of toDelete) {
-						changed = changed || this.removeRecipient(r, fieldType, true)
+			} else if (isUpdateForTypeRef(CustomerPropertiesTypeRef, update)) {
+				await this.updateAvailableNotificationTemplateLanguages()
+			} else if (isUpdateForTypeRef(MailboxPropertiesTypeRef, update) && operation === OperationType.UPDATE) {
+				this.mailboxProperties = await this.entity.load(MailboxPropertiesTypeRef, idToElementId(update.instanceId))
+			} else if (isUpdateForTypeRef(MailDetailsDraftTypeRef, update) && operation === OperationType.UPDATE && this.draft != null) {
+				const mailDetailsDraftId = assertNotNull(this.draft.mailDetailsDraft)
+				if (isSameSingleId(update.instanceId, elementIdPart(mailDetailsDraftId))) {
+					if (this._draftSavedRecently) {
+						this._draftSavedRecently = false
+					} else {
+						this.mailRemotelyUpdatedAt = this.dateProvider.now()
+						if (this.mailRemotelyUpdatedAt < this.mailSavedAt) {
+							this.mailRemotelyUpdatedAt = this.mailSavedAt + 1
+						}
+						await this.makeLocalAutosave()
+					}
+				}
+			} else if (isUpdateForTypeRef(GroupInfoTypeRef, update) && operation === OperationType.UPDATE) {
+				if (isSameSingleId(getElementId(this.user().userGroupInfo), update.instanceId)) {
+					const groupInfo = await this.entity.load(GroupInfoTypeRef, [assertNotNull(update.instanceListId), update.instanceId])
+					if (!isAliasEnabledForGroupInfo(groupInfo, this.senderAddress)) {
+						this.senderAddress = this.getDefaultSender()
 					}
 				}
 			}
-		} else if (isUpdateForTypeRef(CustomerPropertiesTypeRef, update)) {
-			await this.updateAvailableNotificationTemplateLanguages()
-		} else if (isUpdateForTypeRef(MailboxPropertiesTypeRef, update) && operation === OperationType.UPDATE) {
-			this.mailboxProperties = await this.entity.load(MailboxPropertiesTypeRef, update.instanceId)
-		} else if (isUpdateForTypeRef(MailDetailsDraftTypeRef, update) && operation === OperationType.UPDATE && this.draft != null) {
-			const mailDetailsDraftId = assertNotNull(this.draft.mailDetailsDraft)
-			if (isSameId(update.instanceId, elementIdPart(mailDetailsDraftId))) {
-				if (this._draftSavedRecently) {
-					this._draftSavedRecently = false
-				} else {
-					this.mailRemotelyUpdatedAt = this.dateProvider.now()
-					if (this.mailRemotelyUpdatedAt < this.mailSavedAt) {
-						this.mailRemotelyUpdatedAt = this.mailSavedAt + 1
-					}
-					await this.makeLocalAutosave()
-				}
-			}
-		} else if (isUpdateForTypeRef(GroupInfoTypeRef, update) && operation === OperationType.UPDATE) {
-			if (isSameId(getElementId(this.user().userGroupInfo), update.instanceId)) {
-				const groupInfo = await this.entity.load(GroupInfoTypeRef, [update.instanceListId, update.instanceId])
-				if (!isAliasEnabledForGroupInfo(groupInfo, this.senderAddress)) {
-					this.senderAddress = this.getDefaultSender()
-				}
-			}
+			this.markAsChangedIfNecessary(changed)
 		}
-		this.markAsChangedIfNecessary(changed)
-		return Promise.resolve()
 	}
 
 	setOnBeforeSendFunction(fun: () => unknown) {

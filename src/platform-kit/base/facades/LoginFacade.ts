@@ -8,13 +8,14 @@ import {
 	defer,
 	DeferredObject,
 	hexToUint8Array,
+	isNotNull,
 	lazyAsync,
 	neverNull,
 	ofClass,
 	uint8ArrayToBase64,
 	utf8Uint8ArrayToString,
 } from "@tutao/utils"
-import { AttributeModel, GENERATED_ID_BYTES_LENGTH, isSameId } from "../../meta"
+import { elementIdToId, GENERATED_ID_BYTES_LENGTH, idToElementId, isSameId } from "../../meta"
 import { assertWorkerOrNode, CancelledError, Const, DeactivationReason, ProgrammingError, RolloutType, SessionType } from "@tutao/app-env"
 import { RestClient } from "@tutao/rest-client"
 import { HttpMethod, MediaType } from "../../rest-client/types"
@@ -48,7 +49,7 @@ import { UserFacade } from "./UserFacade"
 import { EntropyFacade } from "./EntropyFacade.js"
 import { BlobAccessTokenFacade } from "../../network/BlobAccessTokenFacade.js"
 import { DatabaseKeyFactory } from "../base-crypto/DatabaseKeyFactory.js"
-import { ApplicationTypesFacade, InstancePipeline, LoggedInUserProvider, typeModelToRestPath } from "@tutao/instance-pipeline"
+import { ApplicationTypesFacade, InstancePipeline, LoggedInUserProvider } from "@tutao/instance-pipeline"
 import { KeyRotationFacade, KeyRotationRolloutAction } from "../base-crypto/KeyRotationFacade.js"
 import { RolloutFacade } from "./RolloutFacade"
 import { Argon2idFacade } from "../base-crypto/WasmArgon2idFacade"
@@ -78,7 +79,6 @@ import {
 import { EntityMigrator, EntityRestClient } from "../../network/EntityRestClient"
 import { Credentials, CredentialType } from "../../network/types"
 import { asKdfType, DEFAULT_KDF_TYPE, ExternalUserKeyDeriver, KdfType } from "../base-crypto/Constants"
-import { ServerModelUntypedInstance } from "../../meta/EntityTypes"
 import { TypeModelResolver } from "../../instance-pipeline/EntityFunctions"
 import {
 	ChangeKdfService,
@@ -102,7 +102,7 @@ import {
 	SessionExpiredError,
 } from "@tutao/rest-client/error"
 import { SessionTypeProvider } from "./SessionTypeProvider"
-import { CacheStorageLateInitializer } from "./CacheStorageLateInitializer"
+import { CacheStorageLateInitializer, EphemeralStorageArgs, OfflineStorageArgs } from "./CacheStorageLateInitializer"
 import { CacheManager } from "../base-crypto/persistence/CacheManager"
 import {
 	CacheMode,
@@ -110,6 +110,8 @@ import {
 	DEFAULT_EXTRA_SERVICE_PARAMS,
 	DEFAULT_REST_CLIENT_OPTIONS,
 } from "../../instance-pipeline/RestClientOptions"
+import { EntityUtils } from "../../instance-pipeline/EntityUtils"
+import { IncomingServerJson } from "../../instance-pipeline/TypeMapper"
 
 assertWorkerOrNode()
 
@@ -133,37 +135,37 @@ interface ResumeSessionResultData {
 	sessionId: IdTuple
 }
 
-export const enum ResumeSessionErrorReason {
+export const enum ResumeSessionState {
+	Success,
+	Failure,
 	OfflineNotAvailableForFree,
 }
 
 export type InitCacheOptions = {
 	userId: Id
 	databaseKey: Uint8Array | null
-	timeRangeDate: Date | null
 	forceNewDatabase: boolean
 }
 
-type ResumeSessionSuccess = {
-	type: "success"
-	data: ResumeSessionResultData
+export type ResumeSessionResult = {
+	state: ResumeSessionState
 	asyncResumeCompleted: Promise<void> | null
+	data: ResumeSessionResultData | null
 }
-type ResumeSessionFailure = {
-	type: "error"
-	reason: ResumeSessionErrorReason
-	asyncResumeCompleted: Promise<void> | null
-}
-type ResumeSessionResult = ResumeSessionSuccess | ResumeSessionFailure
 
-type AsyncLoginState =
-	| { state: "idle" }
-	| { state: "running" }
-	| {
-			state: "failed"
-			credentials: Credentials
-			cacheInfo: CacheInfo
-	  }
+export enum AsyncLoginStateOptions {
+	Idle,
+	Running,
+	Failed,
+}
+
+type AsyncLoginState = {
+	state: AsyncLoginStateOptions
+	failure?: {
+		credentials: Credentials
+		cacheInfo: CacheInfo
+	}
+}
 
 /**
  * All attributes that are required to derive the passphrase key.
@@ -205,7 +207,7 @@ export interface LoginListener {
 
 export class LoginFacade implements SessionTypeProvider {
 	/** On platforms with offline cache we do the actual login asynchronously and we can retry it. This is the state of such async login. */
-	asyncLoginState: AsyncLoginState = { state: "idle" }
+	asyncLoginState: AsyncLoginState = { state: AsyncLoginStateOptions.Idle }
 	/**
 	 * Used for cancelling second factor and to not mix different attempts
 	 */
@@ -304,7 +306,6 @@ export class LoginFacade implements SessionTypeProvider {
 			userId: sessionData.userId,
 			// don't create a persistent storage just yet if we're just storing credentials after signup
 			databaseKey: createSessionOnly ? null : databaseKey,
-			timeRangeDate: null,
 			forceNewDatabase,
 		})
 		const { user, userGroupInfo, accessToken } = await this.initSession(sessionData.userId, sessionData.accessToken, userPassphraseKey)
@@ -431,7 +432,6 @@ export class LoginFacade implements SessionTypeProvider {
 		const cacheInfo = await this.initCache({
 			userId,
 			databaseKey: null,
-			timeRangeDate: null,
 			forceNewDatabase: true,
 		})
 		const { user, userGroupInfo, accessToken } = await this.initSession(createSessionReturn.user, createSessionReturn.accessToken, userPassphraseKey)
@@ -508,20 +508,18 @@ export class LoginFacade implements SessionTypeProvider {
 	 * @param credentials the saved credentials to use
 	 * @param externalUserKeyDeriver information for deriving a key (if external user)
 	 * @param databaseKey key to unlock the local database (if enabled)
-	 * @param timeRangeDate the user configured time range for the offline database
 	 */
 	async resumeSession(
 		credentials: Credentials,
 		externalUserKeyDeriver: ExternalUserKeyDeriver | null,
 		databaseKey: Uint8Array | null,
-		timeRangeDate: Date | null,
 	): Promise<ResumeSessionResult> {
 		if (this.userFacade.getUser() != null) {
 			throw new ProgrammingError(
 				`Trying to resume the session for user ${credentials.userId} while already logged in for ${this.userFacade.getUser()?._id}`,
 			)
 		}
-		if (this.asyncLoginState.state !== "idle") {
+		if (this.asyncLoginState.state !== AsyncLoginStateOptions.Idle) {
 			throw new ProgrammingError(`Trying to resume the session for user ${credentials.userId} while the asyncLoginState is ${this.asyncLoginState.state}`)
 		}
 		this.userFacade.setAccessToken(credentials.accessToken)
@@ -529,7 +527,6 @@ export class LoginFacade implements SessionTypeProvider {
 		const cacheInfo = await this.initCache({
 			userId: credentials.userId,
 			databaseKey,
-			timeRangeDate,
 			forceNewDatabase: false,
 		})
 		const sessionId = this.getSessionId(credentials)
@@ -544,7 +541,7 @@ export class LoginFacade implements SessionTypeProvider {
 			// synchronous login in order to load all the necessary keys and such
 			// the next time they log in they will be able to do asynchronous login
 			if (cacheInfo?.isPersistent && !cacheInfo.isNewOfflineDb) {
-				const user = await this.entityClient.load(UserTypeRef, credentials.userId)
+				const user = await this.entityClient.load(UserTypeRef, idToElementId(credentials.userId))
 				this.userFacade.setUser(user)
 
 				// Before offline login was enabled (in 3.96.4) we didn't use cache for the login process, only afterward.
@@ -572,7 +569,7 @@ export class LoginFacade implements SessionTypeProvider {
 				}
 
 				await this.triggerPartialLoginSuccess(SessionType.Persistent, cacheInfo, credentials)
-				return { type: "success", data, asyncResumeCompleted: env.mode === "Test" ? asyncResumeSession : null }
+				return { state: ResumeSessionState.Success, data, asyncResumeCompleted: env.mode === "Test" ? asyncResumeSession : null }
 			} else {
 				return await this.finishResumeSession(credentials, externalUserKeyDeriver, cacheInfo)
 			}
@@ -603,7 +600,7 @@ export class LoginFacade implements SessionTypeProvider {
 	 */
 	async deleteSession(accessToken: Base64Url, pushIdentifier: string | null = null): Promise<void> {
 		const typeModel = await this.typeModelResolver.resolveServerTypeReference(SessionTypeRef)
-		let path = typeModelToRestPath(typeModel) + "/" + this.getSessionListId(accessToken) + "/" + this.getSessionElementId(accessToken)
+		let path = EntityUtils.typeModelToRestPath(typeModel) + "/" + this.getSessionListId(accessToken) + "/" + this.getSessionElementId(accessToken)
 		const sessionTypeModel = await this.typeModelResolver.resolveClientTypeReference(SessionTypeRef)
 
 		const headers = {
@@ -760,7 +757,7 @@ export class LoginFacade implements SessionTypeProvider {
 		const createSessionReturn = await this.serviceExecutor.post(SessionService, sessionData, null) // Don't pass email address to avoid proposing to reset second factor when we're resetting password
 
 		const { userId, accessToken } = await this.waitUntilSecondFactorApprovedOrCancelled(createSessionReturn, null)
-		const user = await entityClient.load(UserTypeRef, userId, {
+		const user = await entityClient.load(UserTypeRef, idToElementId(userId), {
 			...DEFAULT_ENTITY_RESTCLIENT_LOAD_OPTIONS,
 			extraHeaders: {
 				accessToken,
@@ -774,7 +771,7 @@ export class LoginFacade implements SessionTypeProvider {
 			recoverCodeVerifier: recoverCodeVerifierBase64,
 		}
 
-		const recoverCodeData = await entityClient.load(RecoverCodeTypeRef, user.auth.recoverCode, {
+		const recoverCodeData = await entityClient.load(RecoverCodeTypeRef, idToElementId(user.auth.recoverCode), {
 			...DEFAULT_ENTITY_RESTCLIENT_LOAD_OPTIONS,
 			extraHeaders: recoverCodeExtraHeaders,
 		})
@@ -851,10 +848,10 @@ export class LoginFacade implements SessionTypeProvider {
 	}
 
 	async retryAsyncLogin(): Promise<void> {
-		if (this.asyncLoginState.state === "running") {
+		if (this.asyncLoginState.state === AsyncLoginStateOptions.Running) {
 			return
-		} else if (this.asyncLoginState.state === "failed") {
-			await this.asyncResumeSession(this.asyncLoginState.credentials, this.asyncLoginState.cacheInfo)
+		} else if (this.asyncLoginState.state === AsyncLoginStateOptions.Failed) {
+			await this.asyncResumeSession(this.asyncLoginState.failure!.credentials, this.asyncLoginState.failure!.cacheInfo)
 		} else {
 			throw new Error("credentials went missing")
 		}
@@ -971,19 +968,20 @@ export class LoginFacade implements SessionTypeProvider {
 	}
 
 	private async asyncResumeSession(credentials: Credentials, cacheInfo: CacheInfo): Promise<void> {
-		if (this.asyncLoginState.state === "running") {
+		if (this.asyncLoginState.state === AsyncLoginStateOptions.Running) {
 			throw new Error("finishLoginResume run in parallel")
 		}
-		this.asyncLoginState = { state: "running" }
+		this.asyncLoginState = { state: AsyncLoginStateOptions.Running }
 		try {
 			await this.finishResumeSession(credentials, null, cacheInfo)
 		} catch (e) {
 			if (e instanceof NotAuthenticatedError || e instanceof SessionExpiredError) {
 				// For this type of errors we cannot use credentials anymore.
-				this.asyncLoginState = { state: "idle" }
+				this.asyncLoginState = { state: AsyncLoginStateOptions.Idle }
 				await this.loginListener.onLoginFailure(LoginFailReason.SessionExpired)
 			} else {
-				this.asyncLoginState = { state: "failed", credentials, cacheInfo }
+				this.asyncLoginState = { state: AsyncLoginStateOptions.Failed }
+				this.asyncLoginState.failure = { credentials, cacheInfo }
 				if (!(e instanceof ConnectionError)) {
 					await this.applicationTypesFacade.invalidateApplicationTypes()
 					await this.sendError(e)
@@ -997,7 +995,7 @@ export class LoginFacade implements SessionTypeProvider {
 		credentials: Credentials,
 		externalUserKeyDeriver: ExternalUserKeyDeriver | null,
 		cacheInfo: CacheInfo,
-	): Promise<ResumeSessionSuccess> {
+	): Promise<ResumeSessionResult> {
 		const sessionId = this.getSessionId(credentials)
 		const sessionData = await this.loadSessionData(credentials.accessToken)
 
@@ -1036,7 +1034,7 @@ export class LoginFacade implements SessionTypeProvider {
 		}
 		partialLoginPromise.finally(() => this.triggerFullLoginSuccess(SessionType.Persistent, cacheInfo, credentialsWithPassphraseKey))
 
-		this.asyncLoginState = { state: "idle" }
+		this.asyncLoginState = { state: AsyncLoginStateOptions.Idle }
 
 		const data = {
 			user,
@@ -1053,7 +1051,7 @@ export class LoginFacade implements SessionTypeProvider {
 
 		await this.initializeKeyRotationRollouts(userPassphraseKey, modernKdfType, SessionType.Persistent)
 
-		return { type: "success", data, asyncResumeCompleted: null }
+		return { state: ResumeSessionState.Success, data, asyncResumeCompleted: null }
 	}
 
 	private async initSession(
@@ -1066,7 +1064,7 @@ export class LoginFacade implements SessionTypeProvider {
 		// - if it's a partial login
 		const userIdFromFormerLogin = this.userFacade.getUser()?._id ?? null
 
-		if (userIdFromFormerLogin && userId !== userIdFromFormerLogin) {
+		if (userIdFromFormerLogin && userId !== elementIdToId(userIdFromFormerLogin)) {
 			throw new Error("different user is tried to login in existing other user's session")
 		}
 
@@ -1074,7 +1072,10 @@ export class LoginFacade implements SessionTypeProvider {
 
 		try {
 			// We need to use up-to-date user to make sure that we are not checking for outdated verified against cached user.
-			const user = await this.entityClient.load(UserTypeRef, userId, { ...DEFAULT_ENTITY_RESTCLIENT_LOAD_OPTIONS, cacheMode: CacheMode.WriteOnly })
+			const user = await this.entityClient.load(UserTypeRef, idToElementId(userId), {
+				...DEFAULT_ENTITY_RESTCLIENT_LOAD_OPTIONS,
+				cacheMode: CacheMode.WriteOnly,
+			})
 			await this.checkOutdatedVerifier(user, accessToken, userPassphraseKey)
 
 			// this may be the second time we set user in case we had a partial offline login before
@@ -1104,25 +1105,16 @@ export class LoginFacade implements SessionTypeProvider {
 	 * @param forceNewDatabase true if the old database should be deleted if there is one
 	 * @private
 	 */
-	private async initCache({ userId, databaseKey, timeRangeDate, forceNewDatabase }: InitCacheOptions): Promise<CacheInfo> {
+	private async initCache({ userId, databaseKey, forceNewDatabase }: InitCacheOptions): Promise<CacheInfo> {
 		if (databaseKey != null) {
-			const { isPersistent, isNewOfflineDb } = await this.cacheInitializer.initialize({
-				type: "offline",
-				userId,
-				databaseKey,
-				timeRangeDate,
-				forceNewDatabase,
-			})
+			const { isPersistent, isNewOfflineDb } = await this.cacheInitializer.initialize(new OfflineStorageArgs(userId, databaseKey, forceNewDatabase))
 			return {
 				isPersistent,
 				isNewOfflineDb,
 				databaseKey,
 			}
 		} else {
-			const { isPersistent, isNewOfflineDb } = await this.cacheInitializer.initialize({
-				type: "ephemeral",
-				userId,
-			})
+			const { isPersistent, isNewOfflineDb } = await this.cacheInitializer.initialize(new EphemeralStorageArgs(userId))
 			return { isPersistent, isNewOfflineDb, databaseKey: null }
 		}
 	}
@@ -1143,7 +1135,7 @@ export class LoginFacade implements SessionTypeProvider {
 		externalUserSalt: Uint8Array,
 	) {
 		this.userFacade.setAccessToken(credentials.accessToken)
-		const user = await this.entityClient.load(UserTypeRef, sessionData.userId)
+		const user = await this.entityClient.load(UserTypeRef, idToElementId(sessionData.userId))
 		const latestSaltHash = assertNotNull(user.externalAuthInfo!.latestSaltHash, "latestSaltHash is not set!")
 		if (!arrayEquals(latestSaltHash, sha256Hash(externalUserSalt))) {
 			// Do not delete session or credentials, we can still use them if the password
@@ -1204,13 +1196,13 @@ export class LoginFacade implements SessionTypeProvider {
 		userId: Id
 		accessKey: AesKey | null
 	}> {
-		const typeModel = await this.typeModelResolver.resolveClientTypeReference(SessionTypeRef)
-		const path = typeModelToRestPath(typeModel) + "/" + this.getSessionListId(accessToken) + "/" + this.getSessionElementId(accessToken)
-		const SessionTypeModel = await this.typeModelResolver.resolveClientTypeReference(SessionTypeRef)
+		const sessionTypeModel = await this.typeModelResolver.resolveServerTypeReference(SessionTypeRef)
+		const clientSessionTypeVersion = (await this.typeModelResolver.resolveClientTypeReference(SessionTypeRef)).version
+		const path = EntityUtils.typeModelToRestPath(sessionTypeModel) + "/" + this.getSessionListId(accessToken) + "/" + this.getSessionElementId(accessToken)
 
 		let headers = {
 			accessToken: accessToken,
-			v: String(SessionTypeModel.version),
+			v: String(clientSessionTypeVersion),
 		}
 		// we cannot use the entity client yet because this type is encrypted and we don't have an owner key yet
 		return this.restClient
@@ -1220,13 +1212,14 @@ export class LoginFacade implements SessionTypeProvider {
 				responseType: MediaType.Json,
 			})
 			.then(async (instance) => {
-				const untypedSession = AttributeModel.removeNetworkDebuggingInfoIfNeeded<ServerModelUntypedInstance>(JSON.parse(instance))
-				// Intentionally passing an UntypedInstance to AttributeModel to circumvent session key resolution during login.
-				const accessKey = AttributeModel.getAttributeorNull<Base64>(untypedSession, "accessKey", SessionTypeModel)
-				const userId = AttributeModel.getAttribute<Id[]>(untypedSession, "user", SessionTypeModel)[0]
+				const serverJson = IncomingServerJson.expectSingleInstance(instance, sessionTypeModel)
+				const parsedInstance = await this.instancePipeline.typeMapper.parseServerJson(serverJson)
+
+				const accessKey = parsedInstance.getAttributeByNameOrNull("accessKey")?.getNullWhenNull()?.asString() ?? null
+				const userId = parsedInstance.getAttributeByName("user").asIdList()[0]
 				return {
 					userId,
-					accessKey: accessKey ? base64ToKey(accessKey) : null,
+					accessKey: isNotNull(accessKey) ? base64ToKey(accessKey) : null,
 				}
 			})
 	}

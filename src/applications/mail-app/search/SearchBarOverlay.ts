@@ -13,13 +13,14 @@ import m, { Children, Component, Vnode } from "mithril"
 import { getMailFolderIcon } from "../mail/view/MailGuiUtils"
 import { locator } from "../../common/api/main/CommonLocator"
 import { getTimeZone } from "../../common/calendar/date/CalendarUtils.js"
-import { formatEventDuration } from "../../calendar-app/calendar/gui/CalendarGuiUtils.js"
 import { getContactListName } from "../../common/contactsFunctionality/ContactUtils.js"
 import { getSenderOrRecipientHeading } from "../mail/view/MailViewerUtils.js"
 import { mailLocator } from "../mailLocator.js"
 import { renderSearchInOurApps } from "./view/SearchView"
 import { isTutaTeamMail } from "../../common/mailFunctionality/SharedMailUtils"
 import { companyTeamLabel } from "../../../platform-kit/app-env/boot/ClientConstants"
+import { formatEventDuration } from "../../calendar-app/calendar/gui/DateTimeTextFormatterUtils"
+import { isNonBlockingSearchAvailable } from "./model/SearchUtils"
 
 type SearchBarOverlayAttrs = {
 	state: SearchBarState
@@ -105,7 +106,9 @@ export class SearchBarOverlay implements Component<SearchBarOverlayAttrs> {
 		}
 
 		if (showMoreAction.indexTimestamp > FULL_INDEXED_TIMESTAMP && !indexInfo) {
-			indexInfo = lang.get("searchedUntil_msg") + " " + formatDate(new Date(showMoreAction.indexTimestamp))
+			indexInfo = isNonBlockingSearchAvailable()
+				? lang.get("searchedUntil_msg") + " " + formatDate(new Date(showMoreAction.indexTimestamp))
+				: lang.get("notAllMailsSearchable_msg")
 		}
 
 		return indexInfo

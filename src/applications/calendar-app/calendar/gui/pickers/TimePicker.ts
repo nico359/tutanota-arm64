@@ -6,7 +6,7 @@ import { timeStringFromParts } from "../../../../../ui/utils/Formatter.js"
 import { Time } from "../../../../common/calendar/date/Time.js"
 import { Select, SelectAttributes } from "../../../../../ui/base/Select.js"
 import { SingleLineTextField, SingleLineTextFieldAttrs } from "../../../../../ui/base/SingleLineTextField.js"
-import { px, size } from "../../../../../ui/size.js"
+import { font_size, px, size } from "../../../../../ui/size.js"
 import stream from "mithril/stream"
 import { isKeyPressed } from "../../../../../ui/utils/KeyManager.js"
 import { getNextHalfHour } from "../../../../common/api/common/utils/CommonCalendarUtils.js"
@@ -18,7 +18,7 @@ export type TimePickerAttrs = {
 	onTimeSelected: (arg0: Time | null) => unknown
 	timeFormat: TimeFormat
 	disabled?: boolean
-	ariaLabel: TranslationKey | Translation
+	ariaLabel: Translation
 	classes?: Array<string>
 	renderAsTextField: boolean
 }
@@ -209,9 +209,10 @@ export class TimePicker implements Component<TimePickerAttrs> {
 				this.value = val
 			},
 			disabled: attrs.disabled,
-			ariaLabel: lang.getTranslationText(attrs.ariaLabel),
+			ariaLabel: attrs.ariaLabel,
 			style: {
 				textAlign: "center",
+				fontSize: px(font_size.smaller),
 			},
 			onclick: (e: MouseEvent) => {
 				e.stopImmediatePropagation()
@@ -246,6 +247,7 @@ export class TimePicker implements Component<TimePickerAttrs> {
 		return m(LegacyTextField, {
 			style: {
 				width: "100%",
+				fontSize: px(font_size.smaller),
 			},
 			label: attrs.ariaLabel,
 			value: this.value,

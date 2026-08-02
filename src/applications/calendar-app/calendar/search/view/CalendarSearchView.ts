@@ -4,7 +4,7 @@ import { CalendarSearchViewModel, PaidFunctionResult } from "./CalendarSearchVie
 import { BaseTopLevelView } from "../../../../../ui/BaseTopLevelView.js"
 import { ColumnType, ViewColumn } from "../../../../../ui/base/ViewColumn.js"
 import { ViewSlider } from "../../../../../ui/nav/ViewSlider.js"
-import { isSameId } from "../../../../../platform-kit/meta"
+import { isSameId, isSameSingleId } from "../../../../../platform-kit/meta"
 import { assertNotNull, isSameDayOfDate, last, LazyLoaded, lazyMemoized, memoized, stringToBase64 } from "../../../../../platform-kit/utils"
 import { CalendarEventPreviewViewModel } from "../../gui/eventpopup/CalendarEventPreviewViewModel.js"
 import m, { Children, Vnode } from "mithril"
@@ -58,6 +58,8 @@ import { showDateRangeSelectionDialog } from "../../gui/pickers/DatePickerDialog
 import { CalendarInfo } from "../../model/CalendarModel"
 import { windowFacade } from "../../../../common/misc/WindowFacade"
 import { renderHeaderButtons } from "../../../gui/HeaderButtons"
+import { isFreeSignupOnly } from "../../../../common/misc/LoginUtils"
+import { locator } from "../../../../common/api/main/CommonLocator"
 
 assertMainOrNode()
 
@@ -370,7 +372,7 @@ export class CalendarSearchView extends BaseTopLevelView implements TopLevelView
 						}
 					},
 					startOfTheWeekOffset: this.startOfTheWeekOffset,
-					label: "dateFrom_label",
+					label: lang.getTranslation("dateFrom_label"),
 					nullSelectionText: renderedHelpText,
 					rightAlignDropdown: true,
 				} satisfies DatePickerAttrs),
@@ -385,7 +387,7 @@ export class CalendarSearchView extends BaseTopLevelView implements TopLevelView
 						}
 					},
 					startOfTheWeekOffset: this.startOfTheWeekOffset,
-					label: "dateTo_label",
+					label: lang.getTranslation("dateTo_label"),
 					rightAlignDropdown: true,
 				} satisfies DatePickerAttrs),
 			),
@@ -517,13 +519,18 @@ export class CalendarSearchView extends BaseTopLevelView implements TopLevelView
 				),
 				selected: true,
 				chevron: false,
-				onClick: (_) => this.onCalendarDateRangeSelect(),
+				onClick: (_) => {
+					if (isFreeSignupOnly() && locator.logins.getUserController().isFreeAccount()) {
+						return
+					}
+					this.onCalendarDateRangeSelect()
+				},
 			}),
 			m(FilterChip, {
 				label: selectedCalendar
 					? lang.makeTranslation(
 							"calendar_label",
-							availableCalendars.find((calendarInfo) => isSameId(calendarInfo.id, selectedCalendar.id))?.name ?? "",
+							availableCalendars.find((calendarInfo) => isSameSingleId(calendarInfo.id, selectedCalendar.id))?.name ?? "",
 						)
 					: lang.getTranslation("calendar_label"),
 				selected: selectedCalendar != null,

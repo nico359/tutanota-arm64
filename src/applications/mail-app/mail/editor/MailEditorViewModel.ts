@@ -1,20 +1,19 @@
 import m from "mithril"
 import { SendMailModel } from "../../../common/mailFunctionality/SendMailModel.js"
-import { contains, debounce, findAllAndRemove, isNotNull, ofClass } from "../../../../platform-kit/utils"
+import { contains, debounce, findAllAndRemove, isNotNull, ofClass } from "@tutao/utils"
 import { PermissionError } from "../../../common/api/common/error/PermissionError"
 import { Dialog } from "../../../../ui/base/Dialog"
 import { FileNotFoundError } from "../../../common/api/common/error/FileNotFoundError"
 import { lang } from "../../../../ui/utils/LanguageViewModel"
-import { FileOpenError } from "../../../common/api/common/error/FileOpenError"
 import { UserError } from "../../../common/api/main/UserError"
 import { showUserError } from "../../../common/misc/ErrorHandlerImpl"
 import { locator } from "../../../common/api/main/CommonLocator"
-import { showFileChooser } from "../../../common/file/FileController.js"
-import { Mode, ProgrammingError } from "../../../../platform-kit/app-env"
+import { DownloadPostProcessing, FileChooserMultiMode, showFileChooser } from "../../../common/file/FileController.js"
+import { isApp, isDesktop, Mode } from "@tutao/app-env"
 import { AttachmentBubbleAttrs, AttachmentType } from "../../../../ui/AttachmentBubble.js"
-import { showDownloadProgressDialog } from "../view/MailGuiUtils"
-import { Attachment, FileReference, isDataFile, isFileReference, isTutanotaFile } from "../../../../entities/tutanota/Utils"
+import { Attachment, FileReference } from "../../../../entities/tutanota/Utils"
 import { DataFile } from "../../../../entities/tutanota/MailBundle"
+import { AttachmentDownloader } from "../view/MailGuiUtils"
 
 export async function chooseAndAttachFile(
 	model: SendMailModel,
@@ -57,9 +56,8 @@ export async function chooseAndAttachFile(
 }
 
 export function showFileChooserForAttachments(boundingRect: ClientRect, fileTypes?: Array<string>): Promise<ReadonlyArray<FileReference | DataFile> | void> {
-	const fileSelector = [Mode.App, Mode.Desktop].includes(env.mode)
-		? locator.fileApp.openFileChooser(boundingRect, fileTypes)
-		: showFileChooser(true, fileTypes)
+	const fileSelector =
+		isApp() || isDesktop() ? locator.fileApp.openFileChooser(boundingRect, fileTypes) : showFileChooser(FileChooserMultiMode.Multi, fileTypes)
 	return fileSelector
 		.catch(
 			ofClass(PermissionError, () => {
@@ -73,11 +71,17 @@ export function showFileChooserForAttachments(boundingRect: ClientRect, fileType
 		)
 }
 
-export function createAttachmentBubbleAttrs(model: SendMailModel, getDomElement: () => HTMLElement): Array<AttachmentBubbleAttrs> {
+export function createAttachmentBubbleAttrs(
+	model: SendMailModel,
+	fileDownloader: AttachmentDownloader,
+	getDomElement: () => HTMLElement,
+): Array<AttachmentBubbleAttrs> {
 	return model.getAttachments().map((attachment) => ({
 		attachment,
-		open: () => _openAndDownloadAttachment(attachment),
-		download: null,
+		open: fileDownloader.canOpenAttachment(attachment) ? () => fileDownloader.openOrDownloadAttachment(attachment, DownloadPostProcessing.Open) : null,
+		download: fileDownloader.canDownloadAttachment(attachment)
+			? () => fileDownloader.openOrDownloadAttachment(attachment, DownloadPostProcessing.Write)
+			: null,
 		remove: () => {
 			// If an attachment has a cid it means it could be in the editor's inline images too
 			if (attachment.cid) {
@@ -96,31 +100,9 @@ export function createAttachmentBubbleAttrs(model: SendMailModel, getDomElement:
 	}))
 }
 
-export async function _openAndDownloadAttachment(attachment: Attachment) {
-	try {
-		if (isFileReference(attachment)) {
-			await locator.fileApp.open(attachment)
-		} else if (isDataFile(attachment)) {
-			await locator.fileController.saveDataFile(attachment)
-		} else if (isTutanotaFile(attachment)) {
-			await showDownloadProgressDialog(locator.transferProgressDispatcher, [attachment], await locator.fileController.open(attachment))
-		} else {
-			throw new ProgrammingError("attachment is neither reference, datafile nor tutanotafile!")
-		}
-	} catch (e) {
-		if (e instanceof FileOpenError) {
-			return Dialog.message("canNotOpenFileOnDevice_msg")
-		} else {
-			const msg = e.message || "unknown error"
-			console.error("could not open file:", msg)
-			return Dialog.message("errorDuringFileOpen_msg")
-		}
-	}
-}
-
-export const cleanupInlineAttachments: (arg0: HTMLElement, arg2: Array<Attachment>, arg3: Array<Attachment>) => void = debounce(
+export const cleanupInlineAttachments: (arg0: HTMLElement, arg2: Array<Attachment>, arg3: Array<Attachment>, arg4: Set<string>) => void = debounce(
 	50,
-	(domElement: HTMLElement, attachments: Array<Attachment>, removedInlineImages: Array<Attachment>) => {
+	(domElement: HTMLElement, attachments: Array<Attachment>, removedInlineImages: Array<Attachment>, nonInlineAttachmentsCids: Set<string>) => {
 		// Previously we replied on subtree option of MutationObserver to receive info when nested child is removed.
 		// It works but it doesn't work if the parent of the nested child is removed, we would have to go over each mutation
 		// and check each descendant and if it's an image with CID or not.
@@ -154,7 +136,7 @@ export const cleanupInlineAttachments: (arg0: HTMLElement, arg2: Array<Attachmen
 
 			for (const attachment of attachments) {
 				// if the attachment has a cid then it is an inline image
-				if (attachment.cid && !imageCids.includes(attachment.cid)) {
+				if (attachment.cid && !imageCids.includes(attachment.cid) && !nonInlineAttachmentsCids.has(attachment.cid)) {
 					elementsToRemove.push(attachment)
 					removedInlineImages.push(attachment)
 				}

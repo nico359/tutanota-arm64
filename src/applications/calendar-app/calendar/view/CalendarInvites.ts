@@ -58,7 +58,7 @@ export async function getEventsFromFile(file: File): Promise<ParsedIcalFileConte
  * any calendar (because it has not been stored yet, e.g. in case of invite)
  * the given event is returned.
  */
-export async function getLatestEvent(event: IcsCalendarEvent): Promise<CalendarEvent> {
+export async function getLatestEventInPrivateCalendars(event: IcsCalendarEvent): Promise<CalendarEvent> {
 	const uid = event.uid
 	const fromIcsCalendarEvent = makeCalendarEventFromIcsCalendarEvent(event)
 	if (uid == null) {
@@ -66,7 +66,7 @@ export async function getLatestEvent(event: IcsCalendarEvent): Promise<CalendarE
 	}
 
 	const calendarModel = await locator.calendarModel()
-	const existingEvents = await calendarModel.getFirstUidIndexEntryMatch(uid)
+	const existingEvents = await calendarModel.getFirstUidIndexEntryMatchInPrivateCalendars(uid)
 
 	// If the file we are opening is newer than the one which we have on the server, update server version.
 	// Should not happen normally but can happen when e.g. reply and update were sent one after another before we accepted
@@ -120,7 +120,6 @@ export class CalendarInviteHandler {
 			throw new Error("Replying to an event without an organizer")
 		}
 		const eventClone = clone(event)
-		eventClone.invitedConfidentially = previousMail ? previousMail.confidential : eventClone.invitedConfidentially
 		eventClone.pendingInvitation = false
 
 		const foundAttendee = assertNotNull(findAttendeeInAddresses(eventClone.attendees, [attendee.address.address]), "attendee was not found in event clone")
@@ -132,7 +131,11 @@ export class CalendarInviteHandler {
 		//  This function is only called by EventBanner from the mail app so this should be okay.
 		const resolvedMailboxDetails = mailboxDetails ?? (await this.mailboxModel.getUserMailboxDetails())
 		const sender = previousMail?.sender.address || event.sender || event.organizer.address
-		const responseModel = await this.getResponseModelForMail(previousMail, resolvedMailboxDetails, attendee.address.address, decision, sender)
+		const responseModel = await this.getResponseModelForMail(previousMail, resolvedMailboxDetails, foundAttendee.address.address, decision, sender)
+
+		eventClone.invitedConfidentially = previousMail
+			? previousMail.confidential
+			: Boolean(eventClone.invitedConfidentially || responseModel?.isConfidential())
 
 		try {
 			await notificationModel.send(
@@ -202,7 +205,8 @@ export class CalendarInviteHandler {
 		await model.addRecipient(RecipientField.TO, { address: sender })
 
 		if (!previousMail) {
-			await model.initWithTemplate({}, "", "")
+			// confidentiality is initialized as false but may be set to true later. this is just an initialization without prior context.
+			await model.initWithTemplate({}, "", "", [], false, responder)
 			return model
 		}
 
