@@ -33,7 +33,7 @@ import { MailListDisplayMode } from "../../../common/misc/DeviceConfig"
 import { client } from "../../../../platform-kit/app-env/boot/ClientDetector"
 import { ProcessInboxHandler } from "../model/ProcessInboxHandler"
 import { mailLocator } from "../../mailLocator"
-import { moveMails } from "./MailGuiUtils"
+import { getLabelsWithParentLabelNamesPrepended, moveMails } from "./MailGuiUtils"
 import { locator } from "../../../common/api/main/CommonLocator"
 import { UndoModel } from "../../UndoModel"
 import { SyncTracker } from "../../../common/api/main/SyncTracker"
@@ -455,6 +455,9 @@ export class MailViewModel {
 	/** init is called every time the view is opened */
 	init() {
 		this.onceInit()
+
+		this.connectivityModel.addConnectionStateListener(this.connectionStateListener)
+
 		const conversationDisabled = this.conversationPrefProvider.getConversationViewShowOnlySelectedMail()
 		const mailListModePref = !conversationDisabled && this.conversationPrefProvider.getMailListDisplayMode() === MailListDisplayMode.CONVERSATIONS
 		if (this.conversationViewModel && this.conversationPref !== conversationDisabled) {
@@ -480,7 +483,6 @@ export class MailViewModel {
 
 	private readonly onceInit = lazyMemoized(() => {
 		this.eventController.addEntityUpdatesListener(this.entityUpdatesListener)
-		this.connectivityModel.addConnectionStateListener(this.connectionStateListener)
 	})
 
 	get listModel(): MailSetListModel | null {
@@ -498,8 +500,8 @@ export class MailViewModel {
 		return this._folder
 	}
 
-	getLabelsForMail(mail: Mail): ReadonlyArray<MailSet> {
-		return this.listModel?.getLabelsForMail(mail) ?? []
+	getLabelsForMail(mail: Mail): ReadonlyArray<{ name: string; color: string | null }> {
+		return getLabelsWithParentLabelNamesPrepended(this.mailModel, mail)
 	}
 
 	async applyLabelToMails(mails: readonly IdTuple[], label: MailSet): Promise<void> {
@@ -647,7 +649,7 @@ export class MailViewModel {
 	}
 
 	private clearConversationViewModel() {
-		this.conversationViewModel?.dispose()
+		this.conversationViewModel?.deinit()
 		this.conversationViewModel = null
 		this.mailFolderElementIdToSelectedMailId = mapWithout(this.mailFolderElementIdToSelectedMailId, getElementId(assertNotNull(this.getFolder())))
 	}
@@ -682,7 +684,7 @@ export class MailViewModel {
 	}
 
 	private createConversationViewModel(viewModelParams: CreateMailViewerOptions) {
-		this.conversationViewModel?.dispose()
+		this.conversationViewModel?.deinit()
 		this.conversationViewModel = this.conversationViewModelFactory(viewModelParams)
 	}
 
