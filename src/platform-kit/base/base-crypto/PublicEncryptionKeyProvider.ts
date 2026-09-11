@@ -11,14 +11,15 @@ import {
 	PublicKeyIdentifier,
 	RsaX25519PublicKey,
 } from "@tutao/crypto"
-import { KeyVersion, lazyAsync, uint8ArrayToHex, Versioned } from "@tutao/utils"
+import { isNotNull, KeyVersion, lazyAsync, Nullable, uint8ArrayToHex, Versioned } from "@tutao/utils"
 import { InvalidDataError } from "@tutao/rest-client/error"
 import { CryptoError } from "@tutao/crypto/error"
 import { KeyVerificationFacade, VerifiedPublicEncryptionKey } from "../facades/lazy/KeyVerificationFacade"
 import { CryptoTypes } from "./Constants"
-import { createPublicKeyGetIn, PubDistributionKey, PublicKeyGetOut, PublicKeyService, SystemKeysReturn } from "@tutao/entities/sys"
+import { createPublicKeyGetIn, PubDistributionKey, PublicKeyGetOut, PublicKeyService_GET, SystemKeysReturn } from "@tutao/entities/sys"
 import { MaybeSignedPublicKey } from "./MaybeSignedPublicKey"
 import { PublicEncryptionKeyCache } from "./persistence/PublicEncryptionKeyCache"
+import { isNull } from "../../utils/Utils"
 
 /**
  * Load public encryption keys.
@@ -48,10 +49,14 @@ class PublicEncryptionKeyProvider {
 	 * @param version
 	 * @throws KeyVerificationMismatchError in case of key verification failure
 	 */
-	async loadPublicEncryptionKey(pubKeyIdentifier: PublicKeyIdentifier, version: KeyVersion | null): Promise<VerifiedPublicEncryptionKey> {
-		const publicEncryptionKey =
-			(version != null && this.publicEncryptionKeyCache.get(pubKeyIdentifier, version)) ||
-			(await this.fetchAndValidatePublicEncryptionKey(version, pubKeyIdentifier))
+	async loadPublicEncryptionKey(pubKeyIdentifier: PublicKeyIdentifier, version: Nullable<KeyVersion>): Promise<VerifiedPublicEncryptionKey> {
+		let publicEncryptionKey: Nullable<MaybeSignedPublicKey> = null
+		if (isNull(version)) {
+			publicEncryptionKey = await this.fetchAndValidatePublicEncryptionKey(version, pubKeyIdentifier)
+		} else {
+			publicEncryptionKey =
+				this.publicEncryptionKeyCache.get(pubKeyIdentifier, version) ?? (await this.fetchAndValidatePublicEncryptionKey(version, pubKeyIdentifier))
+		}
 
 		const keyVerificationFacade = await this.lazyKeyVerificationFacade()
 		const verifiedPublicEncryptionKey = await keyVerificationFacade.verify(pubKeyIdentifier, publicEncryptionKey)
@@ -61,13 +66,13 @@ class PublicEncryptionKeyProvider {
 		return verifiedPublicEncryptionKey
 	}
 
-	private async fetchAndValidatePublicEncryptionKey(version: any, pubKeyIdentifier: PublicKeyIdentifier): Promise<MaybeSignedPublicKey> {
+	private async fetchAndValidatePublicEncryptionKey(version: Nullable<KeyVersion>, pubKeyIdentifier: PublicKeyIdentifier): Promise<MaybeSignedPublicKey> {
 		const requestData = createPublicKeyGetIn({
 			version: version != null ? String(version) : null,
 			identifier: pubKeyIdentifier.identifier,
 			identifierType: pubKeyIdentifier.identifierType,
 		})
-		const publicKeyGetOut = await this.serviceExecutor.get(PublicKeyService, requestData, null)
+		const publicKeyGetOut = await this.serviceExecutor.execute(PublicKeyService_GET, requestData, null)
 		const publicEncryptionKey = this.convertFromPublicKeyGetOut(publicKeyGetOut)
 		this.enforceRsaKeyVersionConstraint(publicEncryptionKey.publicKey)
 		if (version != null && publicEncryptionKey.publicKey.version !== version) {
@@ -81,7 +86,7 @@ class PublicEncryptionKeyProvider {
 	 *
 	 * Receiving a higher version would indicate a protocol downgrade/ MITM attack, and we reject such keys.
 	 */
-	private enforceRsaKeyVersionConstraint(pubKeys: Versioned<PublicKey>) {
+	private enforceRsaKeyVersionConstraint(pubKeys: Versioned<PublicKey>): void {
 		if (pubKeys.version !== 0 && isVersionedRsaOrRsaX25519PublicKey(pubKeys)) {
 			throw new CryptoError("rsa key in a version that is not 0")
 		}
@@ -149,8 +154,8 @@ class PublicEncryptionKeyProvider {
 	private convertFromPublicKeyRawData(publicKeys: CryptoTypes): Versioned<PublicKey> {
 		const version = cryptoUtils.parseKeyVersion(publicKeys.pubKeyVersion)
 		// const version = Number(publicKeys.pubKeyVersion)
-		if (publicKeys.pubRsaKey) {
-			if (publicKeys.pubEccKey) {
+		if (isNotNull(publicKeys.pubRsaKey)) {
+			if (isNotNull(publicKeys.pubEccKey)) {
 				const eccPublicKey = publicKeys.pubEccKey
 				const rsaPublicKey = hexToRsaPublicKey(uint8ArrayToHex(publicKeys.pubRsaKey))
 				const rsaEccPublicKey = new RsaX25519PublicKey(rsaPublicKey, eccPublicKey)
@@ -164,7 +169,7 @@ class PublicEncryptionKeyProvider {
 					object: hexToRsaPublicKey(uint8ArrayToHex(publicKeys.pubRsaKey)),
 				}
 			}
-		} else if (publicKeys.pubKyberKey && publicKeys.pubEccKey) {
+		} else if (isNotNull(publicKeys.pubKyberKey) && isNotNull(publicKeys.pubEccKey)) {
 			const eccPublicKey = publicKeys.pubEccKey
 			const kyberPublicKey = bytesToKyberPublicKey(publicKeys.pubKyberKey)
 			const pqPublicKey = new PQPublicKeys(eccPublicKey, kyberPublicKey)

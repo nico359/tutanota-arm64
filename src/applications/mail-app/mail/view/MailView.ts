@@ -3,7 +3,7 @@ import { ViewSlider } from "../../../../ui/nav/ViewSlider.js"
 import { ColumnType, ViewColumn } from "../../../../ui/base/ViewColumn"
 import { lang } from "../../../../ui/utils/LanguageViewModel"
 import { Dialog } from "../../../../ui/base/Dialog"
-import { assertMainOrNode, CancelledError, FeatureType, isApp, Keys } from "../../../../platform-kit/app-env"
+import { CancelledError, EnvProvider, FeatureType, MAX_LABELS_PER_FREE_USER, UpgradePromptType } from "../../../../platform-kit/app-env"
 import { AppHeaderAttrs, Header } from "../../../../ui/Header.js"
 import { assertNotNull, first, getFirstOrThrow, isEmpty, isNotEmpty, noOp, ofClass } from "../../../../platform-kit/utils"
 import { MailListView } from "./MailListView"
@@ -15,16 +15,17 @@ import { showProgressDialog } from "../../../../ui/dialogs/ProgressDialog"
 import type { MailboxDetail } from "../../../common/mailFunctionality/MailboxModel.js"
 import { locator } from "../../../common/api/main/CommonLocator"
 import { PermissionError } from "../../../common/api/common/error/PermissionError"
-import { styles } from "../../../../ui/styles"
+import { Styles } from "../../../../ui/styles"
 import { layout_size, px } from "../../../../ui/size"
 import {
+	checkMailSetName,
+	getCommonShortcuts,
 	getConversationTitle,
 	LabelsPopupOpts,
 	moveMails,
 	moveMailsToSystemFolder,
 	promptAndDeleteMails,
 	showLabelsPopup,
-	showMoveMailsDropdown,
 	ShowMoveMailsDropdownOpts,
 	showMoveMailsFromFolderDropdown,
 } from "./MailGuiUtils"
@@ -45,13 +46,13 @@ import { ConversationViewModel } from "./ConversationViewModel.js"
 import { conversationCardMargin, ConversationViewer } from "./ConversationViewer.js"
 import { IconButton } from "../../../../ui/base/IconButton.js"
 import { BackgroundColumnLayout } from "../../../../ui/BackgroundColumnLayout.js"
-import { MailViewerActions } from "./MailViewerToolbar.js"
+import { MailViewerActions, MailViewerToolbarAttrs } from "./MailViewerToolbar.js"
 import { theme } from "../../../../ui/theme.js"
 import { MobileMailMultiselectionActionBar } from "./MobileMailMultiselectionActionBar.js"
 import { SelectAllCheckbox } from "../../../../ui/SelectAllCheckbox.js"
 import { DesktopListToolbar, DesktopViewerToolbar } from "../../../../ui/DesktopToolbars.js"
 import { MobileHeader } from "../../../../ui/MobileHeader.js"
-import { LazySearchBar } from "../../LazySearchBar.js"
+import { MailQuickSearchBar } from "./MailQuickSearchBar.js"
 import { MultiselectMobileHeader } from "../../../../ui/MultiselectMobileHeader.js"
 import { MailViewModel } from "./MailViewModel.js"
 import { selectionAttrsForList } from "../../../common/misc/ListModel.js"
@@ -64,13 +65,21 @@ import { BottomNav } from "../../gui/BottomNav.js"
 import { mailLocator } from "../../mailLocator.js"
 import { showSnackBar } from "../../../../ui/base/SnackBar.js"
 import { getMailSetName } from "../model/MailUtils.js"
-import { canDoDragAndDropExport, editDraft, getMailViewerMoreActions, MailFilterType, showReportPhishingMailDialog, startExport } from "./MailViewerUtils.js"
-import { isDraft, isMailMovable, isSpamOrTrashFolder } from "../model/MailChecks.js"
+import {
+	canDoDragAndDropExport,
+	editDraft,
+	getMailActionAttrs,
+	getMailViewerMoreActions,
+	MailFilterType,
+	MailViewerToolbarActions,
+	showReportPhishingMailDialog,
+	startExport,
+} from "./MailViewerUtils.js"
+import { isDraft, isMailDeletable, isMailMovable, isSpamOrTrashFolder } from "../model/MailChecks.js"
 import { DropData, DropType, FileDropData, FolderDropData, getDetachedDropdownBounds, MailDropData } from "../../../../ui/base/GuiUtils"
 import { fileListToArray } from "../../../../ui/utils/FileUtils.js"
 import { UserError } from "../../../common/api/main/UserError"
 import { showUserError } from "../../../common/misc/ErrorHandlerImpl"
-import { LockedError, NotFoundError } from "../../../../platform-kit/rest-client/error"
 import { MailViewerViewModel } from "./MailViewerViewModel"
 import { MoveMode } from "../model/MailModel"
 import { UndoModel } from "../../UndoModel"
@@ -78,15 +87,20 @@ import { PosRect } from "../../../../ui/utils/PosRect"
 import { Mail, MailSet } from "@tutao/entities/tutanota"
 import { MailReportType, MailSetKind, SystemFolderType } from "../../../../entities/tutanota/Utils"
 import { elementIdPart, elementIdToId, getElementId, isSameId, isSameSingleId } from "../../../../platform-kit/meta"
-import { getMailFolderType, isFolder, isFolderReadOnly } from "../MailUtils"
+import { getMailFolderType, isFolder, isFolderReadOnly, isPermanentDeleteAllowedForFolder } from "../MailUtils"
 import { windowFacade } from "../../../common/misc/WindowFacade"
 import { renderHeaderButtons } from "../../../calendar-app/gui/HeaderButtons"
 import { ExpanderPanel } from "../../../../ui/base/Expander"
 import { MailLabelsView } from "./MailLabelsView"
 import { showEditLabelDialog } from "./EditLabelDialog"
 import { ButtonSize } from "../../../../ui/base/ButtonSize"
+import { LockedError, NotFoundError } from "../../../../platform-kit/rest-client/error"
+import { Keys } from "../../../../ui/utils/KeyboardKeys"
+import { DropdownButtonAttrs } from "../../../../ui/base/Dropdown"
+import { showNotAvailableForFreeDialog } from "../../../common/misc/SubscriptionDialogs"
+import { IndexingNotSupportedError } from "../../../common/api/common/error/IndexingNotSupportedError"
 
-assertMainOrNode()
+EnvProvider.assertMainOrNode()
 
 /** State persisted between re-creations. */
 export interface MailViewCache {
@@ -199,7 +213,7 @@ export class MailView extends BaseTopLevelView implements TopLevelView<MailViewA
 											this.mailViewModel.clearStickyMail()
 											return await moveMailsToSystemFolder({
 												mailboxModel: locator.mailboxModel,
-												mailModel: mailLocator.mailModel,
+												mailModel: this.mailViewModel.mailModel,
 												mailIds: mails,
 												currentFolder: folder,
 												targetFolderType: targetFolderType,
@@ -207,6 +221,87 @@ export class MailView extends BaseTopLevelView implements TopLevelView<MailViewA
 												undoModel: this.undoModel,
 												contactModel: mailLocator.contactModel,
 											})
+										},
+										contextDropdownAttrs: (mail: Mail): DropdownButtonAttrs[] => {
+											if (this.mailViewModel.listModel?.isInMultiselect()) {
+												// If there is not a conversation view model, a multi-selection is happening
+												// the right-click actions will apply to all the selected mails
+												return getMailActionAttrs({
+													deleteAction: this.getDeleteMailsAction(),
+													trash: this.getTrashMailsAction(),
+													move: this.getMoveMailsAction(),
+													label: this.getLabelsAction(),
+													markSpam: this.getReportMailsAsSpamAction(),
+													markNotSpam: this.getReportMailsAsNotSpamAction(),
+													edit: null,
+													cancelScheduled: null,
+													reply: null,
+													replyAll: null,
+													forward: null,
+												})
+											} else {
+												// the mail being viewed might not be the mail in the list being
+												// right-clicked on so we need to get the actions for the specific mail
+
+												let actions: MailViewerToolbarActions = {}
+												let resolvedMailsPromise = () => this.mailViewModel.getResolvedMails([mail])
+												// need to get folder for mail as the folder being viewed may be a label, and some checks like delete and report spam need the folder the mail is actually in
+												const mailFolder = this.mailViewModel.mailModel.getMailFolderForMail(mail)
+
+												if (mailFolder && isPermanentDeleteAllowedForFolder(mailFolder) && isMailDeletable(mail)) {
+													actions.deleteAction = async () => {
+														const resolvedMails = await resolvedMailsPromise()
+														promptAndDeleteMails(this.mailViewModel.mailModel, resolvedMails, mailFolder._id, noOp)
+													}
+												}
+
+												if (isMailMovable(mail, this.mailViewModel.mailModel)) {
+													actions.move = (origin: PosRect) => this.moveMailsFromFolder(origin, resolvedMailsPromise)
+
+													if (actions.deleteAction == null) {
+														actions.trash = async () => {
+															const resolvedMails = await resolvedMailsPromise()
+															this.moveMailsToTrash(assertNotNull(mail._ownerGroup), resolvedMails)
+														}
+													}
+												}
+
+												if (this.mailViewModel.mailModel.isInternalUser()) {
+													// If is internal user, can manage labels and spam
+													actions.label = (dom: HTMLElement) =>
+														showLabelsPopup(this.mailViewModel.mailModel, [mail], resolvedMailsPromise, dom)
+
+													if (mailFolder) {
+														if (mailFolder.folderType === MailSetKind.SPAM) {
+															actions.markNotSpam = () =>
+																moveMailsToSystemFolder({
+																	mailboxModel: locator.mailboxModel,
+																	mailModel: this.mailViewModel.mailModel,
+																	currentFolder: mailFolder,
+																	mailIds: [mail._id],
+																	targetFolderType: MailSetKind.INBOX,
+																	moveMode: MoveMode.Mails,
+																	undoModel: this.undoModel,
+																	contactModel: mailLocator.contactModel,
+																})
+														} else if (!isDraft(mail)) {
+															actions.markSpam = () =>
+																moveMailsToSystemFolder({
+																	mailboxModel: locator.mailboxModel,
+																	mailModel: this.mailViewModel.mailModel,
+																	mailIds: [mail._id],
+																	targetFolderType: MailSetKind.SPAM,
+																	currentFolder: mailFolder,
+																	moveMode: MoveMode.Mails,
+																	undoModel: this.undoModel,
+																	contactModel: mailLocator.contactModel,
+																})
+														}
+													}
+												}
+
+												return getMailActionAttrs(actions)
+											}
 										},
 									}),
 								)
@@ -275,7 +370,7 @@ export class MailView extends BaseTopLevelView implements TopLevelView<MailViewA
 		vnode.attrs.mailViewModel.init()
 
 		this.oncreate = (vnode) => {
-			this.countersStream = mailLocator.mailModel.mailboxCounters.map(m.redraw)
+			this.countersStream = this.mailViewModel.mailModel.mailboxCounters.map(m.redraw)
 			keyManager.registerShortcuts(shortcuts)
 			this.cache.conversationViewPreference = deviceConfig.getConversationViewShowOnlySelectedMail()
 		}
@@ -301,19 +396,23 @@ export class MailView extends BaseTopLevelView implements TopLevelView<MailViewA
 	private mailViewerSingleActions(viewModel: ConversationViewModel) {
 		return m(MailViewerActions, {
 			selectedMails: [viewModel.primaryMail],
-			moveMailsAction: this.getMoveMailsAction(),
-			trashMailsAction: this.getTrashMailsAction(),
-			deleteMailAction: this.getDeleteMailsAction(),
-			applyLabelsAction: this.getLabelsAction(),
 			setUnreadStateAction: this.getSetUnreadStateAction(),
 			isUnread: this.getUnreadState(),
-			editDraftAction: this.getEditDraftAction(viewModel),
-			unscheduleMailAction: this.getUnscheduleMailAction(viewModel),
-			exportAction: this.getExportAction(),
-			replyAction: this.getReplyAction(viewModel, false),
-			replyAllAction: this.getReplyAction(viewModel, true),
-			forwardAction: this.getForwardAction(viewModel),
+			mailViewerActions: {
+				deleteAction: this.getDeleteMailsAction(),
+				trash: this.getTrashMailsAction(),
+				move: this.getMoveMailsAction(),
+				label: this.getLabelsAction(),
+				markSpam: this.getSingleMailReportSpamAction(viewModel.primaryViewModel()),
+				markNotSpam: this.getSingleMailReportNotSpamAction(viewModel.primaryViewModel()),
+				edit: this.getEditDraftAction(viewModel),
+				cancelScheduled: this.getUnscheduleMailAction(viewModel),
+				reply: this.getReplyAction(viewModel, false),
+				replyAll: this.getReplyAction(viewModel, true),
+				forward: this.getForwardAction(viewModel),
+			},
 			mailViewerMoreActions: getMailViewerMoreActions({
+				exportAction: this.getExportAction(),
 				viewModel: viewModel.primaryViewModel(),
 				print: this.getPrintAction(),
 				reapplyInboxRules: this.getSingleMailReapplyInboxRulesAction(viewModel.primaryViewModel()),
@@ -321,13 +420,11 @@ export class MailView extends BaseTopLevelView implements TopLevelView<MailViewA
 				reportNotSpam: null,
 				reportPhishing: this.getSingleMailPhishingAction(viewModel.primaryViewModel()),
 			}),
-			reportSpamAction: this.getSingleMailReportSpamAction(viewModel.primaryViewModel()),
-			reportNotSpamAction: this.getSingleMailReportNotSpamAction(viewModel.primaryViewModel()),
 		})
 	}
 
 	private getPrintAction(): (() => unknown) | null {
-		if (isApp()) {
+		if (EnvProvider.get().isApp()) {
 			return () => locator.systemFacade.print()
 		} else if (typeof window.print === "function") {
 			return () => window.print()
@@ -363,6 +460,10 @@ export class MailView extends BaseTopLevelView implements TopLevelView<MailViewA
 	private getReportMailsAsSpamAction(): (() => void) | null {
 		const isExternalUser = !locator.logins.isInternalUserLoggedIn()
 		const currentMailSet = this.mailViewModel.getSelectedMailSetKind()
+		const actionableMails = this.mailViewModel.getActionableMails()
+		if (isEmpty(actionableMails)) {
+			return null
+		}
 
 		// We don't show report action in label view, because mails can be in Spam or Drafts.
 		// We could check each mail's folder when in label view, but reporting mails from label view is unlikely.
@@ -393,7 +494,7 @@ export class MailView extends BaseTopLevelView implements TopLevelView<MailViewA
 
 							await moveMailsToSystemFolder({
 								mailboxModel: locator.mailboxModel,
-								mailModel: mailLocator.mailModel,
+								mailModel: this.mailViewModel.mailModel,
 								currentFolder: folder,
 								mailIds: mailsToMoveToInbox,
 								targetFolderType: MailSetKind.INBOX,
@@ -457,42 +558,32 @@ export class MailView extends BaseTopLevelView implements TopLevelView<MailViewA
 				// Re-create the whole viewer and its vnode tree if email has changed
 				key: getElementId(viewModel.primaryMail),
 				viewModel: viewModel,
-				actionableMailViewerViewModel: this.mailViewModel.groupMailsByConversation()
-					? () => viewModel.getLatestMail()?.viewModel
-					: () => viewModel.primaryViewModel(),
+				actionableMailViewerViewModel: this.actionableMailViewerViewModel(viewModel),
 				// this assumes that the viewSlider focus animation is already started
 				delayBodyRendering: this.viewSlider.waitForAnimation(),
-				actions: (mailViewerModel: MailViewerViewModel) => {
-					return {
-						trash: mailViewerModel.isMovableMail()
-							? async () => {
-									await this.moveMailsToTrash(assertNotNull(mailViewerModel.mail._ownerGroup), [mailViewerModel.mail._id])
-								}
-							: null,
-						delete: mailViewerModel.isDeletingMailAllowed()
-							? () => {
-									promptAndDeleteMails(mailViewerModel.mailModel, [mailViewerModel.mail._id], null, noOp)
-									this.mailViewModel.clearStickyMail()
-								}
-							: null,
-						move: mailViewerModel.isMovableMail()
-							? (dom) => {
-									showMoveMailsDropdown(
-										mailViewerModel.mailboxModel,
-										mailViewerModel.mailModel,
-										this.undoModel,
-										dom.getBoundingClientRect(),
-										[mailViewerModel.mail],
-										MoveMode.Mails,
-										mailLocator.contactModel,
-									)
-								}
-							: null,
+				deleteAction: (mailViewerModel: MailViewerViewModel) => {
+					if (mailViewerModel.isDeletingMailAllowed()) {
+						return () => {
+							promptAndDeleteMails(mailViewerModel.mailModel, [mailViewerModel.mail._id], null, noOp)
+							this.mailViewModel.clearStickyMail()
+						}
+					} else {
+						return null
+					}
+				},
+				trash: (mailViewerModel: MailViewerViewModel) => {
+					if (!mailViewerModel.isDeletingMailAllowed() && mailViewerModel.isMovableMail()) {
+						return async () => {
+							await this.moveMailsToTrash(assertNotNull(mailViewerModel.mail._ownerGroup), [mailViewerModel.mail._id])
+						}
+					} else {
+						return null
 					}
 				},
 				moreActions: (mailViewerModel: MailViewerViewModel) => {
 					return getMailViewerMoreActions({
 						viewModel: mailViewerModel,
+						exportAction: this.getExportAction(),
 						print: this.getPrintAction(),
 						reapplyInboxRules: this.getSingleMailReapplyInboxRulesAction(mailViewerModel),
 						reportSpam: this.getSingleMailReportSpamAction(mailViewerModel),
@@ -504,28 +595,34 @@ export class MailView extends BaseTopLevelView implements TopLevelView<MailViewA
 		})
 	}
 
+	private actionableMailViewerViewModel(viewModel: ConversationViewModel) {
+		return this.mailViewModel.groupMailsByConversation() ? () => viewModel.getLatestMail()?.viewModel : () => viewModel.primaryViewModel()
+	}
+
 	private mailViewerMultiActions() {
 		return m(MailViewerActions, {
 			selectedMails: this.mailViewModel.listModel?.getSelectedAsArray() ?? [],
 			selectNone: () => this.mailViewModel.listModel?.selectNone(),
-			deleteMailAction: this.getDeleteMailsAction(),
-			trashMailsAction: this.getTrashMailsAction(),
-			moveMailsAction: this.getMoveMailsAction(),
-			applyLabelsAction: this.getLabelsAction(),
 			setUnreadStateAction: this.getSetUnreadStateAction(),
 			isUnread: null,
-			editDraftAction: null,
-			unscheduleMailAction: null,
-			exportAction: this.getExportAction(),
-			replyAction: null,
-			replyAllAction: null,
-			forwardAction: null,
+			mailViewerActions: {
+				deleteAction: this.getDeleteMailsAction(),
+				trash: this.getTrashMailsAction(),
+				move: this.getMoveMailsAction(),
+				label: this.getLabelsAction(),
+				markSpam: this.getReportMailsAsSpamAction(),
+				markNotSpam: this.getReportMailsAsNotSpamAction(),
+				edit: null,
+				cancelScheduled: null,
+				reply: null,
+				replyAll: null,
+				forward: null,
+			},
 			mailViewerMoreActions: {
+				exportAction: this.getExportAction(),
 				reapplyInboxRulesAction: this.getReapplyInboxRulesAction(),
 			},
-			reportSpamAction: this.getReportMailsAsSpamAction(),
-			reportNotSpamAction: this.getReportMailsAsNotSpamAction(),
-		})
+		} satisfies MailViewerToolbarAttrs)
 	}
 
 	private renderMultiMailViewer(header: AppHeaderAttrs) {
@@ -587,15 +684,31 @@ export class MailView extends BaseTopLevelView implements TopLevelView<MailViewA
 					searchBar: () =>
 						// not showing search for external users
 						locator.logins.isInternalUserLoggedIn()
-							? m(LazySearchBar, {
-									placeholder: lang.get("searchEmails_placeholder"),
+							? m(MailQuickSearchBar, {
+									loadResults: (searchQuery) => this.mailViewModel.getSearchResult(searchQuery),
+									selectResult: (searchQuery, mail) => {
+										this.mailViewModel.selectSearchResult(searchQuery, mail)
+									},
+									shouldOfferUpgrade: locator.logins.getUserController().isFreeAccount(),
+									needsToEnableSearch: async () => !(await mailLocator.mailSearchModel()).indexState().mailIndexEnabled,
+									enableSearch: () =>
+										mailLocator.indexerFacade
+											.enableMailIndexing()
+											.then(() => true)
+											.catch(
+												ofClass(IndexingNotSupportedError, () => {
+													Dialog.message(EnvProvider.get().isApp() ? "searchDisabledApp_msg" : "searchDisabled_msg")
+													return false
+												}),
+											),
+									indexingSupported: mailLocator.mailModel.indexingSupported,
 								})
 							: null,
 					...attrs.header,
 					buttons: renderHeaderButtons(),
 				}),
 				bottomNav:
-					styles.isSingleColumnLayout() && this.viewSlider.focusedColumn === this.mailColumn && this.conversationViewModel
+					Styles.get().isSingleColumnLayout() && this.viewSlider.focusedColumn === this.mailColumn && this.conversationViewModel
 						? m(MobileMailActionBar, {
 								deleteMailsAction: this.getDeleteMailsAction(),
 								trashMailsAction: this.getTrashMailsAction(),
@@ -605,12 +718,12 @@ export class MailView extends BaseTopLevelView implements TopLevelView<MailViewA
 								isUnread: this.getUnreadState(),
 								editDraftAction: this.getEditDraftAction(this.conversationViewModel),
 								unscheduleMailAction: this.getUnscheduleMailAction(this.conversationViewModel),
-								exportAction: this.getExportAction(),
 								replyAction: this.getReplyAction(this.conversationViewModel, false),
 								replyAllAction: this.getReplyAction(this.conversationViewModel, true),
 								forwardAction: this.getForwardAction(this.conversationViewModel),
 								mailViewerMoreActions: getMailViewerMoreActions({
 									viewModel: this.conversationViewModel.primaryViewModel(),
+									exportAction: this.getExportAction(),
 									print: this.getPrintAction(),
 									reapplyInboxRules: this.getSingleMailReapplyInboxRulesAction(this.conversationViewModel.primaryViewModel()),
 									reportSpam: this.getSingleMailReportSpamAction(this.conversationViewModel.primaryViewModel()),
@@ -619,7 +732,7 @@ export class MailView extends BaseTopLevelView implements TopLevelView<MailViewA
 								}),
 								reportNotSpamAction: this.getSingleMailReportNotSpamAction(this.conversationViewModel.primaryViewModel()),
 							})
-						: styles.isSingleColumnLayout() && this.mailViewModel.listModel?.isInMultiselect()
+						: Styles.get().isSingleColumnLayout() && this.mailViewModel.listModel?.isInMultiselect()
 							? m(MobileMailMultiselectionActionBar, {
 									selectNone: () => this.mailViewModel.listModel?.selectNone(),
 									deleteMailsAction: this.getDeleteMailsAction(),
@@ -669,9 +782,9 @@ export class MailView extends BaseTopLevelView implements TopLevelView<MailViewA
 		}
 	}
 
-	private getMoveMailsAction(): ((origin: PosRect, opts: ShowMoveMailsDropdownOpts) => void) | null {
-		const hasMovableMails = this.mailViewModel.getActionableMails().some((mail) => isMailMovable(mail, mailLocator.mailModel))
-		return hasMovableMails ? (origin, opts) => this.moveMailsFromFolder(origin, opts) : null
+	private getMoveMailsAction(): ((origin: PosRect) => void) | null {
+		const hasMovableMails = this.mailViewModel.getActionableMails().some((mail) => isMailMovable(mail, this.mailViewModel.mailModel))
+		return hasMovableMails ? (origin) => this.moveFromFolder(origin) : null
 	}
 
 	getViewSlider(): ViewSlider | null {
@@ -736,7 +849,7 @@ export class MailView extends BaseTopLevelView implements TopLevelView<MailViewA
 					mail.unread = unread
 				}
 			}
-			await mailLocator.mailModel.markMails(mailsToMark, unread)
+			await this.mailViewModel.mailModel.markMails(mailsToMark, unread)
 		}
 	}
 
@@ -754,7 +867,7 @@ export class MailView extends BaseTopLevelView implements TopLevelView<MailViewA
 		const selectedMails = this.mailViewModel.listModel?.getSelectedAsArray() ?? []
 
 		if (selectedMails.length === 1 && viewModel.primaryViewModel().isScheduled()) {
-			return () => mailLocator.mailModel.unscheduleMail(viewModel.primaryMail)
+			return () => this.mailViewModel.mailModel.unscheduleMail(viewModel.primaryMail)
 		} else {
 			return null
 		}
@@ -764,7 +877,7 @@ export class MailView extends BaseTopLevelView implements TopLevelView<MailViewA
 		return isNewMailActionAvailable()
 			? [
 					m(IconButton, {
-						title: "newMail_action",
+						label: "newMail_action",
 						click: () => this.showNewMailDialog().catch(ofClass(PermissionError, noOp)),
 						icon: Icons.Write,
 					}),
@@ -777,172 +890,42 @@ export class MailView extends BaseTopLevelView implements TopLevelView<MailViewA
 
 		return [
 			...listSelectionKeyboardShortcuts(MultiselectMode.Enabled, () => this.mailViewModel),
-			{
-				key: Keys.N,
-				exec: () => {
-					this.showNewMailDialog().catch(ofClass(PermissionError, noOp))
-				},
-				enabled: () => !!this.mailViewModel.getMailSet() && isNewMailActionAvailable(),
-				help: "newMail_action",
-			},
-			{
-				key: Keys.DELETE,
-				exec: () => {
-					deleteOrTrashAction()
-				},
-				help: "deleteEmails_action",
-			},
-			{
-				key: Keys.BACKSPACE,
-				exec: () => {
-					deleteOrTrashAction()
-				},
-				help: "deleteEmails_action",
-			},
-			{
-				key: Keys.DELETE,
-				shift: true,
-				exec: () => {
-					this.moveMailsToSystemFolder(MailSetKind.SPAM)
-				},
-				help: "reportSpam_action",
-			},
-			{
-				key: Keys.BACKSPACE,
-				shift: true,
-				exec: () => {
-					this.moveMailsToSystemFolder(MailSetKind.SPAM)
-				},
-				help: "reportSpam_action",
-			},
-			{
-				key: Keys.A,
-				exec: () => {
-					this.moveMailsToSystemFolder(MailSetKind.ARCHIVE)
-				},
-				help: "archive_action",
-				enabled: () => locator.logins.isInternalUserLoggedIn(),
-			},
-			{
-				key: Keys.I,
-				exec: () => {
-					this.moveMailsToSystemFolder(MailSetKind.INBOX)
-				},
-				help: "moveToInbox_action",
-			},
-			{
-				key: Keys.N,
-				shift: true,
-				ctrlOrCmd: true,
-				exec: () => {
+			...getCommonShortcuts(
+				// createAction
+				() => this.showNewMailDialog().catch(ofClass(PermissionError, noOp)),
+				// createFolderAction
+				() => {
 					// Since the user can have multiple mailboxes, get the current folder to find which mailbox the user selected
 					const currentFolder = this.mailViewModel.getMailSet()
 					if (currentFolder != null) {
 						this.showFolderAddEditDialog(assertNotNull(currentFolder._ownerGroup), null, null)
 					}
-					return true
 				},
-				help: "addFolder_action",
-			},
-			{
-				key: Keys.V,
-				exec: () => {
-					this.moveMailsFromFolder(getDetachedDropdownBounds())
-					return true
-				},
-				help: "move_action",
-			},
-			{
-				key: Keys.L,
-				exec: () => {
-					const labelsCall = this.getLabelsAction()
-					labelsCall?.(null)
-					return true
-				},
-				help: "labels_label",
-			},
-			{
-				key: Keys.U,
-				exec: () => {
-					if (this.mailViewModel.listModel) this.toggleUnreadMails()
-				},
-				help: "toggleUnread_action",
-			},
-			{
-				key: Keys.Z,
-				exec: () => {
-					this.undoModel.performUndoAction()
-				},
-				ctrlOrCmd: true,
-				help: "undo_action",
-			},
-			{
-				key: Keys.ONE,
-				exec: () => {
-					this.mailViewModel.switchToFolder(MailSetKind.INBOX)
-					return true
-				},
-				help: "switchInbox_action",
-			},
-			{
-				key: Keys.TWO,
-				exec: () => {
-					this.mailViewModel.switchToFolder(MailSetKind.DRAFT)
-					return true
-				},
-				help: "switchDrafts_action",
-			},
-			{
-				key: Keys.THREE,
-				exec: () => {
-					// This should be removed once the batch job to add the Scheduled Mail set to all users is run
-					this.goToScheduledFolder()
-					// This should be put back
-					//this.mailViewModel.switchToFolder(MailSetKind.SCHEDULED)
-					return true
-				},
-				help: "switchScheduledFolder_action",
-			},
-			{
-				key: Keys.FOUR,
-				exec: () => {
-					this.mailViewModel.switchToFolder(MailSetKind.SENT)
-					return true
-				},
-				help: "switchSentFolder_action",
-			},
-			{
-				key: Keys.FIVE,
-				exec: () => {
-					this.mailViewModel.switchToFolder(MailSetKind.TRASH)
-					return true
-				},
-				help: "switchTrash_action",
-			},
-			{
-				key: Keys.SIX,
-				exec: () => {
-					this.mailViewModel.switchToFolder(MailSetKind.ARCHIVE)
-					return true
-				},
-				enabled: () => locator.logins.isInternalUserLoggedIn(),
-				help: "switchArchive_action",
-			},
-			{
-				key: Keys.SEVEN,
-				exec: () => {
-					this.mailViewModel.switchToFolder(MailSetKind.SPAM)
-					return true
-				},
-				enabled: () => locator.logins.isInternalUserLoggedIn() && !locator.logins.isEnabled(FeatureType.InternalCommunication),
-				help: "switchSpam_action",
-			},
-			{
-				key: Keys.CTRL,
-				exec: () => false,
-				enabled: canDoDragAndDropExport,
-				help: "dragAndDrop_action",
-			},
+				// toggleUnreadAction
+				() => (this.mailViewModel.listModel ? this.toggleUnreadMails() : noOp()),
+				// deleteOrTrashAction
+				() => deleteOrTrashAction(),
+				// labelAction
+				() => this.getLabelsAction()?.(null) ?? noOp(),
+				// moveMailsToFolderAction
+				(targetFolder: SystemFolderType) => this.moveMailsToSystemFolder(targetFolder),
+				// moveMailsFromFolderAction
+				() => this.moveFromFolder(getDetachedDropdownBounds()),
+				// switchToFolderAction
+				(type: SystemFolderType) => this.mailViewModel.switchToFolder(type),
+				// undoAction
+				() => this.undoModel.performUndoAction(),
+				// isDragAndDropExportEnabled
+				canDoDragAndDropExport,
+				// isInternalUserLoggedIn
+				// if we just pass the function, "this" in locator.logins.isInternalUserLoggedIn becomes null
+				// so need to wrap it here
+				() => locator.logins.isInternalUserLoggedIn(),
+				// isInternalCommunicationEnabled
+				() => locator.logins.isEnabled(FeatureType.InternalCommunication),
+				// isNewMailActionAvailable
+				() => !!this.mailViewModel.getMailSet() && isNewMailActionAvailable(),
+			),
 			{
 				key: Keys.P,
 				ctrlOrCmd: true,
@@ -975,14 +958,14 @@ export class MailView extends BaseTopLevelView implements TopLevelView<MailViewA
 	}
 
 	private getTrashMailsAction(): (() => void) | null {
-		const hasTrashableMails = this.mailViewModel.getActionableMails().some((mail) => isMailMovable(mail, mailLocator.mailModel))
+		const hasTrashableMails = this.mailViewModel.getActionableMails().some((mail) => isMailMovable(mail, this.mailViewModel.mailModel))
 		return hasTrashableMails ? () => this.trashSelectedMails() : null
 	}
 
 	private async trashSelectedMails() {
 		const actionableMails = this.mailViewModel.getActionableMails()
 		const firstMail = first(actionableMails)
-		if (firstMail == null || !actionableMails.some((mail) => isMailMovable(mail, mailLocator.mailModel))) {
+		if (firstMail == null || !actionableMails.some((mail) => isMailMovable(mail, this.mailViewModel.mailModel))) {
 			// No trashable mails
 			return
 		}
@@ -991,7 +974,7 @@ export class MailView extends BaseTopLevelView implements TopLevelView<MailViewA
 	}
 
 	private async moveMailsToTrash(ownerGroupId: Id, resolvedMails: readonly IdTuple[]) {
-		const folderSystem = mailLocator.mailModel.getFolderSystemByGroupId(ownerGroupId)
+		const folderSystem = this.mailViewModel.mailModel.getFolderSystemByGroupId(ownerGroupId)
 		const targetFolder = folderSystem?.getSystemFolderByType(MailSetKind.TRASH)
 
 		if (targetFolder == null) {
@@ -1000,7 +983,7 @@ export class MailView extends BaseTopLevelView implements TopLevelView<MailViewA
 
 		moveMails({
 			mailboxModel: locator.mailboxModel,
-			mailModel: mailLocator.mailModel,
+			mailModel: this.mailViewModel.mailModel,
 			targetFolder,
 			mailIds: resolvedMails,
 			moveMode: MoveMode.Mails, // when conversation grouping is enabled, move all conversation mails to trash.
@@ -1024,7 +1007,7 @@ export class MailView extends BaseTopLevelView implements TopLevelView<MailViewA
 
 		moveMailsToSystemFolder({
 			mailboxModel: locator.mailboxModel,
-			mailModel: mailLocator.mailModel,
+			mailModel: this.mailViewModel.mailModel,
 			currentFolder: folder,
 			mailIds: actionableMails,
 			targetFolderType,
@@ -1034,23 +1017,26 @@ export class MailView extends BaseTopLevelView implements TopLevelView<MailViewA
 		})
 	}
 
-	private moveMailsFromFolder(origin: PosRect, opts?: ShowMoveMailsDropdownOpts) {
-		const currentFolder = this.mailViewModel.getMailSet()
-		if (currentFolder == null) {
-			return
-		}
-
+	private moveFromFolder(origin: PosRect, opts?: ShowMoveMailsDropdownOpts) {
 		/** actionableMails must be captured before {@link showMoveMailsFromFolderDropdown}is called.
 		 * This is done to ensure that selected mails are captured before {@link ShowMoveMailsDropdownOpts#onSelected} is called,
 		 * which can be {@link MailListModel#selectNone} in some cases.
 		 */
 		const actionableMails = this.mailViewModel.getActionableMails()
-		if (!actionableMails.some((mail) => isMailMovable(mail, mailLocator.mailModel))) {
+		if (!actionableMails.some((mail) => isMailMovable(mail, this.mailViewModel.mailModel))) {
 			// No movable actionableMails
 			return
 		}
 
-		const resolvedMails = () => this.mailViewModel.getResolvedMails(actionableMails)
+		this.moveMailsFromFolder(origin, () => this.mailViewModel.getResolvedMails(actionableMails), opts)
+	}
+
+	private moveMailsFromFolder(origin: PosRect, resolvedMails: () => Promise<readonly IdTuple[]>, opts?: ShowMoveMailsDropdownOpts) {
+		const currentFolder = this.mailViewModel.getMailSet()
+		if (currentFolder == null) {
+			return
+		}
+
 		const moveMode = this.mailViewModel.getMoveMode(currentFolder)
 		const optsWithClear: ShowMoveMailsDropdownOpts = {
 			...opts,
@@ -1061,7 +1047,7 @@ export class MailView extends BaseTopLevelView implements TopLevelView<MailViewA
 		}
 		showMoveMailsFromFolderDropdown(
 			locator.mailboxModel,
-			mailLocator.mailModel,
+			this.mailViewModel.mailModel,
 			this.undoModel,
 			origin,
 			currentFolder,
@@ -1073,8 +1059,7 @@ export class MailView extends BaseTopLevelView implements TopLevelView<MailViewA
 	}
 
 	private getLabelsAction(): ((dom: HTMLElement | null, opts?: LabelsPopupOpts) => void) | null {
-		const mailModel = mailLocator.mailModel
-		if (!mailModel.canAssignLabels()) {
+		if (!this.mailViewModel.mailModel.canAssignLabels()) {
 			return null
 		}
 
@@ -1082,7 +1067,7 @@ export class MailView extends BaseTopLevelView implements TopLevelView<MailViewA
 		return isNotEmpty(actionableMails)
 			? (dom, opts) => {
 					// when viewing a conversation we need to get the label state for all the mails in that conversation
-					showLabelsPopup(mailModel, actionableMails, (mails: Mail[]) => this.mailViewModel.getResolvedMails(mails), dom, opts)
+					showLabelsPopup(this.mailViewModel.mailModel, actionableMails, (mails: Mail[]) => this.mailViewModel.getResolvedMails(mails), dom, opts)
 				}
 			: null
 	}
@@ -1095,7 +1080,7 @@ export class MailView extends BaseTopLevelView implements TopLevelView<MailViewA
 						drawer: drawerAttrs,
 						button: editingFolderForMailGroup
 							? null
-							: !styles.isUsingBottomNavigation() && isNewMailActionAvailable()
+							: !Styles.get().isUsingBottomNavigation() && isNewMailActionAvailable()
 								? {
 										label: "newMail_action",
 										click: () => this.showNewMailDialog().catch(ofClass(PermissionError, noOp)),
@@ -1152,7 +1137,7 @@ export class MailView extends BaseTopLevelView implements TopLevelView<MailViewA
 					name: lang.makeTranslation("mailbox_name", getMailboxName(locator.logins, mailboxDetail)),
 					button: userHasMultipleMailboxes
 						? m(IconButton, {
-								title: isMailGroupCollapsed ? "show_action" : "hide_action",
+								label: isMailGroupCollapsed ? "show_action" : "hide_action",
 								size: ButtonSize.Compact,
 								icon: isMailGroupCollapsed ? Icons.ChevronDown : Icons.ChevronUp,
 								click: () => {
@@ -1176,7 +1161,7 @@ export class MailView extends BaseTopLevelView implements TopLevelView<MailViewA
 
 	private createMailboxFolderItems(mailboxDetail: MailboxDetail, inEditMode: boolean, onEditMailbox: () => void): Children {
 		return m(MailFoldersView, {
-			mailModel: mailLocator.mailModel,
+			mailModel: this.mailViewModel.mailModel,
 			mailboxDetail,
 			expandedFolders: this.expandedMailSets,
 			mailFolderElementIdToSelectedMailId: this.mailViewModel.getMailFolderToSelectedMail(),
@@ -1248,7 +1233,14 @@ export class MailView extends BaseTopLevelView implements TopLevelView<MailViewA
 		const isTargetDescendent =
 			labelFolderSystem.getDescendantFoldersOfParent(labelToMove._id)?.find((descendant) => isSameId(targetLabel._id, descendant.mailSet._id)) != null
 		if (isTargetDescendent) return
-		await mailLocator.mailFacade.updateLabel(labelToMove, labelToMove.name, assertNotNull(labelToMove.color), targetLabel._id)
+
+		// don't move label into another label that contains child with same name
+		const message = checkMailSetName(labelFolderSystem, labelToMove.name, targetLabel._id, true)
+		if (message != null) {
+			await Dialog.message(message)
+		} else {
+			await mailLocator.mailFacade.updateLabel(labelToMove, labelToMove.name, assertNotNull(labelToMove.color), targetLabel._id)
+		}
 	}
 
 	private setExpandedMailSetState(folder: MailSet, currentExpansionState: boolean) {
@@ -1287,7 +1279,7 @@ export class MailView extends BaseTopLevelView implements TopLevelView<MailViewA
 			import("../../../common/support/SupportDialog.js").then(({ showSupportDialog }) => showSupportDialog(locator.logins))
 		}
 
-		if (isApp()) {
+		if (EnvProvider.get().isApp()) {
 			let userGroupInfo = locator.logins.getUserController().userGroupInfo
 			locator.pushService.closePushNotification(
 				userGroupInfo.mailAddressAliases.map((alias) => alias.mailAddress).concat(userGroupInfo.mailAddress || []),
@@ -1317,7 +1309,7 @@ export class MailView extends BaseTopLevelView implements TopLevelView<MailViewA
 
 	private showMail(args: Record<string, any>) {
 		this.mailViewModel.showMailWithMailSetId(args.folderId, args.mailId)
-		if (styles.isSingleColumnLayout() && !args.mailId && this.viewSlider.focusedColumn === this.mailColumn) {
+		if (Styles.get().isSingleColumnLayout() && !args.mailId && this.viewSlider.focusedColumn === this.mailColumn) {
 			this.viewSlider.focus(this.listColumn)
 		}
 	}
@@ -1379,7 +1371,7 @@ export class MailView extends BaseTopLevelView implements TopLevelView<MailViewA
 			return
 		}
 
-		const folderSystem = mailLocator.mailModel.getFolderSystemByGroupId(assertNotNull(targetFolder._ownerGroup))
+		const folderSystem = this.mailViewModel.mailModel.getFolderSystemByGroupId(assertNotNull(targetFolder._ownerGroup))
 		if (folderSystem == null) return
 
 		const folderToMove = folderSystem.getFolderById(dropData.folderId)
@@ -1392,7 +1384,13 @@ export class MailView extends BaseTopLevelView implements TopLevelView<MailViewA
 			folderSystem.getDescendantFoldersOfParent(folderToMove._id)?.find((descendant) => isSameId(targetFolder._id, descendant.mailSet._id)) != null
 		if (isTargetDescendent) return
 
-		await mailLocator.mailModel.setParentForFolder(folderToMove, targetFolder._id)
+		// don't move folder into another folder that contains child with same name
+		const message = checkMailSetName(folderSystem, folderToMove.name, targetFolder._id, false)
+		if (message != null) {
+			await Dialog.message(message)
+		} else {
+			await this.mailViewModel.mailModel.setParentForFolder(folderToMove, targetFolder._id)
+		}
 	}
 
 	private async handleFolderMailDrop(dropData: MailDropData, targetFolder: MailSet) {
@@ -1411,7 +1409,7 @@ export class MailView extends BaseTopLevelView implements TopLevelView<MailViewA
 			this.mailViewModel.clearStickyMail()
 			moveMails({
 				mailboxModel: locator.mailboxModel,
-				mailModel: mailLocator.mailModel,
+				mailModel: this.mailViewModel.mailModel,
 				targetFolder,
 				mailIds: actionableMails,
 				moveMode: this.mailViewModel.getMoveMode(currentFolder),
@@ -1474,7 +1472,7 @@ export class MailView extends BaseTopLevelView implements TopLevelView<MailViewA
 
 		// remove any selection to avoid that the next mail is loaded and selected for each deleted mail event
 		this.mailViewModel?.listModel?.selectNone()
-		const folders = await mailLocator.mailModel.getMailboxFoldersForId(mailboxDetail.mailbox.mailSets._id)
+		const folders = await this.mailViewModel.mailModel.getMailboxFoldersForId(mailboxDetail.mailbox.mailSets._id)
 
 		if (isSpamOrTrashFolder(folders, folder)) {
 			const confirmed = await Dialog.confirm(
@@ -1483,7 +1481,7 @@ export class MailView extends BaseTopLevelView implements TopLevelView<MailViewA
 				}),
 			)
 			if (!confirmed) return
-			await mailLocator.mailModel.finallyDeleteCustomMailFolder(folder)
+			await this.mailViewModel.mailModel.finallyDeleteCustomMailFolder(folder)
 		} else {
 			const confirmed = await Dialog.confirm(
 				lang.getTranslation("confirmDeleteCustomFolder_msg", {
@@ -1491,7 +1489,7 @@ export class MailView extends BaseTopLevelView implements TopLevelView<MailViewA
 				}),
 			)
 			if (!confirmed) return
-			await mailLocator.mailModel.trashFolderAndSubfolders(folder)
+			await this.mailViewModel.mailModel.trashFolderAndSubfolders(folder)
 		}
 	}
 
@@ -1522,14 +1520,14 @@ export class MailView extends BaseTopLevelView implements TopLevelView<MailViewA
 				mail.unread = unreadValue
 			}
 		})
-		await mailLocator.mailModel.markMails(resolvedMails, unreadValue)
+		await this.mailViewModel.mailModel.markMails(resolvedMails, unreadValue)
 	}
 
 	private async deleteSelectedMails() {
 		const actionableMails = await this.mailViewModel.getResolvedActionableMails()
 		const currentFolder = assertNotNull(this.mailViewModel.getMailSet())
 		if (isNotEmpty(actionableMails)) {
-			await promptAndDeleteMails(mailLocator.mailModel, actionableMails, currentFolder._id, noOp)
+			await promptAndDeleteMails(this.mailViewModel.mailModel, actionableMails, currentFolder._id, noOp)
 		}
 	}
 
@@ -1539,8 +1537,18 @@ export class MailView extends BaseTopLevelView implements TopLevelView<MailViewA
 	}
 
 	private async showLabelFolderAddEditDialog(mailViewModel: MailViewModel, mailGroupId: Id, label: MailSet | null, parentFolder: MailSet | null) {
-		const mailboxDetail = await locator.mailboxModel.getMailboxDetailsForMailGroup(mailGroupId)
-		await showEditLabelDialog(mailboxDetail, mailViewModel, label, parentFolder)
+		if (
+			// creating new label?
+			!label &&
+			// free users can only have 3 labels at once
+			locator.logins.getUserController().isFreeAccount() &&
+			assertNotNull(this.mailViewModel.mailModel.getLabelsByGroupId(mailGroupId)).size >= MAX_LABELS_PER_FREE_USER
+		) {
+			await showNotAvailableForFreeDialog(UpgradePromptType.MORE_LABELS_NEEDED)
+		} else {
+			const mailboxDetail = await locator.mailboxModel.getMailboxDetailsForMailGroup(mailGroupId)
+			await showEditLabelDialog(mailboxDetail, mailViewModel, label, parentFolder)
+		}
 	}
 
 	private async showLabelDeleteDialog(label: MailSet) {
@@ -1559,7 +1567,7 @@ export class MailView extends BaseTopLevelView implements TopLevelView<MailViewA
 		return m(IconButton, {
 			icon: Icons.PenFilled,
 			size: ButtonSize.Compact,
-			title: "edit_action",
+			label: "edit_action",
 			click: onEditMailbox,
 		})
 	}

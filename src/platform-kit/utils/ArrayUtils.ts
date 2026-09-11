@@ -231,7 +231,7 @@ export function getFirstOrThrow<T>(array: ReadonlyArray<T>): T {
 }
 
 export function first<T>(array: ReadonlyArray<T>): T | null {
-	return array[0] || null
+	return array[0] ?? null
 }
 
 export function findLast<T>(array: ReadonlyArray<T>, predicate: (arg0: T) => boolean): T | null {
@@ -265,11 +265,11 @@ export function count<T>(theArray: ReadonlyArray<T>, pred: (e: T) => boolean): n
 	return theArray.reduce<number>((acc, next) => (pred(next) ? ++acc : acc), 0)
 }
 
-export function addAll(array: Array<any>, elements: Array<any>) {
+export function addAll(array: Array<any>, elements: Array<any>): void {
 	array.push(...elements)
 }
 
-export function removeAll(array: Array<any>, elements: Array<any>) {
+export function removeAll(array: Array<any>, elements: Array<any>): void {
 	for (const element of elements) {
 		remove(array, element)
 	}
@@ -303,7 +303,7 @@ export function groupByAndMap<T, R, E>(iterable: Iterable<T>, discriminator: (ar
 
 	for (const el of iterable) {
 		const key = discriminator(el)
-		getFromMap(map, key, () => []).push(mapper(el))
+		getFromMap(map, key, () => Array<E>()).push(mapper(el))
 	}
 
 	return map
@@ -411,7 +411,7 @@ export function insertIntoSortedArray<T>(
 	array: Array<T>,
 	comparator: (left: T, right: T) => number,
 	replaceIf: (newElement: T, existing: T) => boolean = () => false,
-) {
+): void {
 	let i = 0
 
 	while (i < array.length) {
@@ -557,7 +557,7 @@ export function partition<Generic, Specific extends Generic>(
 ): [Array<Specific>, Array<Exclude<Generic, Specific>>]
 export function partition<TL>(array: ReadonlyArray<TL>, predicate: (item: TL) => boolean): [Array<TL>, Array<TL>]
 // this is an implementation signature and is not visible from the outside
-export function partition<T>(array: ReadonlyArray<T>, predicate: any): [Array<T>, Array<T>] {
+export function partition<T>(array: ReadonlyArray<T>, predicate: (item: T) => boolean): [Array<T>, Array<T>] {
 	const left: Array<T> = []
 	const right: Array<T> = []
 

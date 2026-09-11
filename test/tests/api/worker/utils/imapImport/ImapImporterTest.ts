@@ -10,7 +10,6 @@ import { ImapProvider } from "../../../../../../src/applications/common/api/comm
 import { imapMailToImportMailParams } from "../../../../../../src/applications/common/api/common/utils/imapImportUtils/ImapImportUtils"
 import { newImapImportSession } from "../../../../../../src/applications/mail-app/workerUtils/imapimport/ImapImportSession"
 import { ImapError, ImapErrorCause } from "../../../../../../src/applications/common/api/common/error/ImapError"
-import { ImapGetMailboxResult } from "../../../../../../src/applications/common/api/common/utils/imapImportUtils/ImapGetMailboxResult"
 import { ImapAccountSyncStatus, ImapFolderSyncStatus, ImapSyncEventType } from "../../../../../../src/entities/tutanota/Utils"
 import { ImapSyncSystemFacade } from "../../../../../../src/app-kit/native-bridge/common/generatedipc/types"
 import { ImapImportTutaFileId, ImportMailFacade } from "../../../../../../src/applications/common/api/worker/facades/lazy/ImportMailFacade"
@@ -61,6 +60,7 @@ o.spec("ImapImporter", () => {
 		ignoreCertificateErrors: false,
 		customCertificateData: null,
 		provider: ImapProvider.Other,
+		useSSL: true,
 	}
 	const imapMailboxMock: ImapMailbox = { path: "INBOX", name: "INBOX" }
 	const imapMailboxStatusMock: ImapMailboxStatus = {
@@ -415,7 +415,7 @@ o.spec("ImapImporter", () => {
 		when(imapFacadeMock.getImapAccountSyncStateById(accountSyncStateIdMock)).thenResolve(accountSyncStateMock)
 		when(imapFacadeMock.getAllImapFolderSyncStates("folderSyncStateListId")).thenResolve([folderSyncStateMock])
 
-		await importer.entityEventsReceived([update], "groupId")
+		await importer.onEntityUpdatesReceived([update], "groupId")
 
 		o.check(session.imapAccountSyncState).equals(accountSyncStateMock)
 		o.check(session.imapFolderSyncStates).deepEquals([folderSyncStateMock])
@@ -432,7 +432,7 @@ o.spec("ImapImporter", () => {
 		when(imapFacadeMock.getImapAccountSyncStateById(accountSyncStateIdMock)).thenResolve(accountSyncStateMock)
 		when(imapFacadeMock.getAllImapFolderSyncStates("folderSyncStateListId")).thenResolve([folderSyncStateMock])
 
-		await importer.entityEventsReceived([update], "groupId")
+		await importer.onEntityUpdatesReceived([update], "groupId")
 
 		o.check(importer.imapImportSessions.size).equals(1)
 		const newSession = importer.imapImportSessions.get(importer.getImapImportSessionsMapKey(accountSyncStateIdMock))
@@ -452,7 +452,7 @@ o.spec("ImapImporter", () => {
 		} as EntityUpdateData
 
 		// TODO: needs tests for the changes in delete operation.
-		await importer.entityEventsReceived([update], "groupId")
+		await importer.onEntityUpdatesReceived([update], "groupId")
 
 		o.check(importer.imapImportSessions.has(importer.getImapImportSessionsMapKey(accountSyncStateIdMock))).equals(false)
 	})
@@ -502,7 +502,7 @@ o.spec("ImapImporter", () => {
 	})
 
 	o.test("getImapMailboxesFromServer - delegates to system facade", async () => {
-		const resultMock: ImapGetMailboxResult = { result: [] }
+		const resultMock: ImapMailbox[] = []
 		when(imapSyncSystemFacadeMock.getImapMailboxesFromServer(imapCredentials)).thenResolve(resultMock)
 
 		const result = await importer.getImapMailboxesFromServer(imapCredentials)

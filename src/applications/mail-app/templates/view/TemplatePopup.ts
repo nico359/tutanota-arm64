@@ -6,7 +6,7 @@ import type { Shortcut } from "../../../../ui/utils/KeyManager"
 import { isKeyPressed } from "../../../../ui/utils/KeyManager"
 import type Stream from "mithril/stream"
 import stream from "mithril/stream"
-import { Keys, ShareCapability } from "../../../../platform-kit/app-env"
+import { ShareCapability } from "../../../../platform-kit/app-env"
 import { TemplatePopupResultRow } from "./TemplatePopupResultRow.js"
 import { Icons } from "../../../../ui/base/icons/Icons"
 import { TemplateExpander } from "./TemplateExpander.js"
@@ -33,6 +33,7 @@ import { WindowSizeListener } from "../../../../ui/utils/WindowUtils"
 import { EmailTemplate, TemplateGroupRoot, TemplateGroupRootTypeRef } from "@tutao/entities/tutanota"
 import { hasCapabilityOnGroup } from "../../../../entities/sys/Utils"
 import { idToElementId } from "@tutao/meta"
+import { Keys } from "../../../../ui/utils/KeyboardKeys"
 
 /**
  *    Creates a Modal/Popup that allows user to paste templates directly into the MailEditor.
@@ -283,7 +284,7 @@ export class TemplatePopup implements ModalComponent {
 
 		if (templateGroupInstances.length === 0) {
 			return {
-				title: "createTemplate_action",
+				label: "createTemplate_action",
 				click: () => {
 					createInitialTemplateListIfAllowed().then((groupRoot) => {
 						if (groupRoot) {
@@ -296,7 +297,7 @@ export class TemplatePopup implements ModalComponent {
 			}
 		} else if (writeableGroups.length === 1) {
 			return {
-				title: "createTemplate_action",
+				label: "createTemplate_action",
 				click: () => this.showTemplateEditor(null, writeableGroups[0].groupRoot),
 				icon: Icons.Plus,
 				colors: ButtonColor.DrawerNav,
@@ -304,7 +305,7 @@ export class TemplatePopup implements ModalComponent {
 		} else if (writeableGroups.length > 1) {
 			return attachDropdown({
 				mainButtonAttrs: {
-					title: "createTemplate_action",
+					label: "createTemplate_action",
 					icon: Icons.Plus,
 					colors: ButtonColor.DrawerNav,
 				},
@@ -336,7 +337,7 @@ export class TemplatePopup implements ModalComponent {
 				IconButton,
 				attachDropdown({
 					mainButtonAttrs: {
-						title: "chooseLanguage_action",
+						label: "chooseLanguage_action",
 						icon: Icons.Language,
 					},
 					childAttrs: async () =>
@@ -356,7 +357,7 @@ export class TemplatePopup implements ModalComponent {
 			canEdit
 				? [
 						m(IconButton, {
-							title: "editTemplate_action",
+							label: "editTemplate_action",
 							click: () =>
 								locator.entityClient
 									.load(TemplateGroupRootTypeRef, idToElementId(neverNull(selectedTemplate._ownerGroup)))
@@ -365,7 +366,7 @@ export class TemplatePopup implements ModalComponent {
 							colors: ButtonColor.DrawerNav,
 						}),
 						m(IconButton, {
-							title: "remove_action",
+							label: "remove_action",
 							click: () => {
 								getConfirmation("deleteTemplate_msg").confirmed(() => locator.entityClient.erase(selectedTemplate))
 							},

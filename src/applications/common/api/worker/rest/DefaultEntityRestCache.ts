@@ -4,6 +4,7 @@ import {
 	CUSTOM_MAX_ID,
 	CUSTOM_MIN_ID,
 	elementIdPart,
+	Entity,
 	expandId,
 	firstBiggerThanSecond,
 	GENERATED_MAX_ID,
@@ -20,10 +21,10 @@ import {
 	PersistentEntity,
 	TypeModel,
 	TypeRef,
-	ValueType,
+	ValueTypeEnum,
 } from "@tutao/meta"
 import { assertNotNull, getFirstOrThrow, groupBy, isNotEmpty, isNotNull, lastThrow, lazyAsync, Nullable } from "@tutao/utils"
-import { assertWorkerOrNode, isTest, ProgrammingError } from "@tutao/app-env"
+import { EnvProvider, ProgrammingError } from "@tutao/app-env"
 import { ENTITY_EVENT_BATCH_EXPIRE_MS } from "../../../../../app-kit/local-store/event/EventBusClient.js"
 import { DecryptedParsedInstance, OwnerEncSessionKeyProvider, PatchMerger, TypeModelResolver } from "@tutao/instance-pipeline"
 import { LastProcessedEventBatchProvider } from "../../../../../platform-kit/network/LastProcessedEventBatchProvider.js"
@@ -58,7 +59,7 @@ import {
 	CacheSyncStatus,
 	CachingStatus,
 	EntityUpdateData,
-	getLogStringForEntityEvent,
+	getLogStringForEntityUpdate,
 	isUpdateForTypeRef,
 } from "../../../../../platform-kit/instance-pipeline/utils/EntityUpdateUtils"
 import { isExpectedErrorForSynchronization } from "@tutao/rest-client/error"
@@ -70,7 +71,7 @@ import {
 	getCacheModeBehavior,
 } from "../../../../../platform-kit/instance-pipeline/RestClientOptions"
 
-assertWorkerOrNode()
+EnvProvider.assertWorkerOrNode()
 
 /**
  *
@@ -89,7 +90,7 @@ const IGNORED_TYPES = [
 	RejectedSenderTypeRef,
 	// when doing automatic calendar updates, we will miss uid index entity updates if we're using the cache.
 	// this is mainly caused by some calendaring apps sending the same update multiple times in the same mail.
-	// the earliest place where we could deduplicate would be in entityEventsReceived on the calendarModel.
+	// the earliest place where we could deduplicate would be in onEntityUpdatesReceived on the calendarModel.
 	CalendarEventUidIndexTypeRef,
 	KeyRotationTypeRef,
 	UserGroupRootTypeRef,
@@ -167,7 +168,7 @@ export class DefaultEntityRestCache implements EntityRestCache {
 		typeRef: TypeRef<T>,
 		listId: Id | null,
 		ids: Array<Id>,
-		ownerEncSessionKeyProvider?: OwnerEncSessionKeyProvider,
+		ownerEncSessionKeyProvider: Nullable<OwnerEncSessionKeyProvider> = null,
 		opts: EntityRestClientLoadOptions = DEFAULT_ENTITY_RESTCLIENT_LOAD_OPTIONS,
 	): Promise<Array<T>> {
 		const useCache = this.shouldUseCache(typeRef, opts)
@@ -250,7 +251,7 @@ export class DefaultEntityRestCache implements EntityRestCache {
 		typeRef: TypeRef<T>,
 		listId: Id | null,
 		ids: Array<Id>,
-		ownerEncSessionKeyProvider?: OwnerEncSessionKeyProvider,
+		ownerEncSessionKeyProvider: Nullable<OwnerEncSessionKeyProvider> = null,
 		opts: EntityRestClientLoadOptions = DEFAULT_ENTITY_RESTCLIENT_LOAD_OPTIONS,
 	): Promise<Array<T>> {
 		const cachingBehavior = getCacheModeBehavior(opts.cacheMode)
@@ -604,7 +605,7 @@ export class DefaultEntityRestCache implements EntityRestCache {
 	 *
 	 * @return Promise, which resolves to the array of valid events (if response is NotFound or NotAuthorized we filter it out)
 	 */
-	async entityEventsReceived(events: readonly EntityUpdateData[], batchId: Id, groupId: Id): Promise<readonly EntityUpdateData[]> {
+	async onEntityUpdatesReceived(events: readonly EntityUpdateData[], batchId: Id, groupId: Id): Promise<readonly EntityUpdateData[]> {
 		await this.recordSyncTime()
 
 		const regularUpdates = events.filter((u) => u.typeRef.app !== "monitor")
@@ -676,13 +677,13 @@ export class DefaultEntityRestCache implements EntityRestCache {
 			try {
 				switch (operation) {
 					case OperationType.CREATE:
-						await handler.onEntityEventCreate?.(id, filteredUpdateEvents)
+						await handler.onCreateEntityUpdate?.(id, filteredUpdateEvents)
 						break
 					case OperationType.UPDATE:
-						await handler.onEntityEventUpdate?.(id, filteredUpdateEvents)
+						await handler.onUpdateEntityUpdate?.(id, filteredUpdateEvents)
 						break
 					case OperationType.DELETE:
-						await handler.onEntityEventDelete?.(id)
+						await handler.onDeleteEntityUpdate?.(id)
 						break
 				}
 			} catch (e) {
@@ -702,7 +703,7 @@ export class DefaultEntityRestCache implements EntityRestCache {
 
 	private async processCreateEvent(typeRef: TypeRef<any>, update: EntityUpdateData): Promise<EntityUpdateData | null> {
 		// if there is a custom handler we follow its decision
-		let shouldUpdateDb = this.cacheStorage.getCustomCacheHandlerMap().get(typeRef)?.shouldLoadOnCreateEvent?.(update)
+		let shouldUpdateDb = this.cacheStorage.getCustomCacheHandlerMap().get(typeRef)?.shouldLoadOnCreateEntityUpdate?.(update)
 		// otherwise, we do a range check to see if we need to keep the range up-to-date. No need to load anything out of range
 		// we put new instances into cache only when it's a new instance in the cached range which is only for the list instances
 		if (update.instanceListId != null) {
@@ -747,7 +748,7 @@ export class DefaultEntityRestCache implements EntityRestCache {
 				// If the entity is not there anymore we should evict it from the cache and not keep the outdated/nonexistent instance around.
 				// Even for list elements this should be safe as the instance is not there anymore.
 				if (isExpectedErrorForSynchronization(e)) {
-					console.log(`instance not found when processing update for ${getLogStringForEntityEvent(update)}, deleting from the cache`)
+					console.log(`instance not found when processing update for ${getLogStringForEntityUpdate(update)}, deleting from the cache`)
 					await this.cacheStorage.deleteIfExists(update.typeRef, update.instanceListId, update.instanceId)
 					return null
 				} else {
@@ -830,7 +831,7 @@ export class DefaultEntityRestCache implements EntityRestCache {
 	private shouldUseCache(typeRef: TypeRef<any>, opts?: EntityRestClientLoadOptions): boolean {
 		// if the cacheStorage for some reason is not (yet) initialized we can not use the cache,
 		// but still want to be able to use the client and do a login, etc.
-		if (!isTest() && !this.cacheStorage.isInitialized()) {
+		if (!EnvProvider.isTest() && !this.cacheStorage.isInitialized()) {
 			return false
 		}
 
@@ -867,14 +868,14 @@ function isRangeRequestAwayFromExistingRange(range: Range, reverse: boolean, sta
  * isCachedRangeType(ref) ---> !isIgnoredType(ref) but
  * isIgnoredType(ref) -/-> !isCachedRangeType(ref) because of opted-in CustomId types.
  */
-function isIgnoredType(typeRef: TypeRef<unknown>): boolean {
+function isIgnoredType(typeRef: TypeRef<Entity>): boolean {
 	return typeRef.app === "monitor" || IGNORED_TYPES.some((ref) => isSameTypeRef(typeRef, ref))
 }
 
 /**
  * Checks if for the given type, that contains a customId,  caching is enabled.
  */
-function isCachableCustomIdType(typeRef: TypeRef<unknown>): boolean {
+function isCachableCustomIdType(typeRef: TypeRef<Entity>): boolean {
 	return CACHEABLE_CUSTOMID_TYPES.some((ref) => isSameTypeRef(typeRef, ref))
 }
 
@@ -884,11 +885,11 @@ function isCachableCustomIdType(typeRef: TypeRef<unknown>): boolean {
  * isCachedRangeType(ref) ---> !isIgnoredType(ref) but
  * isIgnoredType(ref) -/-> !isCachedRangeType(ref)
  */
-function isCachedRangeType(typeModel: TypeModel, typeRef: TypeRef<unknown>): boolean {
+function isCachedRangeType(typeModel: TypeModel, typeRef: TypeRef<Entity>): boolean {
 	return (!isIgnoredType(typeRef) && isGeneratedIdType(typeModel)) || isCachableCustomIdType(typeRef)
 }
 
 function isGeneratedIdType(typeModel: TypeModel): boolean {
 	const _idValue = get_IdValue(typeModel)
-	return _idValue !== null && _idValue.type === ValueType.GeneratedId
+	return _idValue !== null && _idValue.type === ValueTypeEnum.GeneratedId
 }

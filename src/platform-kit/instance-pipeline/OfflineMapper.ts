@@ -5,6 +5,7 @@ import {
 	AssociationReprType,
 	AttributeId,
 	AttributeName,
+	Entity,
 	getAssociationRepresentationType,
 	getIdType,
 	IdType,
@@ -106,7 +107,7 @@ export class OfflineEntity implements DeepEquals {
 	public getValue<NestedObj extends DeepEquals>(modelValue: ModelValue): ParsedValue<NestedObj> {
 		if (modelValue.name === "_id") {
 			const id = assertNotNull(this.entityRecord[modelValue.id])
-			switch (getIdType(this.typeModel)) {
+			switch (getIdType(this.typeModel.type)) {
 				case IdType.IdTuple:
 					return ParsedValue.fromIdTuple<NestedObj>(id as IdTuple)
 				case IdType.SingleId:
@@ -120,7 +121,7 @@ export class OfflineEntity implements DeepEquals {
 	public addValue(modelValue: ModelValue, value: ParsedValue<DecryptedParsedInstance>): void {
 		const key = modelValue.id
 		if (modelValue.name === "_id") {
-			switch (getIdType(this.typeModel)) {
+			switch (getIdType(this.typeModel.type)) {
 				case IdType.IdTuple: {
 					this.entityRecord[key] = value.asIdTuple()
 					break
@@ -135,15 +136,15 @@ export class OfflineEntity implements DeepEquals {
 		}
 	}
 
-	setAggregations(associationId: AttributeId, aggregates: Array<OfflineEntity>) {
+	setAggregations(associationId: AttributeId, aggregates: Array<OfflineEntity>): void {
 		this.entityRecord[associationId] = aggregates.map((agg) => agg.entityRecord)
 	}
 
-	setIdList(associationId: AttributeId, idList: Array<Id>) {
+	setIdList(associationId: AttributeId, idList: Array<Id>): void {
 		this.entityRecord[associationId] = idList
 	}
 
-	setIdTupleList(associationId: AttributeId, idTupleList: Array<IdTuple>) {
+	setIdTupleList(associationId: AttributeId, idTupleList: Array<IdTuple>): void {
 		this.entityRecord[associationId] = idTupleList
 	}
 
@@ -173,8 +174,8 @@ export class OfflineEntity implements DeepEquals {
 		})
 	}
 
-	getTypeRef(): TypeRef<unknown> {
-		return new TypeRef<unknown>(this.typeModel.app, this.typeModel.id)
+	getTypeRef(): TypeRef<Entity> {
+		return new TypeRef<Entity>(this.typeModel.app, this.typeModel.id)
 	}
 
 	deepEquals(other: this): boolean {

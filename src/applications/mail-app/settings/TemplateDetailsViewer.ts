@@ -48,12 +48,12 @@ export class TemplateDetailsViewer implements UpdatableSettingsDetailsViewer {
 				? m(ActionBar, {
 						buttons: [
 							{
-								title: "edit_action",
+								label: "edit_action",
 								icon: Icons.PenFilled,
 								click: () => this.editTemplate(),
 							},
 							{
-								title: "remove_action",
+								label: "remove_action",
 								icon: Icons.TrashFilled,
 								click: () => this.deleteTemplate(),
 							},
@@ -88,7 +88,7 @@ export class TemplateDetailsViewer implements UpdatableSettingsDetailsViewer {
 		showTemplateEditor(template, groupRoot)
 	}
 
-	entityEventsReceived(updates: ReadonlyArray<EntityUpdateData>): Promise<void> {
+	onEntityUpdatesReceived(updates: ReadonlyArray<EntityUpdateData>): Promise<void> {
 		return Promise.resolve()
 	}
 }

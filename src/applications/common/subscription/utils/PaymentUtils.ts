@@ -3,7 +3,7 @@ import { PowSolution } from "../../api/common/pow-worker"
 import { NewAccountData, type UpgradeSubscriptionData } from "../UpgradeSubscriptionWizard"
 import { locator } from "../../api/main/CommonLocator"
 import { runCaptchaFlow } from "../captcha/Captcha"
-import { client } from "../../../../platform-kit/app-env/boot/ClientDetector"
+import { ClientDetector } from "../../../../platform-kit/app-env/boot/ClientDetector"
 import { getPreconditionFailedPaymentMsg, PaymentData, PaymentErrorCode, SubscriptionApp } from "./SubscriptionUtils"
 import { SessionType } from "../../../../platform-kit/app-env/SessionType"
 import { showProgressDialog } from "../../../../ui/dialogs/ProgressDialog"
@@ -18,14 +18,15 @@ import { Button, ButtonType } from "../../../../ui/base/Button"
 import { AccountingInfo, AccountingInfoTypeRef, Braintree3ds2Request, InvoiceInfoTypeRef } from "@tutao/entities/sys"
 import { PaymentMethodType, PlanType } from "../../../../entities/sys/Utils"
 import {
-	EntityUpdatesListener,
 	EntityUpdateData,
+	EntityUpdatesListener,
 	isUpdateForTypeRef,
 	ListenerPriority,
 } from "../../../../platform-kit/instance-pipeline/utils/EntityUpdateUtils"
-import { Country, getClientType, InvoiceData, Keys, PaymentDataResultType } from "@tutao/app-env"
-import { CountryType } from "../../gui/CountryList"
-import { elementIdToId, idToElementId } from "@tutao/meta"
+import { getClientType, PaymentDataResultType } from "@tutao/app-env"
+import { Country, CountryType } from "../../gui/CountryList"
+import { idToElementId } from "@tutao/meta"
+import { Keys } from "../../../../ui/utils/KeyboardKeys"
 
 export function isOnAccountAllowed(country: Country | null, accountingInfo: AccountingInfo, isBusiness: boolean): boolean {
 	if (!country) {
@@ -135,7 +136,7 @@ function verifyCreditCard(accountingInfo: AccountingInfo, braintree3ds: Braintre
 		}
 
 		locator.eventController.addEntityUpdatesListener(entityUpdatesListener)
-		const app = client.isCalendarApp() ? "calendar" : "mail"
+		const app = ClientDetector.get().isCalendarApp() ? "calendar" : "mail"
 		let params = `clientToken=${encodeURIComponent(braintree3ds.clientToken)}&nonce=${encodeURIComponent(braintree3ds.nonce)}&bin=${encodeURIComponent(
 			braintree3ds.bin,
 		)}&price=${encodeURIComponent(price)}&message=${encodeURIComponent(lang.get("creditCardVerification_msg"))}&clientType=${getClientType()}&app=${app}`
@@ -148,6 +149,12 @@ function verifyCreditCard(accountingInfo: AccountingInfo, braintree3ds: Braintre
 		})
 		return progressDialogPromise.finally(() => locator.eventController.removeEntityUpdatesListener(entityUpdatesListener))
 	})
+}
+
+export type InvoiceData = {
+	invoiceAddress: string
+	country: Country | null
+	vatNumber: string // only for EU countries otherwise empty
 }
 
 export async function updatePaymentData(
@@ -372,7 +379,7 @@ export async function signup(
 			powChallengeSolution,
 		})
 		if (regDataId) {
-			const app = client.isCalendarApp() ? SubscriptionApp.Calendar : SubscriptionApp.Mail
+			const app = ClientDetector.get().isCalendarApp() ? SubscriptionApp.Calendar : SubscriptionApp.Mail
 			const recoverCode = await customerFacade.signup(keyPairs, regDataId, mailAddress, password, registrationCode, lang.code, app)
 			let userGroupId
 			if (!logins.isUserLoggedIn()) {

@@ -4,9 +4,9 @@ import {
 	createClientPerformanceInfo,
 	createRegistrationCaptchaServiceGetData,
 	createTimelockCaptchaGetIn,
-	RegistrationCaptchaService,
+	RegistrationCaptchaService_GET,
 	TimelockCaptchaGetOut,
-	TimelockCaptchaService,
+	TimelockCaptchaService_GET,
 } from "@tutao/entities/sys"
 import { deviceConfig } from "../../misc/DeviceConfig.js"
 import { AccessDeactivatedError, AccessExpiredError, InvalidDataError } from "@tutao/rest-client/error"
@@ -17,10 +17,10 @@ import { PowChallengeParameters } from "../utils/ProofOfWorkCaptchaUtils.js"
 import { showCaptchaDialog } from "./CaptchaDialog.js"
 import { lang } from "../../../../ui/utils/LanguageViewModel.js"
 import { PowSolution } from "../../api/common/pow-worker"
-import { isIOSApp } from "@tutao/app-env"
+import { EnvProvider } from "@tutao/app-env"
 import { mailLocator } from "../../../mail-app/mailLocator"
 import { AdAttributionType } from "../utils/SubscriptionUtils"
-import { client } from "../../../../platform-kit/app-env/boot/ClientDetector"
+import { ClientDetector } from "../../../../platform-kit/app-env/boot/ClientDetector"
 
 function trackPromiseResolved<T>(promise: Promise<T>) {
 	const resolved = { state: false }
@@ -73,12 +73,12 @@ export async function runCaptchaFlow({
 		let captchaReturn
 		try {
 			let attributionToken: string | null = null
-			if (isIOSApp()) {
-				attributionToken = await mailLocator.systemFacade.getAppleAdsAttributionToken()
+			if (EnvProvider.get().isIOSApp()) {
+				attributionToken = await locator.systemFacade.getAppleAdsAttributionToken()
 			}
 
-			captchaReturn = await locator.serviceExecutor.get(
-				RegistrationCaptchaService,
+			captchaReturn = await locator.serviceExecutor.execute(
+				RegistrationCaptchaService_GET,
 				createRegistrationCaptchaServiceGetData({
 					campaignToken: campaignToken,
 					mailAddress,
@@ -87,7 +87,7 @@ export async function runCaptchaFlow({
 					paidSubscriptionSelected: isPaidSubscription,
 					timelockChallengeSolution: solution.toString(),
 					language: lang.languageTag,
-					isAutomatedBrowser: client.isAutomatedBrowser,
+					isAutomatedBrowser: ClientDetector.get().isAutomatedBrowser,
 					adAttribution: attributionToken
 						? createAdAttribution({
 								attributionId: attributionToken,
@@ -179,10 +179,10 @@ export async function runPowChallenge(signupToken: string): Promise<PowSolution>
 
 	const data = createTimelockCaptchaGetIn({
 		signupToken,
-		deviceInfo: createClientPerformanceInfo({ isAutomatedBrowser: client.isAutomatedBrowser }),
+		deviceInfo: createClientPerformanceInfo({ isAutomatedBrowser: ClientDetector.get().isAutomatedBrowser }),
 		timeToSolveCalibrationChallenge: powWorker.timeToSolveCalibrationChallenge.toString(),
 	})
-	const ret = await locator.serviceExecutor.get(TimelockCaptchaService, data, null)
+	const ret = await locator.serviceExecutor.execute(TimelockCaptchaService_GET, data, null)
 	return await powWorker.solveChallenge({
 		base: BigInt(ret.base),
 		difficulty: Number(ret.difficulty),

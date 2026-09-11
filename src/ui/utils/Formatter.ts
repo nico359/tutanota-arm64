@@ -1,8 +1,8 @@
 import { lang } from "./LanguageViewModel"
 import { cleanMailAddress, isSameDay, isSameDayOfDate, pad } from "@tutao/utils"
-import { assertMainOrNodeBoot } from "@tutao/app-env"
+import { EnvProvider } from "@tutao/app-env"
 
-assertMainOrNodeBoot()
+EnvProvider.assertMainOrNodeBoot()
 
 export function formatMonthWithYear(date: Date): string {
 	return lang.formats.monthWithYear.format(date)
@@ -158,6 +158,14 @@ export function dateWithWeekdayWoMonth(date: Date): string {
 export function formatMonthShortWithFullYear(date: Date): string {
 	return lang.formats.monthShortWithFullYear.format(date)
 }
+// returns time in "1h 2m 3s" format
+export function formatDurationNarrow(totalSeconds: number): string {
+	const hours = Math.round(totalSeconds / 3600)
+	const minutes = Math.round((totalSeconds % 3600) / 60)
+	const seconds = Math.round(totalSeconds % 60)
+	const time = lang.formats.durationNarrow.format({ hours, minutes, seconds: minutes === 0 ? seconds : undefined })
+	return time
+}
 
 /**
  * Formats the given size in bytes to a better human readable string using B, KB, MB, GB, TB.
@@ -179,28 +187,10 @@ export function formatStorageSize(sizeInBytes: number): string {
 	return sizeInBytes + narrowNoBreakSpace + units[unitIndex]
 }
 
-export function timeStringFromParts(hours: number, minutes: number, amPm: boolean): string {
-	let minutesString = pad(minutes, 2)
-
-	if (amPm) {
-		if (hours === 0) {
-			return `12:${minutesString} am`
-		} else if (hours === 12) {
-			return `12:${minutesString} pm`
-		} else if (hours > 12) {
-			return `${hours - 12}:${minutesString} pm`
-		} else {
-			return `${hours}:${minutesString} am`
-		}
-	} else {
-		let hoursString = pad(hours, 2)
-		return hoursString + ":" + minutesString
-	}
-}
-
 export function formatMailAddressFromParts(name: string, domain: string): string {
 	return cleanMailAddress(`${name}@${domain}`)
 }
+
 export function formatNotificationForDisplay(eventStartTime: Date, summary: string, isAllDay: boolean): { title: string; body: string } {
 	let dateString: string
 

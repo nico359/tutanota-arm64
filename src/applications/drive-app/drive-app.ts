@@ -1,7 +1,7 @@
 import m from "mithril"
 import Mithril, { Children, ClassComponent, Component, RouteDefs, RouteResolver, Vnode, VnodeDOM } from "mithril"
 import { disableErrorHandlingDuringLogout, handleUncaughtError } from "../common/misc/ErrorHandler.js"
-import { AppType, assertMainOrNodeBoot, bootFinished, isApp, isDesktop, ProgrammingError } from "../../platform-kit/app-env"
+import { AppType, DomainConfig, EnvProvider, ProgrammingError } from "../../platform-kit/app-env"
 import { assertNotNull } from "../../platform-kit/utils"
 import { windowFacade } from "../common/misc/WindowFacade.js"
 import { deviceConfig } from "../common/misc/DeviceConfig.js"
@@ -18,11 +18,11 @@ import { MobileSettingsView } from "../common/settings/MobileSettingsView"
 import { MobileSettingsViewAttrs, SettingsViewSection } from "../common/settings/Interfaces"
 import { lang, languageCodeToTag, languages } from "../../ui/utils/LanguageViewModel"
 import { root } from "../../ui/base/RootView"
-import { styles } from "../../ui/styles"
+import { Styles } from "../../ui/styles"
 import { AppHeaderAttrs } from "../../ui/Header"
 import { DRIVE_PREFIX } from "../../ui/utils/RouteChange"
 import { TopLevelAttrs, TopLevelView } from "../../ui/base/TopLevelView"
-import { client } from "../../platform-kit/app-env/boot/ClientDetector"
+import { ClientDetector } from "../../platform-kit/app-env/boot/ClientDetector"
 import { initUiSingletons, MakeViewResolverOptions } from "../common/app-common"
 import { NamedClientModel } from "@tutao/instance-pipeline"
 import { AppNameEnum } from "@tutao/meta"
@@ -35,9 +35,13 @@ import { monitorModelInfo, monitorTypeModels } from "@tutao/entities/monitor"
 import { usageModelInfo, usageTypeModels } from "@tutao/entities/usage"
 import { accountingModelInfo, accountingTypeModels } from "@tutao/entities/accounting"
 import { initClientModels } from "../common/api/common/ClientModelInfoInitializer"
+import { DriveSearchView, DriveSearchViewAttrs } from "./search/view/DriveSearchView"
+import { DriveSearchViewModel } from "./search/view/DriveSearchViewModel"
+import { FolderItem } from "./drive/view/DriveUtils"
+import { MoveItems } from "./drive/view/DriveMoveItemDialog"
 
-assertMainOrNodeBoot()
-bootFinished()
+EnvProvider.assertMainOrNodeBoot()
+EnvProvider.bootFinished()
 
 const urlQueryParams = m.parseQueryString(location.search)
 
@@ -46,7 +50,7 @@ replaceNativeLogger(window, new Logger())
 
 let currentView: Component<unknown> | null = null
 window.tutao = {
-	client,
+	client: ClientDetector.get(),
 	m,
 	lang,
 	root,
@@ -54,9 +58,9 @@ window.tutao = {
 	locator: null,
 }
 
-client.init(navigator.userAgent, navigator.platform, AppType.Drive)
+ClientDetector.get().init(navigator.userAgent, navigator.platform, AppType.Drive)
 
-if (!client.isSupported()) {
+if (!ClientDetector.get().isSupported()) {
 	throw new Error("Unsupported")
 }
 
@@ -93,7 +97,7 @@ import("../../ui/translations/en.js")
 
 		// this needs to stay after client.init
 		windowFacade.init(driveLocator.logins, driveLocator.connectivityModel)
-		if (isDesktop()) {
+		if (EnvProvider.get().isDesktop()) {
 			import("../common/native/UpdatePrompt.js").then(({ registerForUpdates }) => registerForUpdates(driveLocator.desktopSettingsFacade))
 		}
 
@@ -113,7 +117,7 @@ import("../../ui/translations/en.js")
 		driveLocator.logins.addPostLoginAction(async () => {
 			return {
 				async onPartialLoginSuccess() {
-					if (isApp()) {
+					if (EnvProvider.get().isApp()) {
 						driveLocator.fileApp.clearFileData().catch((e) => console.log("Failed to clean file data", e))
 					}
 				},
@@ -121,7 +125,7 @@ import("../../ui/translations/en.js")
 			}
 		})
 
-		styles.init(driveLocator.themeController)
+		Styles.get().init(driveLocator.themeController)
 
 		const { makeSignupViewResolver } = await import("../common/signup/SignupViewResolver.js")
 		const paths = applicationPaths({
@@ -187,7 +191,6 @@ import("../../ui/translations/en.js")
 					drawerAttrsFactory: () => DrawerMenuAttrs
 					header: AppHeaderAttrs
 					driveViewModel: DriveViewModel
-					lazySearchBar: () => Children
 					filePicker: DriveFilePicker
 					bottomNav: () => Children
 				}
@@ -195,7 +198,6 @@ import("../../ui/translations/en.js")
 				{
 					prepareRoute: async (cache) => {
 						const { DriveView } = await import("../drive-app/drive/view/DriveView.js")
-						const { lazyDriveSearchBarStub } = await import("./LazyDriveSearchBarStub.js")
 						const drawerAttrsFactory = await driveLocator.drawerAttrsFactory()
 						const filePicker = await driveLocator.driveFilePicker()
 						return {
@@ -204,24 +206,59 @@ import("../../ui/translations/en.js")
 								drawerAttrsFactory,
 								header: await driveLocator.appHeaderAttrs(),
 								driveViewModel: await driveLocator.driveViewModel(),
-								lazySearchBar: () =>
-									m(lazyDriveSearchBarStub, {
-										placeholder: "stub",
-									}),
 								filePicker,
 								bottomNav: () => null,
 							},
 						}
 					},
-					prepareAttrs: ({ header, driveViewModel, drawerAttrsFactory, lazySearchBar, filePicker, bottomNav }) => ({
+					prepareAttrs: ({ header, driveViewModel, drawerAttrsFactory, filePicker, bottomNav }) => ({
 						drawerAttrs: drawerAttrsFactory(),
 						header,
 						driveViewModel,
-						lazySearchBar,
 						showMoveItemDialog: (items, moveItems) => driveLocator.showMoveItemDialog(items, moveItems),
 						filePicker,
 						bottomNav,
 					}),
+				},
+				driveLocator.logins,
+			),
+			search: makeViewResolver<
+				DriveSearchViewAttrs,
+				DriveSearchView,
+				{
+					drawerAttrsFactory: () => DrawerMenuAttrs
+					header: AppHeaderAttrs
+					makeViewModel: () => DriveSearchViewModel
+					showMoveItemDialog: (items: FolderItem[], moveItems: MoveItems) => unknown
+					filePicker: DriveFilePicker
+				}
+			>(
+				{
+					prepareRoute: async () => {
+						const { DriveSearchView } = await import("./search/view/DriveSearchView.js")
+						const drawerAttrsFactory = await driveLocator.drawerAttrsFactory()
+						const makeViewModel = await driveLocator.driveSearchViewModelFactory()
+						const filePicker = await driveLocator.driveFilePicker()
+						return {
+							component: DriveSearchView,
+							cache: {
+								header: await driveLocator.appHeaderAttrs(),
+								drawerAttrsFactory,
+								makeViewModel,
+								showMoveItemDialog: (items, moveItems) => driveLocator.showMoveItemDialog(items, moveItems),
+								filePicker,
+							},
+						}
+					},
+					prepareAttrs: (cache) => {
+						return {
+							header: cache.header,
+							drawerAttrs: cache.drawerAttrsFactory(),
+							makeViewModel: cache.makeViewModel,
+							showMoveItemDialog: cache.showMoveItemDialog,
+							filePicker: cache.filePicker,
+						}
+					},
 				},
 				driveLocator.logins,
 			),
@@ -290,7 +327,7 @@ import("../../ui/translations/en.js")
 
 		// We need to initialize native once we start the mithril routing, specifically for the case of mailto handling in android
 		// If native starts telling the web side to navigate too early, mithril won't be ready and the requests will be lost
-		if (isApp() || isDesktop()) {
+		if (EnvProvider.get().isApp() || EnvProvider.get().isDesktop()) {
 			await driveLocator.native.init()
 		}
 		// if (isDesktop()) {
@@ -429,10 +466,10 @@ function makeViewResolver<FullAttrs extends TopLevelAttrs = never, ComponentType
 function assignEnvPlatformId(urlQueryParams: Mithril.Params) {
 	const platformId = urlQueryParams["platformId"]
 
-	if (isApp() || isDesktop()) {
+	if (EnvProvider.get().isApp() || EnvProvider.get().isDesktop()) {
 		if (
-			(isApp() && (platformId === "android" || platformId === "ios")) ||
-			(isDesktop() && (platformId === "linux" || platformId === "win32" || platformId === "darwin"))
+			(EnvProvider.get().isApp() && (platformId === "android" || platformId === "ios")) ||
+			(EnvProvider.get().isDesktop() && (platformId === "linux" || platformId === "win32" || platformId === "darwin"))
 		) {
 			env.platformId = platformId
 		} else {

@@ -1,6 +1,6 @@
-import { assertNotNull, Nullable, Versioned } from "@tutao/utils"
+import { assertNotNull, isNotNull, Nullable, Versioned } from "@tutao/utils"
 import { EntityClient } from "../../network/EntityClient.js"
-import { assertWorkerOrNode, ProgrammingError } from "@tutao/app-env"
+import { EnvProvider, ProgrammingError } from "@tutao/app-env"
 import { IServiceExecutor } from "../../network/ServiceRequest.js"
 import { UserFacade } from "../facades/UserFacade.js"
 import { KeyLoaderFacade } from "./KeyLoaderFacade.js"
@@ -9,13 +9,13 @@ import { AsymmetricKeyPair, CryptoWrapper, KeyPairType, VersionedKey } from "@tu
 import { Ed25519Facade } from "./Ed25519Facade"
 import { PublicKeySignatureFacade } from "./PublicKeySignatureFacade"
 import { AdminKeyLoaderFacade } from "./AdminKeyLoaderFacade"
-import { KeyAuthenticationFacade } from "../../network/KeyAuthenticationFacade"
-import { createIdentityKeyPair, createIdentityKeyPostIn, createKeyMac, GroupTypeRef, IdentityKeyService } from "@tutao/entities/sys"
+import { KeyAuthenticationFacade, SystemMapKind } from "../../network/KeyAuthenticationFacade"
+import { createIdentityKeyPair, createIdentityKeyPostIn, createKeyMac, GroupTypeRef, IdentityKeyService_POST } from "@tutao/entities/sys"
 import { GroupType } from "../../../entities/sys/Utils"
 import { CacheManager } from "./persistence/CacheManager"
 import { idToElementId } from "@tutao/meta"
 
-assertWorkerOrNode()
+EnvProvider.assertWorkerOrNode()
 
 export class IdentityKeyCreator {
 	constructor(
@@ -60,7 +60,7 @@ export class IdentityKeyCreator {
 		const identityKeyVersion = 0
 
 		let tag = this.keyAuthenticationFacade.computeTag({
-			tagType: "IDENTITY_PUB_KEY_TAG",
+			tagType: SystemMapKind.IDENTITY_PUB_KEY_TAG,
 			sourceOfTrust: { symmetricGroupKey: currentGroupKey.object },
 			untrustedKey: { identityPubKey: newEd25519IdentityKeyPair.public_key },
 			bindingData: {
@@ -104,8 +104,8 @@ export class IdentityKeyCreator {
 			console.log(`Identity key pair already exists. Did not create it again for group: ${groupId}`)
 			return
 		}
-		await this.serviceExecutor.post(
-			IdentityKeyService,
+		await this.serviceExecutor.execute(
+			IdentityKeyService_POST,
 			createIdentityKeyPostIn({
 				identityKeyPair,
 				signatures,
@@ -133,7 +133,7 @@ export class IdentityKeyCreator {
 	 *
 	 * NOTE: does nothing if the user is not an admin.
 	 */
-	async createIdentityKeyPairForExistingTeamGroups(teamGroupIds: Id[]) {
+	async createIdentityKeyPairForExistingTeamGroups(teamGroupIds: Id[]): Promise<void> {
 		const user = assertNotNull(this.userFacade.getUser(), "User not available when trying to create identity keys for existing shared mailboxes")
 
 		const adminGroupMembership = assertNotNull(
@@ -147,7 +147,7 @@ export class IdentityKeyCreator {
 			try {
 				// it can be the case that some groups already have an identity key, so we check first
 				let group = await this.entityClient.load(GroupTypeRef, idToElementId(groupId))
-				if (group.identityKeyPair) continue
+				if (isNotNull(group.identityKeyPair)) continue
 
 				// shared mailbox group members don't need access to identity keys, that's the responsibility of the admins
 				//if we have an RSA only keypair we generate the ecc key now so we do not have to sign again

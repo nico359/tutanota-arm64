@@ -9,8 +9,8 @@ import { InfoLink, lang } from "../../../../ui/utils/LanguageViewModel.js"
 import { PasswordForm, PasswordModel } from "../../settings/PasswordForm.js"
 import { Icons } from "../../../../ui/base/icons/Icons"
 import { Dialog, DialogType } from "../../../../ui/base/Dialog"
-import { client } from "../../../../platform-kit/app-env/boot/ClientDetector.js"
-import { assertMainOrNode, CancelledError } from "@tutao/app-env"
+import { ClientDetector } from "../../../../platform-kit/app-env/boot/ClientDetector.js"
+import { CancelledError, EnvProvider } from "@tutao/app-env"
 import { locator } from "../../api/main/CommonLocator"
 import { windowFacade } from "../../misc/WindowFacade.js"
 import { createDropdown, DropdownButtonAttrs } from "../../../../ui/base/Dropdown.js"
@@ -20,7 +20,7 @@ import { PasswordField } from "../../misc/passwords/PasswordField.js"
 import { RecoverCodeInput } from "../../settings/login/RecoverCodeDialog.js"
 import { MoreInfoLink } from "../../misc/news/MoreInfoLink"
 
-assertMainOrNode()
+EnvProvider.assertMainOrNode()
 export type ResetAction = "password" | "secondFactor"
 
 export function show(mailAddress?: string | null, resetAction?: ResetAction): Dialog {
@@ -41,7 +41,7 @@ export function show(mailAddress?: string | null, resetAction?: ResetAction): Di
 		width: 300,
 	})
 	const resetActionButtonAttrs: IconButtonAttrs = {
-		title: "action_label",
+		label: "action_label",
 		click: resetActionClickHandler,
 		icon: Icons.PenFilled,
 		size: ButtonSize.Compact,
@@ -111,7 +111,12 @@ export function show(mailAddress?: string | null, resetAction?: ResetAction): Di
 				} else {
 					showProgressDialog(
 						"pleaseWait_msg",
-						locator.loginFacade.recoverLogin(cleanMailAddress, cleanRecoverCodeValue, passwordModel.getNewPassword(), client.getIdentifier()),
+						locator.loginFacade.recoverLogin(
+							cleanMailAddress,
+							cleanRecoverCodeValue,
+							passwordModel.getNewPassword(),
+							ClientDetector.get().getIdentifier(),
+						),
 					)
 						.then(async () => {
 							recoverDialog.close()

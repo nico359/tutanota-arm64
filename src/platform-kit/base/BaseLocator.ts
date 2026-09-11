@@ -32,18 +32,17 @@ import {
 	ApplicationTypesFacade,
 	ClientModelInfo,
 	InstancePipeline,
-	NamedClientModel,
 	PatchMerger,
 	ServerModelInfo,
 	SimpleFileFacade,
 	TypeModelResolver,
 	UpdateAppTypesHashMiddleware,
 } from "../instance-pipeline"
-import { lazyAsync, lazyMemoized } from "../utils"
+import { lazy, lazyAsync, lazyMemoized, Nullable } from "../utils"
 import { NoZoneDateProvider } from "../utils/NoZoneDateProvider.js"
 import { NativeCryptoFacade } from "../../app-kit/native-bridge/common/generatedipc/types/NativeCryptoFacade"
 import { ServiceExecutor } from "../network/ServiceExecutor"
-import { isAdminClient, isAndroidApp, isBrowser, isIOSApp } from "@tutao/app-env"
+import { DomainConfig, EnvProvider } from "@tutao/app-env"
 import { PublicEncryptionKeyCache } from "./base-crypto/persistence/PublicEncryptionKeyCache"
 import { InstanceSessionKeysCache } from "./base-crypto/persistence/InstanceSessionKeysCache.js"
 import { Argon2idFacade, WASMArgon2idFacade } from "./base-crypto/WasmArgon2idFacade"
@@ -104,13 +103,25 @@ export type BaseLocator = {
 	lastProcessedEventBatchStorageFacade: lazyAsync<LastProcessedEventBatchProvider>
 }
 
+export interface BaseLocatorWorker {
+	sendError(e: Error): Promise<void>
+	getMainInterface(): BaseLocatorMainInterface
+}
+
+export type BaseLocatorMainInterface = {
+	infoMessageHandler: OnInfoMessage
+}
+export interface OnInfoMessage {
+	onInfoMessage(msg: InfoMessageArgs): void
+}
+
+export type InfoMessageArgs = {
+	translationKey: string
+	args: Record<string, unknown>
+}
+
 export type BaseLocatorConfig = {
-	worker: {
-		sendError(e: Error): Promise<void>
-		getMainInterface(): {
-			infoMessageHandler: { onInfoMessage(msg: { translationKey: string; args: Record<string, unknown> }): void }
-		}
-	}
+	worker: BaseLocatorWorker
 	clientModelInfo: ClientModelInfo
 	browserData: BrowserData
 	loginListenerProvider: (user: UserFacade) => LoginListener
@@ -118,28 +129,30 @@ export type BaseLocatorConfig = {
 	lastProcessedEventBatchStorageFacade: lazyAsync<LastProcessedEventBatchProvider>
 	cacheManagement: lazyAsync<CacheManager>
 	identityKeyTrustDatabase: IdentityKeyTrustDatabase
-	argon2idFacade?: Argon2idFacade
+	argon2idFacade: Nullable<Argon2idFacade>
 	domainConfig: DomainConfig
 	rsa: RsaImplementation
 	fileFacade: SimpleFileFacade
-	nativeCryptoFacade?: NativeCryptoFacade
-	entityMigratorFactory: (params: {
-		cryptoWrapper: CryptoWrapper
-		user: UserFacade
-		keyLoader: KeyLoaderFacade
-		cachingEntityClient: EntityClient
-		serviceExecutor: IServiceExecutor
-		typeModelResolver: TypeModelResolver
-		instancePipeline: InstancePipeline
-		restClient: RestClient
-		crypto: CryptoFacade
-	}) => EntityMigrator
+	nativeCryptoFacade: Nullable<NativeCryptoFacade>
+	entityMigratorFactory: (params: EntityMigratorFactoryParams) => EntityMigrator
 	entityRestCache: (
 		entityRestClient: EntityRestClient,
 		patchMerger: PatchMerger,
 		typeModelResolver: TypeModelResolver,
 		lastProcessed: lazyAsync<LastProcessedEventBatchProvider>,
 	) => EntityRestInterface
+}
+
+export type EntityMigratorFactoryParams = {
+	cryptoWrapper: CryptoWrapper
+	user: UserFacade
+	keyLoader: KeyLoaderFacade
+	cachingEntityClient: EntityClient
+	serviceExecutor: IServiceExecutor
+	typeModelResolver: TypeModelResolver
+	instancePipeline: InstancePipeline
+	restClient: RestClient
+	crypto: CryptoFacade
 }
 
 export async function createBaseLocator({
@@ -188,7 +201,7 @@ export async function createBaseLocator({
 
 	// Declared before serviceExecutor and entityRestClient because it's captured via lazyCrypto
 	let crypto: CryptoFacade
-	const lazyCrypto = () => crypto
+	const lazyCrypto: lazy<CryptoFacade> = () => crypto
 	const serviceExecutor = new ServiceExecutor(restClient, user, instancePipeline, lazyCrypto, typeModelResolver)
 	applicationTypesFacade = new ApplicationTypesFacade(restClient, fileFacade, serverModelInfo)
 	const entropyFacade = new EntropyFacade(user, serviceExecutor, random, () => keyLoader)
@@ -209,7 +222,7 @@ export async function createBaseLocator({
 
 	const patchMerger = new PatchMerger(maybeUninitializedStorage, instancePipeline, typeModelResolver, lazyCrypto, SYMMETRIC_CIPHER_FACADE)
 
-	const cache: EntityRestInterface = isAdminClient()
+	const cache: EntityRestInterface = EnvProvider.get().isAdminClient()
 		? entityRestClient
 		: entityRestCache(entityRestClient, patchMerger, typeModelResolver, lastProcessedEventBatchStorageFacade)
 
@@ -218,7 +231,7 @@ export async function createBaseLocator({
 
 	let kyberFacade: KyberFacade
 	let ed25519Facade: Ed25519Facade
-	if (nativeCryptoFacade != null && (isIOSApp() || isAndroidApp())) {
+	if (nativeCryptoFacade != null && (EnvProvider.get().isIOSApp() || EnvProvider.get().isAndroidApp())) {
 		kyberFacade = new NativeKyberFacade(nativeCryptoFacade)
 		ed25519Facade = new NativeEd25519Facade(nativeCryptoFacade)
 	} else {
@@ -352,7 +365,7 @@ export async function createBaseLocator({
 	let argon2idFacade: Argon2idFacade
 	if (argon2idFacadeOverride != null) {
 		argon2idFacade = argon2idFacadeOverride
-	} else if (nativeCryptoFacade != null && !isBrowser()) {
+	} else if (nativeCryptoFacade != null && !EnvProvider.get().isBrowser()) {
 		argon2idFacade = new NativeArgon2idFacade(nativeCryptoFacade)
 	} else {
 		argon2idFacade = new WASMArgon2idFacade()

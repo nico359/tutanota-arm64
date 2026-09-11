@@ -1,6 +1,6 @@
-import { assertMainOrNode, FeatureType, getApiBaseUrl, isDesktop, SessionType } from "@tutao/app-env"
+import { EnvProvider, FeatureType, SessionType } from "@tutao/app-env"
 import { assertNotNull, downcast, first, mapAndFilterNull, newPromise, ofClass } from "@tutao/utils"
-import { elementIdPart, elementIdToId, idToElementId, isSameId, isSameSingleId, listIdPart } from "@tutao/meta"
+import { elementIdPart, elementIdToId, idToElementId, isSameId, isSameSingleId, listIdPart, NULL_ENTITY } from "@tutao/meta"
 import { NotFoundError } from "@tutao/rest-client/error"
 import { locator } from "./CommonLocator"
 import { getWhitelabelCustomizations } from "../../../../ui/utils/WhitelabelUtils"
@@ -12,7 +12,7 @@ import { MediaType } from "../../../../platform-kit/rest-client/types"
 import {
 	AccountingInfo,
 	AccountingInfoTypeRef,
-	CloseSessionService,
+	CloseSessionService_POST,
 	Customer,
 	CustomerInfo,
 	CustomerInfoTypeRef,
@@ -24,7 +24,7 @@ import {
 	GroupInfoTypeRef,
 	GroupMembership,
 	PlanConfiguration,
-	PlanService,
+	PlanService_GET,
 	SessionTypeRef,
 	sysTypeModels,
 	User,
@@ -41,10 +41,10 @@ import {
 	UserSettingsGroupRootTypeRef,
 } from "@tutao/entities/tutanota"
 import { EntityUpdateData, isUpdateForTypeRef } from "../../../../platform-kit/instance-pipeline/utils/EntityUpdateUtils"
-import { OperationType } from "../../../../platform-kit/meta/EntityTypes"
 import { CacheMode, DEFAULT_ENTITY_RESTCLIENT_LOAD_OPTIONS } from "../../../../platform-kit/instance-pipeline/RestClientOptions"
+import { OperationType } from "../../../../platform-kit/meta/EntityConstants"
 
-assertMainOrNode()
+EnvProvider.assertMainOrNode()
 
 export class UserController {
 	private planConfig: PlanConfiguration | null
@@ -147,7 +147,7 @@ export class UserController {
 
 	async getPlanConfig(): Promise<PlanConfiguration> {
 		if (this.planConfig === null) {
-			const planServiceGetOut = await this.serviceExecutor.get(PlanService, null, null)
+			const planServiceGetOut = await this.serviceExecutor.execute(PlanService_GET, NULL_ENTITY, null)
 			this.planConfig = planServiceGetOut.config
 		}
 		return downcast(this.planConfig)
@@ -188,6 +188,10 @@ export class UserController {
 		return this.user.memberships.filter((membership) => membership.groupType === GroupType.Mail)
 	}
 
+	getFileGroupMemberships(): GroupMembership[] {
+		return this.user.memberships.filter((membership) => membership.groupType === GroupType.File)
+	}
+
 	getContactGroupMemberships(): GroupMembership[] {
 		return this.user.memberships.filter((membership) => membership.groupType === GroupType.Contact)
 	}
@@ -213,7 +217,7 @@ export class UserController {
 	 * There are two updates for the user instance sent if the logged in user is an admin:, one for the user group and one for the admin group.
 	 * We only want to process it once, so we skip the admin group update
 	 *
-	 * Attention: Modules that act on user updates, e.g. for changed group memberships, need to use this function in their entityEventsReceived listener.
+	 * Attention: Modules that act on user updates, e.g. for changed group memberships, need to use this function in their onEntityUpdatesReceived listener.
 	 * Only then it is guaranteed that the user in the user controller has been updated. The update event for the admin group might come first, so if a module
 	 * reacts on that one the user controller is not updated yet.
 	 */
@@ -226,7 +230,7 @@ export class UserController {
 		) // only include updates for the user group here
 	}
 
-	async entityEventsReceived(updates: ReadonlyArray<EntityUpdateData>, eventOwnerGroupId: Id): Promise<void> {
+	async onEntityUpdatesReceived(updates: ReadonlyArray<EntityUpdateData>, eventOwnerGroupId: Id): Promise<void> {
 		for (const update of updates) {
 			const { instanceId, operation } = update
 			if (this.isUpdateForLoggedInUserInstance(update, eventOwnerGroupId)) {
@@ -278,8 +282,8 @@ export class UserController {
 
 			if (sendBeacon) {
 				try {
-					const apiUrl = new URL(getApiBaseUrl(locator.domainConfigProvider().getCurrentDomainConfig()))
-					apiUrl.pathname += `rest/sys/${CloseSessionService.name.toLowerCase()}`
+					const apiUrl = new URL(EnvProvider.get().getApiBaseUrl(locator.domainConfigProvider().getCurrentDomainConfig()))
+					apiUrl.pathname += CloseSessionService_POST.serviceRestPath
 					apiUrl.searchParams.append("v", sysTypeModels[SessionTypeRef.typeId].version)
 					apiUrl.searchParams.append("cv", env.versionNumber)
 					// atleast in the iOS WebView, we _have_ to use a http(s) URL to sendBeacon to not error out.
@@ -303,7 +307,7 @@ export class UserController {
 				}
 			} else {
 				// Fall back to sync XHR if Beacon API is not available (which it should be everywhere by now but maybe it is suppressed somehow)
-				const apiUrl = new URL(getApiBaseUrl(locator.domainConfigProvider().getCurrentDomainConfig()))
+				const apiUrl = new URL(EnvProvider.get().getApiBaseUrl(locator.domainConfigProvider().getCurrentDomainConfig()))
 				apiUrl.pathname += `/rest/sys/session/${listIdPart(this.sessionId)}/${elementIdPart(this.sessionId)}`
 				const xhr = new XMLHttpRequest()
 				xhr.open("DELETE", apiUrl, false) // sync requests increase reliability when invoked in onunload
@@ -338,7 +342,7 @@ export class UserController {
 
 	async isWhitelabelAccount(): Promise<boolean> {
 		// isTutanotaDomain always returns true on desktop
-		if (!isDesktop()) {
+		if (!EnvProvider.get().isDesktop()) {
 			return !!getWhitelabelCustomizations(window)
 		}
 

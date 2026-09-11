@@ -1,4 +1,5 @@
 import { startsWith } from "./index"
+import { isNull } from "./Utils"
 
 const DOMAIN_PART_REGEX = "[\\w\\-\\+_]+"
 export const DOMAIN_REGEXP = new RegExp(`^${DOMAIN_PART_REGEX}\\.${DOMAIN_PART_REGEX}(\\.${DOMAIN_PART_REGEX})*\\s*$`)
@@ -104,7 +105,7 @@ export function isRegularExpression(value: string): boolean {
 export function isValidCreditCardNumber(input: string): boolean {
 	const cleaned = input.match(/^[0123456789 ]+$/)
 
-	if (!cleaned || cleaned.length !== 1) {
+	if (isNull(cleaned) || cleaned.length !== 1) {
 		return false
 	}
 
@@ -136,7 +137,7 @@ export function urlEncodeHtmlTags(text: string): string {
 	return stripControlCharacters(text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#039;"))
 }
 
-export function convertTextToHtml(text: string) {
+export function convertTextToHtml(text: string): string {
 	return text.replace(/(\r)?\n/g, "<br>")
 }
 

@@ -3,7 +3,7 @@ import type { ModalComponent } from "./Modal"
 import { modal } from "./Modal"
 import { alpha, AlphaEnum, AnimationPromise, animations, DefaultAnimationTime, opacity, transform, TransformEnum } from "../animation/Animations"
 import { ease } from "../animation/Easing"
-import type { MaybeTranslation, TranslationKey } from "../utils/LanguageViewModel"
+import type { MaybeTranslation, Translation, TranslationKey } from "../utils/LanguageViewModel"
 import { lang } from "../utils/LanguageViewModel"
 import type { Shortcut } from "../utils/KeyManager"
 import { focusNext, focusPrevious, keyManager } from "../utils/KeyManager"
@@ -15,9 +15,9 @@ import { DialogHeaderBar, DialogHeaderBarAttrs } from "./DialogHeaderBar"
 import { LegacyTextField, LegacyTextFieldType } from "./LegacyTextField.js"
 import type { DropDownSelectorAttrs, SelectorItemList } from "./DropDownSelector.js"
 import { DropDownSelector } from "./DropDownSelector.js"
-import { assertMainOrNode, DEFAULT_ERROR, isAndroidApp, Keys, TabIndex } from "../../platform-kit/app-env"
+import { DEFAULT_ERROR, EnvProvider, TabIndex } from "../../platform-kit/app-env"
 import { AriaWindow } from "../AriaUtils"
-import { styles } from "../styles"
+import { Styles } from "../styles"
 import { assertNotNull, identity, lazy, newPromise, noOp, Thunk } from "../../platform-kit/utils"
 import { getAsLazy, mapLazily, MaybeLazy } from "./MaybeLazy"
 import type { DialogInjectionRightAttrs } from "./DialogInjectionRight"
@@ -25,8 +25,10 @@ import { DialogInjectionRight } from "./DialogInjectionRight"
 import Stream from "mithril/stream"
 import { TextField } from "./TextField"
 import { isOfflineError } from "../../platform-kit/rest-client/error"
+import { Keys } from "../utils/KeyboardKeys"
+import { Checkbox } from "./Checkbox"
 
-assertMainOrNode()
+EnvProvider.assertMainOrNode()
 export const INPUT = "input.text, input.tutaui-text-field, textarea, div[contenteditable='true']"
 
 export const enum DialogType {
@@ -78,6 +80,11 @@ export interface TextInputDialogParams {
 	selectionRange?: [number, number]
 }
 
+export interface ChoiceCancellableResult<T> {
+	value: T | null
+	options: boolean[]
+}
+
 export class Dialog implements ModalComponent {
 	private static keyboardHeight: number = 0
 	private domDialog: HTMLElement | null = null
@@ -118,10 +125,10 @@ export class Dialog implements ModalComponent {
 			const isEditLarge = dialogType === DialogType.EditLarge
 			const isKeyboardOpen = Dialog.keyboardHeight > 0
 			const margin = size.spacing_12
-			const sidesMargin = styles.isSingleColumnLayout() && isEditLarge ? "4px" : px(margin)
+			const sidesMargin = Styles.get().isSingleColumnLayout() && isEditLarge ? "4px" : px(margin)
 			const bottomMarginForType = isEditLarge ? 0 : margin
 			// for android, bottomMarginForType is always applied regardless of whether keyboard is open or not
-			const marginBottom = isAndroidApp()
+			const marginBottom = EnvProvider.get().isAndroidApp()
 				? `calc(${px(bottomMarginForType)} + ${isKeyboardOpen ? px(Dialog.keyboardHeight) : "var(--safe-area-inset-bottom)"})`
 				: px(isKeyboardOpen ? Dialog.keyboardHeight : bottomMarginForType)
 			return m(
@@ -583,9 +590,15 @@ export class Dialog implements ModalComponent {
 			text: MaybeTranslation
 			value: T
 		}>,
-	): Promise<T | null> {
+		options?: Array<{
+			text: Translation
+			value: boolean
+		}>,
+	): Promise<ChoiceCancellableResult<T>> {
 		return newPromise((resolve) => {
 			let selection: T | null = null
+			let selectionOptions: boolean[] = Array(options?.length ?? 0).fill(false)
+
 			const choose = (choice: T) => {
 				selection = choice
 				dialog.onClose()
@@ -598,7 +611,28 @@ export class Dialog implements ModalComponent {
 					type: ButtonType.Secondary,
 				}
 			})
-			const dialog = Dialog.confirmMultiple(message, buttonAttrs, () => resolve(selection))
+
+			const dialog = Dialog.confirmMultiple(
+				message,
+				buttonAttrs,
+				() => resolve({ value: selection, options: selectionOptions }),
+				() =>
+					options
+						? options.map((option, index) => {
+								return (
+									m(Checkbox, {
+										label: () => option.text.text,
+										class: "mt-16",
+										checked: option.value,
+										onChecked: (value) => {
+											option.value = value
+											selectionOptions[index] = option.value
+										},
+									}) ?? []
+								)
+							})
+						: null,
+			)
 		})
 	}
 

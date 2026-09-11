@@ -6,6 +6,7 @@ import { lang } from "./utils/LanguageViewModel"
 import { Icon, IconAttrs, IconSize } from "./base/Icon"
 import { IconButton } from "./base/IconButton"
 import { ButtonSize } from "./base/ButtonSize"
+import { formatDurationNarrow } from "./utils/Formatter"
 
 export enum ProgressState {
 	done,
@@ -18,11 +19,13 @@ export interface ProgressSnackBarAttrs {
 	runningIcon?: () => Children
 	progressState: ProgressState
 	percentage: number
+	timeRemainingSec: number | null
 	onCancel: () => unknown
+	onRetry: () => unknown
 }
 
 export class ProgressSnackBar implements Component<ProgressSnackBarAttrs> {
-	view({ attrs: { mainText, onCancel, progressState, percentage, runningIcon } }: Vnode<ProgressSnackBarAttrs>): Children {
+	view({ attrs: { mainText, onCancel, onRetry, progressState, percentage, runningIcon, timeRemainingSec } }: Vnode<ProgressSnackBarAttrs>): Children {
 		return m(
 			".flex.col.border-radius.rel.clip",
 			{
@@ -37,7 +40,9 @@ export class ProgressSnackBar implements Component<ProgressSnackBarAttrs> {
 						this.renderIcon(progressState, runningIcon),
 						m(".flex.col.gap-8.flex-shrink.overflow-hidden", [m(".font-weight-500.text-ellipsis", mainText)]),
 					]),
+					progressState === ProgressState.running && timeRemainingSec != null ? m(".small.mr-8", formatDurationNarrow(timeRemainingSec)) : null,
 					this.renderCancelButton(progressState, onCancel),
+					this.renderRetryButton(progressState, onRetry),
 				]),
 				progressState === ProgressState.running
 					? m(".abs", {
@@ -60,7 +65,7 @@ export class ProgressSnackBar implements Component<ProgressSnackBarAttrs> {
 				? m(IconButton, {
 						click: () => onCancel(),
 						icon: Icons.X,
-						title: "cancel_action",
+						label: "cancel_action",
 						size: ButtonSize.Normal,
 					})
 				: m("", {
@@ -70,6 +75,24 @@ export class ProgressSnackBar implements Component<ProgressSnackBarAttrs> {
 						},
 					})
 		} else return null
+	}
+
+	private renderRetryButton(progressState: ProgressState, onRetry: () => unknown) {
+		if (progressState === ProgressState.error) {
+			return m(IconButton, {
+				click: () => onRetry(),
+				icon: Icons.Refresh,
+				label: "retry_action",
+				size: ButtonSize.Normal,
+			})
+		} else {
+			m("", {
+				style: {
+					width: px(component_size.button_height),
+					height: px(component_size.button_height),
+				},
+			})
+		}
 	}
 
 	private renderIcon(state: ProgressState, runningIcon: ProgressSnackBarAttrs["runningIcon"]): Children {

@@ -5,7 +5,7 @@ import m, { Children, Vnode, VnodeDOM } from "mithril"
 import type { DomainConfigProvider } from "../api/common/DomainConfigProvider"
 import { SettingsList } from "./SettingsList"
 import { isNotEmpty } from "@tutao/utils"
-import { isAndroidApp } from "@tutao/app-env"
+import { EnvProvider } from "@tutao/app-env"
 import { SettingsSupportButton } from "./SettingsSupportButton"
 import { SettingsAboutLInk } from "./SettingsAboutLInk"
 import { ViewSlider } from "../../../ui/nav/ViewSlider"
@@ -13,7 +13,7 @@ import { SETTINGS_PREFIX } from "../../../ui/utils/RouteChange"
 import { BaseTopLevelView } from "../../../ui/BaseTopLevelView"
 import { TopLevelView } from "../../../ui/base/TopLevelView"
 import { ColumnType, ViewColumn } from "../../../ui/base/ViewColumn"
-import { styles } from "../../../ui/styles"
+import { Styles } from "../../../ui/styles"
 import { AppHeaderAttrs, Header } from "../../../ui/Header"
 import { BackgroundColumnLayout } from "../../../ui/BackgroundColumnLayout"
 import { theme } from "../../../ui/theme"
@@ -56,7 +56,7 @@ export class MobileSettingsView extends BaseTopLevelView implements TopLevelView
 	}
 
 	private isTabletView(): boolean {
-		return (styles.isSingleColumnLayout() && this.viewSlider && this.viewSlider.allColumnsVisible()) || !styles.isSingleColumnLayout()
+		return (Styles.get().isSingleColumnLayout() && this.viewSlider && this.viewSlider.allColumnsVisible()) || !Styles.get().isSingleColumnLayout()
 	}
 
 	private makeSettingsCategoriesColumn(
@@ -113,7 +113,7 @@ export class MobileSettingsView extends BaseTopLevelView implements TopLevelView
 				view: () =>
 					m(BackgroundColumnLayout, {
 						backgroundColor: theme.surface_container,
-						classes: (this.isTabletView() ? "pr-16 pl-8 " : "") + (isAndroidApp() ? "bottom-safe-inset overflow-y-hidden" : ""),
+						classes: (this.isTabletView() ? "pr-16 pl-8 " : "") + (EnvProvider.get().isAndroidApp() ? "bottom-safe-inset overflow-y-hidden" : ""),
 						columnLayout: m(
 							".mlr-safe-inset.fill-absolute.content-bg.border-radius-top-left-8.border-radius-top-right-8",
 							{
@@ -259,8 +259,8 @@ export class MobileSettingsView extends BaseTopLevelView implements TopLevelView
 			this.setUrl(this.settingSections[0].settings[0].url)
 		}
 
-		await this.currentViewer?.entityEventsReceived(updates)
-		await this.detailsViewer?.entityEventsReceived(updates)
+		await this.currentViewer?.onEntityUpdatesReceived(updates)
+		await this.detailsViewer?.onEntityUpdatesReceived(updates)
 	}
 
 	getViewSlider(): ViewSlider | null {

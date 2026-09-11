@@ -1,4 +1,11 @@
-import { assertWorkerOrNode, CancelledError, DAY_IN_MILLIS, FULL_INDEXED_TIMESTAMP, NOTHING_INDEXED_TIMESTAMP } from "@tutao/app-env"
+import {
+	CancelledError,
+	EnvProvider,
+	FREE_MAIL_INDEX_DEFAULT_RANGE_DAYS,
+	FULL_INDEXED_TIMESTAMP,
+	NOTHING_INDEXED_TIMESTAMP,
+	TimeConstants,
+} from "@tutao/app-env"
 import {
 	assertNotNull,
 	clamp,
@@ -55,10 +62,9 @@ import {
 import { EntityUpdateData, isUpdateForTypeRef } from "../../../../platform-kit/instance-pipeline/utils/EntityUpdateUtils"
 import { abortAware, MailIndexer, MailIndexerNewMailDownloader } from "./MailIndexer"
 
-assertWorkerOrNode()
+EnvProvider.assertWorkerOrNode()
 
-export const INITIAL_MAIL_INDEX_INTERVAL_DAYS = 28
-const MAIL_INDEX_BATCH_INTERVAL = DAY_IN_MILLIS // one day
+const MAIL_INDEX_BATCH_INTERVAL = TimeConstants.DAY_IN_MILLIS // one day
 
 const TAG = "WebMailIndexer"
 
@@ -197,7 +203,7 @@ export class WebMailIndexer implements MailIndexer {
 
 	async doInitialMailIndexing(user: User): Promise<void> {
 		// create index in background, termination is handled in Indexer.enableMailIndexing
-		const oldestTimestamp = this._dateProvider.getStartOfDayShiftedBy(-INITIAL_MAIL_INDEX_INTERVAL_DAYS).getTime()
+		const oldestTimestamp = this._dateProvider.getStartOfDayShiftedBy(-FREE_MAIL_INDEX_DEFAULT_RANGE_DAYS).getTime()
 		// We don't have to disable mail indexing when it's stopped now
 		try {
 			await this.indexMailboxes(user, oldestTimestamp)
@@ -485,7 +491,7 @@ export class WebMailIndexer implements MailIndexer {
 		return await this.entityClient.loadAll(MailSetTypeRef, mailbox.mailSets.mailSets)
 	}
 
-	private async processImportStateEntityEvents(operation: OperationType, importStateId: IdTuple, importType: MailImportType): Promise<void> {
+	private async processImportStateEntityUpdates(operation: OperationType, importStateId: IdTuple, importType: MailImportType): Promise<void> {
 		await this.initialized.promise
 		if (!this._mailIndexingEnabled) return
 		// we can only process create and update events (create is because of EntityEvent optimization
@@ -573,17 +579,17 @@ export class WebMailIndexer implements MailIndexer {
 	}
 
 	/**
-	 * Prepare IndexUpdate in response to the new entity events.
+	 * Prepare IndexUpdate in response to the new entity updates.
 	 */
-	async processEntityEvents(events: readonly EntityUpdateData[]): Promise<void> {
+	async onEntityUpdatesReceived(updates: readonly EntityUpdateData[]): Promise<void> {
 		await this.initialized.promise
 		if (!this._mailIndexingEnabled) return
 
-		for (const event of events) {
+		for (const event of updates) {
 			if (isUpdateForTypeRef(ImportFileMailStateTypeRef, event)) {
-				await this.processImportStateEntityEvents(event.operation, [assertNotNull(event.instanceListId), event.instanceId], MailImportType.FileImport)
+				await this.processImportStateEntityUpdates(event.operation, [assertNotNull(event.instanceListId), event.instanceId], MailImportType.FileImport)
 			} else if (isUpdateForTypeRef(ImapFolderSyncStateTypeRef, event)) {
-				await this.processImportStateEntityEvents(event.operation, [assertNotNull(event.instanceListId), event.instanceId], MailImportType.ImapImport)
+				await this.processImportStateEntityUpdates(event.operation, [assertNotNull(event.instanceListId), event.instanceId], MailImportType.ImapImport)
 			}
 		}
 	}
@@ -668,8 +674,8 @@ export class WebMailIndexer implements MailIndexer {
 		await this.indexMailboxes(user, currentIndexTimestamp)
 	}
 
-	async extendMailIndex(): Promise<void> {
-		// no-op on web
+	async extendMailIndex(user: User, aimedTimestamp: number): Promise<void> {
+		await this.indexMailboxes(user, aimedTimestamp)
 	}
 }
 

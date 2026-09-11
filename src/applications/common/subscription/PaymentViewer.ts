@@ -1,5 +1,5 @@
 import m, { Children } from "mithril"
-import { assertMainOrNode, isIOSApp, PostingType, ProgrammingError, UpgradePromptType } from "@tutao/app-env"
+import { EnvProvider, PostingType, ProgrammingError, UpgradePromptType } from "@tutao/app-env"
 import { assertNotNull, neverNull, newPromise, ofClass } from "@tutao/utils"
 import { InfoLink, lang, TranslationKey } from "../../../ui/utils/LanguageViewModel"
 import { HtmlEditor, HtmlEditorMode } from "../../../ui/editor/HtmlEditor"
@@ -23,7 +23,7 @@ import { TranslationKeyType } from "../../../ui/utils/TranslationKey"
 import { IconButton, IconButtonAttrs } from "../../../ui/base/IconButton.js"
 import { ButtonSize } from "../../../ui/base/ButtonSize.js"
 import { formatNameAndAddress } from "../api/common/utils/CommonFormatter.js"
-import { client } from "../../../platform-kit/app-env/boot/ClientDetector.js"
+import { ClientDetector } from "../../../platform-kit/app-env/boot/ClientDetector.js"
 import { DeviceType } from "../../../platform-kit/app-env/boot/ClientConstants.js"
 import { PrimaryButton, SecondaryButton } from "../../../ui/base/buttons/VariantButtons.js"
 import type { UpdatableSettingsViewer } from "../settings/Interfaces.js"
@@ -35,14 +35,16 @@ import {
 	createDebitServicePutData,
 	Customer,
 	CustomerTypeRef,
-	DebitService,
+	DebitService_PUT,
 	GiftCard,
 	GiftCardTypeRef,
 	InvoiceInfo,
 	InvoiceInfoTypeRef,
 } from "@tutao/entities/sys"
+import { AccountType, NewPaidPlans, PaymentMethodType } from "../../../entities/sys/Utils"
+import { elementIdPart, idToElementId, NULL_ENTITY, NullEntity, OperationType } from "@tutao/meta"
 import { getByAbbreviation } from "../gui/CountryList"
-import { CustomerAccountPosting, CustomerAccountService } from "@tutao/entities/accounting"
+import { CustomerAccountPosting, CustomerAccountService_GET } from "@tutao/entities/accounting"
 import { getHtmlSanitizer } from "../misc/HtmlSanitizer"
 import { EntityUpdateData, isUpdateForTypeRef } from "../../../platform-kit/instance-pipeline/utils/EntityUpdateUtils"
 import { BadGatewayError, LockedError, PreconditionFailedError, TooManyRequestsError } from "@tutao/rest-client/error"
@@ -54,10 +56,8 @@ import Stream from "mithril/stream"
 import { GiftCardMessageEditorField } from "./giftcards/GiftCardMessageEditorField"
 import { CURRENT_GIFT_CARD_TERMS_VERSION, renderTermsAndConditionsButton, TermsSection } from "./TermsAndConditions"
 import { SettingsExpander } from "../settings/SettingsExpander"
-import { elementIdPart, idToElementId, OperationType } from "@tutao/meta"
-import { AccountType, NewPaidPlans, PaymentMethodType } from "../../../entities/sys/Utils"
 
-assertMainOrNode()
+EnvProvider.assertMainOrNode()
 
 /**
  * Displays payment method/invoice data and allows changing them.
@@ -152,7 +152,7 @@ export class PaymentViewer implements UpdatableSettingsViewer {
 			isReadOnly: true,
 			injectionsRight: () =>
 				m(IconButton, {
-					title: "paymentMethod_label",
+					label: "paymentMethod_label",
 					click: (e, dom) => this.handlePaymentMethodClick(e, dom),
 					icon: this.getIconForPaymentMethodSetting(this.accountingInfo),
 					size: ButtonSize.Compact,
@@ -161,7 +161,7 @@ export class PaymentViewer implements UpdatableSettingsViewer {
 	}
 
 	private getIconForPaymentMethodSetting(accountingInfo: AccountingInfo | null) {
-		if (this.customer?.type === AccountType.PAID && isIOSApp()) {
+		if (this.customer?.type === AccountType.PAID && EnvProvider.get().isIOSApp()) {
 			return Icons.InfoFilled
 		} else if (accountingInfo != null && hasRunningAppStoreSubscription(accountingInfo)) {
 			return Icons.InfoFilled
@@ -174,7 +174,7 @@ export class PaymentViewer implements UpdatableSettingsViewer {
 			return
 		}
 		const currentPaymentMethod: PaymentMethodType | null = getPaymentMethodType(this.accountingInfo)
-		if (isIOSApp()) {
+		if (EnvProvider.get().isIOSApp()) {
 			if (currentPaymentMethod === PaymentMethodType.AppStore) {
 				// Paid users trying to change payment method on iOS with an active subscription
 				return Dialog.message(lang.getTranslation("storePaymentMethodChange_msg", { "{AppStorePaymentChange}": InfoLink.AppStorePaymentChange }))
@@ -364,7 +364,7 @@ export class PaymentViewer implements UpdatableSettingsViewer {
 			actionButtonAttrs:
 				posting.type === PostingType.UsageFee || posting.type === PostingType.Credit || posting.type === PostingType.SalesCommission
 					? {
-							title: "download_action",
+							label: "download_action",
 							icon: Icons.DownloadFilled,
 							size: ButtonSize.Compact,
 							click: (e, dom) => {
@@ -392,12 +392,12 @@ export class PaymentViewer implements UpdatableSettingsViewer {
 	}
 
 	private async doPdfInvoiceDownload(posting: CustomerAccountPosting): Promise<unknown> {
-		if (client.compressionStreamSupported()) {
+		if (ClientDetector.get().compressionStreamSupported()) {
 			return showProgressDialog("pleaseWait_msg", locator.customerFacade.generatePdfInvoice(neverNull(posting.invoiceNumber))).then((pdfInvoice) =>
 				locator.fileController.saveDataFile(pdfInvoice),
 			)
 		} else {
-			if (client.device === DeviceType.ANDROID) {
+			if (ClientDetector.get().device === DeviceType.ANDROID) {
 				return Dialog.message("invoiceFailedWebview_msg", () =>
 					m(
 						"div",
@@ -411,7 +411,7 @@ export class PaymentViewer implements UpdatableSettingsViewer {
 						),
 					),
 				)
-			} else if (client.isIos()) {
+			} else if (ClientDetector.get().isIos()) {
 				return Dialog.message("invoiceFailedIOS_msg")
 			} else {
 				return Dialog.message("invoiceFailedBrowser_msg")
@@ -457,7 +457,7 @@ export class PaymentViewer implements UpdatableSettingsViewer {
 	}
 
 	private loadPostings(): Promise<void> {
-		return locator.serviceExecutor.get(CustomerAccountService, null, null).then((result) => {
+		return locator.serviceExecutor.execute(CustomerAccountService_GET, NULL_ENTITY, null).then((result) => {
 			this.postings = result.postings
 			this.outstandingBookingsPrice = Number(result.outstandingBookingsPrice)
 			this.balance = Number(result.balance)
@@ -465,7 +465,7 @@ export class PaymentViewer implements UpdatableSettingsViewer {
 		})
 	}
 
-	async entityEventsReceived(updates: ReadonlyArray<EntityUpdateData>): Promise<void> {
+	async onEntityUpdatesReceived(updates: ReadonlyArray<EntityUpdateData>): Promise<void> {
 		for (const update of updates) {
 			await this.processEntityUpdate(update)
 		}
@@ -506,7 +506,8 @@ export class PaymentViewer implements UpdatableSettingsViewer {
 					return showProgressDialog(
 						"pleaseWait_msg",
 						locator.serviceExecutor
-							.put(DebitService, createDebitServicePutData({}), null)
+							.execute(DebitService_PUT, createDebitServicePutData({}), null)
+							.then((_: NullEntity) => {})
 							.catch(ofClass(LockedError, () => "operationStillActive_msg" as TranslationKey))
 							.catch(ofClass(PreconditionFailedError, (error) => getPreconditionFailedPaymentMsg(error.data)))
 							.catch(ofClass(BadGatewayError, () => "paymentProviderNotAvailableError_msg" as TranslationKey))
@@ -528,7 +529,7 @@ export class PaymentViewer implements UpdatableSettingsViewer {
 			m(".flex-space-between.items-center.mt-32.mb-8", [
 				m(".h4", lang.get("invoiceData_msg")),
 				m(IconButton, {
-					title: "invoiceData_msg",
+					label: "invoiceData_msg",
 					click: createNotAvailableForFreeClickHandler(
 						UpgradePromptType.VIEW_INVOICE,
 						NewPaidPlans,
@@ -551,7 +552,7 @@ export class PaymentViewer implements UpdatableSettingsViewer {
 	}
 	private renderGiftCardTable(giftCards: GiftCard[], isPremiumPredicate: () => boolean): Children {
 		const addButtonAttrs: IconButtonAttrs = {
-			title: "buyGiftCard_label",
+			label: "buyGiftCard_label",
 			click: createNotAvailableForFreeClickHandler(
 				UpgradePromptType.PURCHASE_GIFT_CARDS,
 				NewPaidPlans,
@@ -570,7 +571,7 @@ export class PaymentViewer implements UpdatableSettingsViewer {
 					cells: [formatDate(giftCard.orderDate), formatPrice(parseFloat(giftCard.value), true)],
 					actionButtonAttrs: attachDropdown({
 						mainButtonAttrs: {
-							title: "options_action",
+							label: "options_action",
 							icon: Icons.More,
 							size: ButtonSize.Compact,
 						},

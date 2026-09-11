@@ -1,4 +1,4 @@
-import { assertWorkerOrNode } from "@tutao/app-env"
+import { EnvProvider } from "@tutao/app-env"
 import {
 	bytesToEd25519PrivateKey,
 	bytesToEd25519PublicKey,
@@ -16,12 +16,13 @@ import {
 	signWithEd25519,
 	verifyEd25519Signature,
 } from "@tutao/crypto"
-import { LazyLoaded } from "@tutao/utils"
+import { isNotNull, LazyLoaded } from "@tutao/utils"
 import { IPCEd25519PublicKey } from "../../../app-kit/native-bridge/common/generatedipc/types/IPCEd25519PublicKey"
 import { NativeCryptoFacade } from "../../../app-kit/native-bridge/common/generatedipc/types/NativeCryptoFacade"
 import { IPCEd25519PrivateKey } from "../../../app-kit/native-bridge/common/generatedipc/types/IPCEd25519PrivateKey"
 import { IPCEd25519Signature } from "../../../app-kit/native-bridge/common/generatedipc/types/IPCEd25519Signature"
-assertWorkerOrNode()
+
+EnvProvider.assertWorkerOrNode()
 
 export interface Ed25519Facade {
 	generateKeypair(): Promise<Ed25519KeyPair>
@@ -35,11 +36,11 @@ export interface Ed25519Facade {
  * Implementation of EdDSA based on Ed25519.
  */
 export class WASMEd25519Facade implements Ed25519Facade {
-	constructor(private readonly testWASM?: BufferSource) {}
+	constructor(private readonly testWASM: BufferSource | null = null) {}
 
 	// loads liboqs WASM
 	private initEd25519: LazyLoaded<void> = new LazyLoaded(async () => {
-		if (this.testWASM) {
+		if (isNotNull(this.testWASM)) {
 			return initEd25519ForTesting(this.testWASM)
 		} else {
 			await initEd25519("./crypto_primitives_bg.wasm")

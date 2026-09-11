@@ -26,7 +26,12 @@ import {
 } from "@tutao/entities/sys"
 import { WebsocketConnectivityListener } from "../../../../src/platform-kit/network/WebsocketConnectivityListener"
 import { LastProcessedEventBatchProvider } from "../../../../src/platform-kit/network/LastProcessedEventBatchProvider"
-import { CachingStatus, EntityUpdateData, entityUpdateToUpdateData } from "../../../../src/platform-kit/instance-pipeline/utils/EntityUpdateUtils"
+import {
+	CacheSyncStatus,
+	CachingStatus,
+	EntityUpdateData,
+	entityUpdateToUpdateData,
+} from "../../../../src/platform-kit/instance-pipeline/utils/EntityUpdateUtils"
 import { GroupType } from "../../../../src/entities/sys/Utils"
 import { ProgressMonitorInterface } from "../../../../src/platform-kit/network/ProgressMonitorInterface"
 
@@ -81,7 +86,7 @@ o.spec("EventBusClient", function () {
 
 	o.before(function () {
 		// Things that are not defined in node but are read-only in Browser
-		if (!globalThis.isBrowser) {
+		if (!globalThis.isBrowserTest) {
 			// @ts-ignore
 			WebSocket.CONNECTING = WebSocket.CONNECTING ?? 0
 			// @ts-ignore
@@ -200,8 +205,8 @@ o.spec("EventBusClient", function () {
 		)
 
 		const filteredEvents: EntityUpdateData[] = []
-		when(cacheMock.entityEventsReceived(matchers.anything(), matchers.anything(), matchers.anything())).thenResolve(filteredEvents)
-		when(listenerMock.onEntityEventsReceived(matchers.anything(), matchers.anything(), matchers.anything(), matchers.anything())).thenResolve()
+		when(cacheMock.onEntityUpdatesReceived(matchers.anything(), matchers.anything(), matchers.anything())).thenResolve(filteredEvents)
+		when(listenerMock.onEntityUpdatesReceived(matchers.anything(), matchers.anything(), matchers.anything(), matchers.anything())).thenResolve()
 
 		// call twice as if it was received in parallel
 		const p1 = socket.onmessage?.({
@@ -218,7 +223,7 @@ o.spec("EventBusClient", function () {
 		await ebc.waitForEmptyQueue()
 
 		// Is waiting for cache to process the first event
-		verify(cacheMock.entityEventsReceived(matchers.anything(), matchers.anything(), matchers.anything()), { times: 2 })
+		verify(cacheMock.onEntityUpdatesReceived(matchers.anything(), matchers.anything(), matchers.anything()), { times: 2 })
 	})
 
 	o.test("on counter update it send message to the main thread", async function () {
@@ -326,7 +331,7 @@ o.spec("EventBusClient", function () {
 					}),
 				),
 			]
-			when(cacheMock.entityEventsReceived(matchers.anything(), eventBatchId, mailGroupId)).thenResolve(batchEvents)
+			when(cacheMock.onEntityUpdatesReceived(matchers.anything(), eventBatchId, mailGroupId)).thenResolve(batchEvents)
 
 			await ebc.connect(ConnectMode.Initial)
 			await socket.onopen?.(new Event("open"))
@@ -346,20 +351,20 @@ o.spec("EventBusClient", function () {
 				data: await createEntityMessage(entityData),
 			} as MessageEvent)
 			await ebc.messageQueue
-			verify(listenerMock.onSyncDone(), { times: 0 })
+			verify(listenerMock.onSyncStatusChanged(CacheSyncStatus.OnlineSyncDone), { times: 0 })
 			await socket.onmessage?.({
 				data: "initialSyncDone",
 			} as MessageEvent)
 			await ebc.messageQueue
 			await ebc.waitForEmptyQueue()
-			verify(listenerMock.onEntityEventsReceived(batchEvents, eventBatchId, mailGroupId, matchers.anything()))
+			verify(listenerMock.onEntityUpdatesReceived(batchEvents, eventBatchId, mailGroupId, matchers.anything()))
 			verify(progressMonitor.workDone(1), { times: 1 })
-			verify(listenerMock.onSyncDone())
+			verify(listenerMock.onSyncStatusChanged(CacheSyncStatus.OnlineSyncDone))
 		})
 
 		o.test("event batch with entity update of an unknown type is processed", async function () {
 			const eventBatchId = "1"
-			when(cacheMock.entityEventsReceived(matchers.anything(), eventBatchId, mailGroupId)).thenResolve([])
+			when(cacheMock.onEntityUpdatesReceived(matchers.anything(), eventBatchId, mailGroupId)).thenResolve([])
 
 			await ebc.connect(ConnectMode.Initial)
 			await socket.onopen?.(new Event("open"))
@@ -374,20 +379,20 @@ o.spec("EventBusClient", function () {
 				data: await createEntityMessage(entityData),
 			} as MessageEvent)
 			await ebc.messageQueue
-			verify(listenerMock.onSyncDone(), { times: 0 })
+			verify(listenerMock.onSyncStatusChanged(CacheSyncStatus.OnlineSyncDone), { times: 0 })
 			await socket.onmessage?.({
 				data: "initialSyncDone",
 			} as MessageEvent)
 			await ebc.messageQueue
 			await ebc.waitForEmptyQueue()
-			verify(listenerMock.onEntityEventsReceived(matchers.anything(), matchers.anything(), matchers.anything(), matchers.anything()), { times: 0 })
+			verify(listenerMock.onEntityUpdatesReceived(matchers.anything(), matchers.anything(), matchers.anything(), matchers.anything()), { times: 0 })
 			verify(progressMonitor.workDone(1), { times: 1 })
-			verify(listenerMock.onSyncDone())
+			verify(listenerMock.onSyncStatusChanged(CacheSyncStatus.OnlineSyncDone))
 		})
 
 		o.test("event batch with empty entity updates is processed", async function () {
 			const eventBatchId = "1"
-			when(cacheMock.entityEventsReceived(matchers.anything(), eventBatchId, mailGroupId)).thenResolve([])
+			when(cacheMock.onEntityUpdatesReceived(matchers.anything(), eventBatchId, mailGroupId)).thenResolve([])
 
 			await ebc.connect(ConnectMode.Initial)
 			await socket.onopen?.(new Event("open"))
@@ -407,15 +412,15 @@ o.spec("EventBusClient", function () {
 				data: await createEntityMessage(entityData),
 			} as MessageEvent)
 			await ebc.messageQueue
-			verify(listenerMock.onSyncDone(), { times: 0 })
+			verify(listenerMock.onSyncStatusChanged(CacheSyncStatus.OnlineSyncDone), { times: 0 })
 			await socket.onmessage?.({
 				data: "initialSyncDone",
 			} as MessageEvent)
 			await ebc.messageQueue
 			await ebc.waitForEmptyQueue()
-			verify(listenerMock.onEntityEventsReceived(matchers.anything(), matchers.anything(), matchers.anything(), matchers.anything()), { times: 0 })
+			verify(listenerMock.onEntityUpdatesReceived(matchers.anything(), matchers.anything(), matchers.anything(), matchers.anything()), { times: 0 })
 			verify(progressMonitor.workDone(1), { times: 1 })
-			verify(listenerMock.onSyncDone())
+			verify(listenerMock.onSyncStatusChanged(CacheSyncStatus.OnlineSyncDone))
 		})
 	})
 
@@ -479,6 +484,36 @@ o.spec("EventBusClient", function () {
 
 			o.check(updateTotalWorkCaptor.value).equals(1230 + 5)
 		})
+
+		o.test("reports OnlineSyncOngoingFewUpdates for a work estimate below the small-work threshold", async function () {
+			await ebc.connect(ConnectMode.Initial)
+			await socket.onopen?.(new Event("open"))
+
+			await socket.onmessage?.({
+				data: "initialSyncWorkEstimate;99",
+			} as MessageEvent)
+			await ebc.messageQueue
+
+			verify(listenerMock.onSyncStatusChanged(CacheSyncStatus.OnlineSyncOngoingFewUpdates))
+			verify(listenerMock.onSyncStatusChanged(CacheSyncStatus.OnlineSyncOngoing), { times: 0 })
+			verify(cacheMock.setCacheSyncStatus(CacheSyncStatus.OnlineSyncOngoingFewUpdates))
+			verify(cacheMock.setCacheSyncStatus(CacheSyncStatus.OnlineSyncOngoing), { times: 0 })
+		})
+
+		o.test("reports OnlineSyncOngoing for a work estimate at or above the small-work threshold", async function () {
+			await ebc.connect(ConnectMode.Initial)
+			await socket.onopen?.(new Event("open"))
+
+			await socket.onmessage?.({
+				data: "initialSyncWorkEstimate;100",
+			} as MessageEvent)
+			await ebc.messageQueue
+
+			verify(listenerMock.onSyncStatusChanged(CacheSyncStatus.OnlineSyncOngoing))
+			verify(listenerMock.onSyncStatusChanged(CacheSyncStatus.OnlineSyncOngoingFewUpdates), { times: 0 })
+			verify(cacheMock.setCacheSyncStatus(CacheSyncStatus.OnlineSyncOngoing))
+			verify(cacheMock.setCacheSyncStatus(CacheSyncStatus.OnlineSyncOngoingFewUpdates), { times: 0 })
+		})
 	})
 
 	o.spec("handle InitialSyncDone message", function () {
@@ -493,7 +528,7 @@ o.spec("EventBusClient", function () {
 					operation: OperationType.UPDATE,
 				}),
 			)
-			when(cacheMock.entityEventsReceived(matchers.anything(), eventBatchId, "mailGroupId")).thenResolve([entityUpdateData])
+			when(cacheMock.onEntityUpdatesReceived(matchers.anything(), eventBatchId, "mailGroupId")).thenResolve([entityUpdateData])
 			when(createProgressMonitor(matchers.anything())).thenReturn(object<ProgressMonitorInterface>())
 			await ebc.connect(ConnectMode.Initial)
 			await socket.onopen?.(new Event("open"))

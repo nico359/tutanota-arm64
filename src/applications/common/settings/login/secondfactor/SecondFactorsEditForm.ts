@@ -1,5 +1,5 @@
 import m, { Children } from "mithril"
-import { assertMainOrNode, SecondFactorType } from "@tutao/app-env"
+import { EnvProvider, SecondFactorType } from "@tutao/app-env"
 import { assertNotNull, LazyLoaded, neverNull, noOp } from "@tutao/utils"
 import { Icons } from "../../../../../ui/base/icons/Icons.js"
 import { InfoLink, lang } from "../../../../../ui/utils/LanguageViewModel.js"
@@ -23,7 +23,7 @@ import { Dialog } from "../../../../../ui/base/Dialog"
 import { assertEnumValue } from "@tutao/meta"
 import { ifAllowedTutaLinks } from "../../../gui/base/TutaLinkUtils"
 
-assertMainOrNode()
+EnvProvider.assertMainOrNode()
 
 export class SecondFactorsEditForm {
 	_2FALineAttrs: TableLineAttrs[]
@@ -49,7 +49,7 @@ export class SecondFactorsEditForm {
 			lines: this._2FALineAttrs,
 			showActionButtonColumn: true,
 			addButtonAttrs: {
-				title: "addSecondFactor_action",
+				label: "addSecondFactor_action",
 				click: () => {
 					if (this.isDeactivated) {
 						Dialog.message("userAccountDeactivated_msg")
@@ -96,7 +96,7 @@ export class SecondFactorsEditForm {
 
 		this._2FALineAttrs = factors.map((f) => {
 			const removeButtonAttrs: IconButtonAttrs = {
-				title: "remove_action",
+				label: "remove_action",
 				click: () => {
 					if (this.isDeactivated) {
 						Dialog.message("userAccountDeactivated_msg")
@@ -203,7 +203,7 @@ export class SecondFactorsEditForm {
 		}
 	}
 
-	entityEventReceived(update: EntityUpdateData): Promise<void> {
+	processEntityUpdate(update: EntityUpdateData): Promise<void> {
 		if (isUpdateForTypeRef(SecondFactorTypeRef, update)) {
 			return this._updateSecondFactors()
 		} else {

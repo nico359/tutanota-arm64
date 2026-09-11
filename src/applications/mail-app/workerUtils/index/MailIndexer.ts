@@ -26,15 +26,17 @@ export interface MailIndexer {
 	readonly mailIndexingEnabled: boolean
 
 	init(user: User): Promise<void>
-	processEntityEvents(events: readonly EntityUpdateData[], groupId: Id, batchId: Id): Promise<void>
+	onEntityUpdatesReceived(events: readonly EntityUpdateData[], groupId: Id, batchId: Id): Promise<void>
 	beforeMailDeleted(mailid: IdTuple): Promise<void>
 	afterMailDeleted(mailid: IdTuple): Promise<void>
 	afterMailCreated(mailid: IdTuple): Promise<void>
 	afterMailUpdated(mailid: IdTuple): Promise<void>
 	beforeImportedMailFinished(importedMailsList: Id, mailImportType: MailImportType): Promise<void>
 	rebuildIndex(user: User): Promise<void>
-	extendMailIndex(user: User): Promise<void>
+	extendMailIndex(user: User, aimedTimestamp: number): Promise<void>
 	cancelMailIndexing(): void
+	doInitialMailIndexing(user: User): Promise<void>
+	enableMailIndexing(): Promise<boolean>
 }
 
 /**

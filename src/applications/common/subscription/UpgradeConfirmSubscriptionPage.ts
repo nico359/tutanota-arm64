@@ -25,12 +25,12 @@ import { MobilePaymentResultType } from "@tutao/native-bridge/generatedIpc/enums
 import { updatePaymentData } from "./InvoiceAndPaymentDataPage"
 import { SessionType } from "../../../platform-kit/app-env/SessionType"
 import { MobilePaymentError } from "../api/common/error/MobilePaymentError.js"
-import { client } from "../../../platform-kit/app-env/boot/ClientDetector.js"
+import { ClientDetector } from "../../../platform-kit/app-env/boot/ClientDetector.js"
 import { DateTime } from "luxon"
 import { formatDate } from "../../../ui/utils/Formatter.js"
 import { ReferralType, SignupFlowStage, SignupFlowUsageTestController } from "./usagetest/UpgradeSubscriptionWizardUsageTestUtils.js"
 import { completeUpgradeStage } from "../ratings/UserSatisfactionUtils"
-import { createSwitchAccountTypePostIn, SwitchAccountTypeService } from "@tutao/entities/sys"
+import { createSwitchAccountTypePostIn, SwitchAccountTypeService_POST } from "@tutao/entities/sys"
 import { AccountType, PaymentMethodType } from "../../../entities/sys/Utils"
 import { elementIdToId } from "@tutao/meta"
 
@@ -67,9 +67,9 @@ export class UpgradeConfirmSubscriptionPage implements WizardPageN<UpgradeSubscr
 			referralCode: data.referralData?.code ?? null,
 			specialPriceUserSingle: null,
 			surveyData: null,
-			app: client.isCalendarApp() ? SubscriptionApp.Calendar : SubscriptionApp.Mail,
+			app: ClientDetector.get().isCalendarApp() ? SubscriptionApp.Calendar : SubscriptionApp.Mail,
 		})
-		showProgressDialog("pleaseWait_msg", locator.serviceExecutor.post(SwitchAccountTypeService, serviceData, null))
+		showProgressDialog("pleaseWait_msg", locator.serviceExecutor.execute(SwitchAccountTypeService_POST, serviceData, null))
 			.then(() => {
 				const stage = data.upgradeUsageTest?.getStage(1)
 

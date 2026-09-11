@@ -20,10 +20,9 @@ import {
 	BIRTHDAY_CALENDAR_BASE_ID,
 	DEFAULT_BIRTHDAY_CALENDAR_COLOR,
 	DEFAULT_CALENDAR_COLOR,
+	EnvProvider,
 	EXTERNAL_CALENDAR_SYNC_INTERVAL,
 	FeatureType,
-	isApp,
-	isDesktop,
 	TutanotaError,
 } from "@tutao/app-env"
 import { EventController } from "../../../common/api/main/EventController"
@@ -114,15 +113,20 @@ import {
 	GroupInfoTypeRef,
 	GroupMembership,
 	GroupTypeRef,
-	MembershipService,
+	MembershipService_DELETE,
 	User,
 	UserAlarmInfo,
 	UserAlarmInfoTypeRef,
 } from "@tutao/entities/sys"
 import { isSharedGroupOwner } from "../../../../entities/sys/Utils"
-import { EntityUpdateData, isUpdateFor, isUpdateForTypeRef, ListenerPriority } from "../../../../platform-kit/instance-pipeline/utils/EntityUpdateUtils"
+import {
+	CacheSyncStatus,
+	EntityUpdateData,
+	isUpdateFor,
+	isUpdateForTypeRef,
+	ListenerPriority,
+} from "../../../../platform-kit/instance-pipeline/utils/EntityUpdateUtils"
 import { OperationId, OperationProgressTracker } from "../../../common/api/main/OperationProgressTracker"
-import { errorsToString } from "../../../../platform-kit/utils/Utils"
 import { formatNotificationForDisplay } from "../../../../ui/utils/Formatter"
 import {
 	EventAlarmInfoTemplatesTuple,
@@ -137,6 +141,7 @@ import { CalendarImporter, EventImportRejectionReason } from "../../../common/ca
 import { $Promisable } from "../../../mail-app/workerUtils/index/IndexerPromiseUtils"
 import { CacheMode, DEFAULT_ENTITY_RESTCLIENT_LOAD_OPTIONS } from "../../../../platform-kit/instance-pipeline/RestClientOptions"
 import { removeTechnicalFields } from "../gui/eventeditor-model/CalendarEventModel"
+import { errorsToString, errToErrorInfo } from "../../../../platform-kit/utils/ErrorInfo"
 
 const TAG = "[CalendarModel]"
 const EXTERNAL_CALENDAR_RETRY_LIMIT = 3
@@ -170,20 +175,6 @@ type ExternalCalendarQueueItem = {
 	url: string
 	group: string
 	name: string | null
-}
-
-export function assertEventValidity(event: CalendarEvent) {
-	switch (checkEventValidity(event)) {
-		case CalendarEventValidity.InvalidContainsInvalidDate:
-			throw new UserError("invalidDate_msg")
-		case CalendarEventValidity.InvalidEndBeforeStart:
-			throw new UserError("startAfterEnd_label")
-		case CalendarEventValidity.InvalidPre1970:
-			// shouldn't happen while the check in setStartDate is still there, resetting the date each time
-			throw new UserError("pre1970Start_msg")
-		case CalendarEventValidity.Valid:
-		// event is valid, nothing to do
-	}
 }
 
 export class CalendarModel {
@@ -257,10 +248,11 @@ export class CalendarModel {
 			priority: ListenerPriority.HIGH,
 		})
 
-		syncTracker.addSyncDoneListener({
+		syncTracker.addSyncListener({
 			id: "CalendarModel",
-			onSyncDone: async () => this.requestWidgetRefresh(),
 			priority: ListenerPriority.HIGH,
+			targetStatus: CacheSyncStatus.OnlineSyncDone,
+			onSyncStatusChange: async () => this.requestWidgetRefresh(),
 		})
 
 		this.birthdayCalendarInfo = this.createBirthdayCalendarInfo()
@@ -290,6 +282,9 @@ export class CalendarModel {
 		return this.calendarInfos.stream
 	}
 
+	getAvailableCalendars(includesBirthday: true): ReadonlyArray<CalendarInfoBase>
+	getAvailableCalendars(includesBirthday?: false): ReadonlyArray<CalendarInfo>
+	getAvailableCalendars(includesBirthday?: boolean): ReadonlyArray<CalendarInfoBase>
 	getAvailableCalendars(includesBirthday: boolean = false): ReadonlyArray<CalendarInfoBase> {
 		if (this.calendarInfos.isLoaded()) {
 			// Load user's calendar list
@@ -386,9 +381,9 @@ export class CalendarModel {
 			return
 		}
 		let errorMessage = "Failed events: " + result.failedEvents.length + "\n"
-		errorMessage = errorMessage.concat(errorsToString(result.failedEventErrors))
+		errorMessage = errorMessage.concat(errorsToString(result.failedEventErrors.map((e) => errToErrorInfo(e))))
 		errorMessage += "\nFailed alarms: " + result.failedAlarms.length + "\n"
-		errorMessage = errorMessage.concat(errorsToString(result.failedAlarmErrors))
+		errorMessage = errorMessage.concat(errorsToString(result.failedAlarmErrors.map((e) => errToErrorInfo(e))))
 		throw new Error(errorMessage)
 	}
 
@@ -441,8 +436,8 @@ export class CalendarModel {
 		for (const membership of notFoundMemberships) {
 			// noinspection ES6MissingAwait
 			this.serviceExecutor
-				.delete(
-					MembershipService,
+				.execute(
+					MembershipService_DELETE,
 					createMembershipRemoveData({
 						user: userController.userId,
 						group: membership.group,
@@ -753,7 +748,19 @@ export class CalendarModel {
 			// Reset permissions because server will assign them
 			downcast(event)._permissions = null
 			event._ownerGroup = elementIdToId(currentCalendarGroupRoot._id)
-			assertEventValidity(event)
+
+			switch (checkEventValidity(event)) {
+				case CalendarEventValidity.InvalidDate:
+					throw new UserError("invalidDate_msg")
+				case CalendarEventValidity.InvalidEndBeforeStart:
+					throw new UserError("startAfterEnd_label")
+				case CalendarEventValidity.InvalidPre1970:
+					// shouldn't happen while the check in setStartDate is still there, resetting the date each time
+					throw new UserError("pre1970Start_msg")
+				case CalendarEventValidity.Valid:
+				// event is valid, nothing to do
+			}
+
 			operationsLog.created++
 		}
 		if (isNotEmpty(eventsForCreation)) {
@@ -1174,11 +1181,17 @@ export class CalendarModel {
 	): Promise<void> {
 		const calendarEvent = makeCalendarEventFromIcsCalendarEvent(icsCalendarEvent)
 		const sentByOrganizer: boolean = resolvedPersistedCalendarEvent.organizer != null && resolvedPersistedCalendarEvent.organizer.address === sender
+
+		// When handling an existing calendar invite, we should already have a sender assigned to it.
+		// Therefore, even if the organizer is not the same as the sender, if the current invitation update was sent by
+		// the same email that invited the user in the first place, it is safe to assume that we want to process it.
+		const sentByOriginalSender = resolvedPersistedCalendarEvent.sender === sender
+
 		if (method === CalendarMethod.REPLY) {
 			return this.processCalendarReply(sender, resolvedPersistedCalendarEvent, calendarEvent) // TODO: why are alarms NOT passed in here
-		} else if (sentByOrganizer && method === CalendarMethod.REQUEST) {
+		} else if ((sentByOrganizer || sentByOriginalSender) && method === CalendarMethod.REQUEST) {
 			return await this.processUpdateToCalendarEventFromIcs(uidIndexEntry, resolvedPersistedCalendarEvent, calendarEvent)
-		} else if (sentByOrganizer && method === CalendarMethod.CANCEL) {
+		} else if ((sentByOrganizer || sentByOriginalSender) && method === CalendarMethod.CANCEL) {
 			return await this.processCalendarCancel(uidIndexEntry, resolvedPersistedCalendarEvent)
 		} else {
 			console.log(TAG, `${method} update sent not by organizer, ignoring.`)
@@ -1443,7 +1456,7 @@ export class CalendarModel {
 		for (const entityEventData of updates) {
 			// apps handle alarms natively. this code is a candidate to move into
 			// a generic web/native alarm handler
-			if (isUpdateForTypeRef(UserAlarmInfoTypeRef, entityEventData) && !isApp()) {
+			if (isUpdateForTypeRef(UserAlarmInfoTypeRef, entityEventData) && !EnvProvider.get().isApp()) {
 				const alarmInfoId: IdTuple = [assertNotNull(entityEventData.instanceListId), entityEventData.instanceId]
 				if (entityEventData.operation === OperationType.CREATE) {
 					// Updates for UserAlarmInfo and CalendarEvent come in a
@@ -1465,7 +1478,7 @@ export class CalendarModel {
 							throw e
 						}
 					}
-				} else if (entityEventData.operation === OperationType.DELETE && !isApp()) {
+				} else if (entityEventData.operation === OperationType.DELETE && !EnvProvider.get().isApp()) {
 					await this.cancelUserAlarmInfo(entityEventData.instanceId)
 				}
 			} else if (isUpdateForTypeRef(CalendarEventTypeRef, entityEventData)) {
@@ -1500,7 +1513,7 @@ export class CalendarModel {
 			}
 		}
 
-		if (!isApp()) {
+		if (!EnvProvider.get().isApp()) {
 			const pushIdentifier = this.pushService?.getLoadedPushIdentifier()
 			if (pushIdentifier && pushIdentifier.disabled) {
 				return console.log("Push identifier disabled. Skipping alarm schedule")
@@ -1535,11 +1548,16 @@ export class CalendarModel {
 	}
 
 	private getPendingAlarmRequest(elementId: string) {
-		return getFromMap(this.pendingAlarmRequests, elementId, () => ({ pendingAlarmCounter: 0, deferred: defer() }))
+		return getFromMap(this.pendingAlarmRequests, elementId, () => ({ pendingAlarmCounter: 0, deferred: defer<void>() }))
 	}
 
 	private localAlarmsEnabled(): boolean {
-		return !isApp() && !isDesktop() && this.logins.isInternalUserLoggedIn() && !this.logins.isEnabled(FeatureType.DisableCalendar)
+		return (
+			!EnvProvider.get().isApp() &&
+			!EnvProvider.get().isDesktop() &&
+			this.logins.isInternalUserLoggedIn() &&
+			!this.logins.isEnabled(FeatureType.DisableCalendar)
+		)
 	}
 
 	/**

@@ -1,9 +1,9 @@
 import * as openidClient from "./openid-client-custom"
 import type { Configuration } from "openid-client"
 import type { OauthConfigParams } from "../../../../common/api/common/utils/imapImportUtils/ImapKnownConfigs"
-import { assertMainOrNode, ProgrammingError } from "@tutao/app-env"
+import { EnvProvider, ProgrammingError } from "@tutao/app-env"
 import { IServiceExecutor } from "../../../../../platform-kit/network/ServiceRequest"
-import { createImapOauthConfigGetIn, ImapOauthConfigService } from "@tutao/entities/tutanota"
+import { createImapOauthConfigGetIn, ImapOauthConfigService_GET } from "@tutao/entities/tutanota"
 import { DEFAULT_EXTRA_SERVICE_PARAMS } from "../../../../../platform-kit/instance-pipeline/RestClientOptions"
 import { $Promisable } from "../../../workerUtils/index/IndexerPromiseUtils"
 
@@ -11,7 +11,7 @@ const CODE_CHALLENGE_METHOD = "S256"
 export type OAuthHandlerFactory = (config: OauthConfigParams, serviceExecutor: IServiceExecutor) => $Promisable<OAuthHandler>
 export type OAuthClient = typeof openidClient
 
-assertMainOrNode()
+EnvProvider.assertMainOrNode()
 
 export class OAuthHandler {
 	private config: Configuration | null = null
@@ -32,8 +32,8 @@ export class OAuthHandler {
 		const { server, clientId } = this.OauthConfig
 		const requiresClientSecret = this.OauthConfig.requiresClientSecret ?? false
 		if (requiresClientSecret) {
-			const imapOauthConfigGetOut = await this.serviceExecutor.get(
-				ImapOauthConfigService,
+			const imapOauthConfigGetOut = await this.serviceExecutor.execute(
+				ImapOauthConfigService_GET,
 				createImapOauthConfigGetIn({ clientId }),
 				DEFAULT_EXTRA_SERVICE_PARAMS,
 			)

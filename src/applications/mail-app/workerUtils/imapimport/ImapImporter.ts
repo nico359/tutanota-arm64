@@ -7,7 +7,6 @@ import { assertNotNull, getFirstOrThrow, isEmpty, partition, promiseMap, uint8Ar
 import { sha256Hash } from "@tutao/crypto"
 import { ImapImportDataFile, ImapImportTutaFileId, ImportMailFacade, ImportMailParams } from "../../../common/api/worker/facades/lazy/ImportMailFacade"
 import { SuspensionError } from "../../../common/api/common/error/SuspensionError"
-import { ImapGetMailboxResult } from "../../../common/api/common/utils/imapImportUtils/ImapGetMailboxResult"
 import { ImapImportSession, newImapImportSession } from "./ImapImportSession"
 import { ImapProvider } from "../../../common/api/common/utils/imapImportUtils/ImapKnownConfigs"
 import {
@@ -188,6 +187,13 @@ export class ImapImporter implements ImapSyncFacade {
 		}
 	}
 
+	async stopLocalImport(accountSyncStateId: IdTuple): Promise<void> {
+		const session = this.getImapImportSessionOrNull(accountSyncStateId)
+		if (session !== null) {
+			await this.imapSyncSystemFacade.stopSync(session.imapAccountSyncState._id)
+		}
+	}
+
 	async postponeImport(accountSyncStateId: IdTuple, postponedUntil: Date): Promise<void> {
 		const session = this.getImapImportSessionOrNull(accountSyncStateId)
 		if (session !== null) {
@@ -220,7 +226,7 @@ export class ImapImporter implements ImapSyncFacade {
 		this.imapImportSessions.delete(this.getImapImportSessionsMapKey(imapAccountSyncStateId))
 	}
 
-	async getImapMailboxesFromServer(imapCredentials: ImapCredentials): Promise<ImapGetMailboxResult> {
+	async getImapMailboxesFromServer(imapCredentials: ImapCredentials): Promise<ReadonlyArray<ImapMailbox>> {
 		return await this.imapSyncSystemFacade.getImapMailboxesFromServer(imapCredentials)
 	}
 
@@ -485,7 +491,7 @@ export class ImapImporter implements ImapSyncFacade {
 		return Promise.resolve()
 	}
 
-	async entityEventsReceived(updates: readonly EntityUpdateData[], groupId: Id) {
+	async onEntityUpdatesReceived(updates: readonly EntityUpdateData[], groupId: Id) {
 		for (const update of updates) {
 			if (isUpdateForTypeRef(ImapAccountSyncStateTypeRef, update)) {
 				const accountSyncStateId = collapseId(update.instanceListId, update.instanceId) as IdTuple

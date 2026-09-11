@@ -1,9 +1,9 @@
 import m, { Children } from "mithril"
-import { assertMainOrNode, UnsubscribeFailureReason } from "../../../platform-kit/app-env"
+import { EnvProvider, UnsubscribeFailureReason } from "../../../platform-kit/app-env"
 import { Dialog } from "../../../ui/base/Dialog.js"
 import { formatDateWithMonth, formatStorageSize } from "../../../ui/utils/Formatter.js"
 import { lang } from "../../../ui/utils/LanguageViewModel.js"
-import { assertNotNull, asyncFind, getFirstOrThrow, LazyLoaded, neverNull, ofClass, promiseMap } from "../../../platform-kit/utils"
+import { asyncFind, getFirstOrThrow, LazyLoaded, neverNull, ofClass, promiseMap } from "../../../platform-kit/utils"
 import { BadRequestError, NotAuthorizedError, PreconditionFailedError } from "../../../platform-kit/rest-client/error"
 import { ColumnWidth, Table, TableAttrs } from "../../../ui/base/Table.js"
 import { getGroupTypeDisplayName } from "./groups/GroupDetailsView.js"
@@ -31,7 +31,7 @@ import { toFeatureType } from "../subscription/utils/SubscriptionUtils.js"
 import { UpdatableSettingsDetailsViewer } from "./Interfaces.js"
 import { getHtmlSanitizer } from "../misc/HtmlSanitizer"
 
-assertMainOrNode()
+EnvProvider.assertMainOrNode()
 
 export class UserViewer implements UpdatableSettingsDetailsViewer {
 	private readonly user: LazyLoaded<User> = new LazyLoaded(() => this.loadUser())
@@ -41,7 +41,7 @@ export class UserViewer implements UpdatableSettingsDetailsViewer {
 	private readonly secondFactorsForm: SecondFactorsEditForm
 	private usedStorage: number | null = null
 	private mailAddressTableModel: MailAddressTableModel | null = null
-	private mailAddressTableExpanded: boolean
+	private mailAddressTableExpanded = false
 	private isPurchasingNewSharedMailboxGroup: boolean
 
 	constructor(
@@ -50,8 +50,6 @@ export class UserViewer implements UpdatableSettingsDetailsViewer {
 	) {
 		this.userGroupInfo = userGroupInfo
 		this.isPurchasingNewSharedMailboxGroup = false
-
-		this.mailAddressTableExpanded = false
 
 		this.secondFactorsForm = new SecondFactorsEditForm(
 			this.user,
@@ -68,7 +66,7 @@ export class UserViewer implements UpdatableSettingsDetailsViewer {
 					columnWidths: [ColumnWidth.Largest, ColumnWidth.Small],
 					showActionButtonColumn: true,
 					addButtonAttrs: {
-						title: "addGroup_label",
+						label: "addGroup_label",
 						icon: Icons.Plus,
 						click: () => this.showAddUserToGroupDialog(),
 					},
@@ -95,7 +93,7 @@ export class UserViewer implements UpdatableSettingsDetailsViewer {
 				? await locator.mailAddressTableModelForOwnMailbox()
 				: await locator.mailAddressTableModelForAdmin(mailMembership.group, elementIdToId(user._id), {
 						user,
-						userGroupInfo: this.userGroupInfo,
+						groupInfo: this.userGroupInfo,
 					})
 			m.redraw()
 		})
@@ -105,7 +103,7 @@ export class UserViewer implements UpdatableSettingsDetailsViewer {
 
 	renderView(): Children {
 		const changePasswordButtonAttrs: IconButtonAttrs = {
-			title: "changePassword_label",
+			label: "changePassword_label",
 			click: () => this.changePassword(),
 			icon: Icons.PenFilled,
 			size: ButtonSize.Compact,
@@ -162,7 +160,7 @@ export class UserViewer implements UpdatableSettingsDetailsViewer {
 			isReadOnly: true,
 			injectionsRight: () =>
 				m(IconButton, {
-					title: "edit_action",
+					label: "edit_action",
 					click: () => this.onChangeName(name),
 					icon: Icons.PenFilled,
 					size: ButtonSize.Compact,
@@ -284,7 +282,7 @@ export class UserViewer implements UpdatableSettingsDetailsViewer {
 					return {
 						cells: [getGroupInfoDisplayName(groupInfo), getGroupTypeDisplayName(neverNull(m.groupType))],
 						actionButtonAttrs: {
-							title: "remove_action",
+							label: "remove_action",
 							click: () => {
 								showProgressDialog(
 									"pleaseWait_msg",
@@ -422,7 +420,7 @@ export class UserViewer implements UpdatableSettingsDetailsViewer {
 		}
 	}
 
-	async entityEventsReceived(updates: ReadonlyArray<EntityUpdateData>) {
+	async onEntityUpdatesReceived(updates: ReadonlyArray<EntityUpdateData>) {
 		for (const update of updates) {
 			const { instanceListId, instanceId, operation } = update
 			if (
@@ -451,7 +449,7 @@ export class UserViewer implements UpdatableSettingsDetailsViewer {
 				await this.updateUsedStorageAndAdminFlag()
 				await this.updateGroups()
 			}
-			await this.secondFactorsForm.entityEventReceived(update)
+			await this.secondFactorsForm.processEntityUpdate(update)
 		}
 		m.redraw()
 	}

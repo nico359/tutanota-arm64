@@ -49,7 +49,7 @@ import { AppearanceSettingsViewer } from "../../common/settings/AppearanceSettin
 import { createMoreActionButtonAttrs, getConfirmation } from "../../../ui/base/GuiUtils"
 import { Icons } from "../../../ui/base/icons/Icons.js"
 import { IconButton } from "../../../ui/base/IconButton"
-import { assertMainOrNode, CancelledError, FeatureType, isApp, isDesktop, isIOSApp } from "@tutao/app-env"
+import { CancelledError, EnvProvider, FeatureType } from "@tutao/app-env"
 import { BaseTopLevelView } from "../../../ui/BaseTopLevelView"
 import { TopLevelView } from "../../../ui/base/TopLevelView"
 import { ViewSlider } from "../../../ui/nav/ViewSlider"
@@ -63,10 +63,10 @@ import { theme } from "../../../ui/theme"
 import { MobileHeader } from "../../../ui/MobileHeader"
 import { lang } from "../../../ui/utils/LanguageViewModel"
 import { getNullableSharedGroupName, getSharedGroupName } from "../../common/sharing/GroupUtils"
-import { styles } from "../../../ui/styles"
+import { Styles } from "../../../ui/styles"
 import { windowFacade } from "../../common/misc/WindowFacade"
 import { Header } from "../../../ui/Header"
-import { EntityUpdatesListener, EntityUpdateData, isUpdateForTypeRef, ListenerPriority } from "../../../platform-kit/instance-pipeline/utils/EntityUpdateUtils"
+import { EntityUpdateData, EntityUpdatesListener, isUpdateForTypeRef, ListenerPriority } from "../../../platform-kit/instance-pipeline/utils/EntityUpdateUtils"
 import { NavButtonAttrs, NavButtonColor } from "../../../ui/base/NavButton"
 import { clone, elementIdToId, getEtId } from "@tutao/meta"
 import { showProgressDialog } from "../../../ui/dialogs/ProgressDialog"
@@ -75,12 +75,12 @@ import { SETTINGS_PREFIX } from "../../../ui/utils/RouteChange"
 import { BaseButton } from "../../../ui/base/buttons/BaseButton.js"
 import { Icon, IconSize } from "../../../ui/base/Icon.js"
 import { Dialog } from "../../../ui/base/Dialog.js"
-import { createUserAreaGroupDeleteData, TemplateGroupService, UserSettingsGroupRootTypeRef } from "@tutao/entities/tutanota"
+import { createUserAreaGroupDeleteData, TemplateGroupService_DELETE, UserSettingsGroupRootTypeRef } from "@tutao/entities/tutanota"
 import { ButtonType } from "../../../ui/base/Button"
 import { renderHeaderButtons } from "../../calendar-app/gui/HeaderButtons"
 import ImapImportSettingsViewer from "./imapimport/ImapImportSettingsViewer.js"
 
-assertMainOrNode()
+EnvProvider.assertMainOrNode()
 
 export class SettingsView extends BaseTopLevelView implements TopLevelView<SettingsViewAttrs> {
 	viewSlider: ViewSlider
@@ -112,7 +112,7 @@ export class SettingsView extends BaseTopLevelView implements TopLevelView<Setti
 		super()
 		this.logins = vnode.attrs.logins
 		this._userFolders = [
-			loginSettings(locator.credentialsProvider, isApp() ? locator.systemFacade : null),
+			loginSettings(locator.credentialsProvider, EnvProvider.get().isApp() ? locator.systemFacade : null),
 			new SettingsFolder(
 				() => "email_label",
 				() => Icons.MailFilled,
@@ -164,7 +164,7 @@ export class SettingsView extends BaseTopLevelView implements TopLevelView<Setti
 			),
 		]
 
-		if (isDesktop()) {
+		if (EnvProvider.get().isDesktop()) {
 			this._userFolders.push(
 				new SettingsFolder(
 					() => "desktop_label",
@@ -189,7 +189,7 @@ export class SettingsView extends BaseTopLevelView implements TopLevelView<Setti
 					() => Icons.CloudUploadFilled,
 					"mailImport",
 					() => {
-						if (isDesktop()) {
+						if (EnvProvider.get().isDesktop()) {
 							return new DesktopMailImportSettingsViewer(() => mailLocator.getMailImporter())
 						} else {
 							return new WebMailImportSettingsViewer(true)
@@ -208,7 +208,7 @@ export class SettingsView extends BaseTopLevelView implements TopLevelView<Setti
 						() => Icons.DownloadFilled,
 						"migration",
 						() => {
-							if (isDesktop()) {
+							if (EnvProvider.get().isDesktop()) {
 								return new ImapImportSettingsViewer(() => mailLocator.getImapMailImportController())
 							} else {
 								return new WebMailImportSettingsViewer(false)
@@ -250,7 +250,7 @@ export class SettingsView extends BaseTopLevelView implements TopLevelView<Setti
 					view: () => {
 						return m(DummyTemplateListView)
 					},
-					entityEventsReceived: () => Promise.resolve(),
+					onEntityUpdatesReceived: () => Promise.resolve(),
 				}
 			},
 			undefined,
@@ -351,7 +351,7 @@ export class SettingsView extends BaseTopLevelView implements TopLevelView<Setti
 						columnLayout: m(
 							".mlr-safe-inset.fill-absolute.content-bg",
 							{
-								class: styles.isUsingBottomNavigation() ? "" : "border-radius-top-left-12",
+								class: Styles.get().isUsingBottomNavigation() ? "" : "border-radius-top-left-12",
 							},
 							m(this._getCurrentViewer()!),
 						),
@@ -434,7 +434,7 @@ export class SettingsView extends BaseTopLevelView implements TopLevelView<Setti
 						new UserListView(
 							(viewer) => this.replaceDetailsViewer(viewer),
 							() => this.focusSettingsDetailsColumn(),
-							() => !isApp() && this._customDomains.isLoaded() && this._customDomains.getLoaded().length > 0,
+							() => !EnvProvider.get().isApp() && this._customDomains.isLoaded() && this._customDomains.getLoaded().length > 0,
 							() => showUserImportDialog(this._customDomains.getLoaded()),
 							() => this.doExportUsers(),
 						),
@@ -489,7 +489,7 @@ export class SettingsView extends BaseTopLevelView implements TopLevelView<Setti
 						() => "adminSubscription_action",
 						() => Icons.TrophyFilled,
 						"subscription",
-						() => new SubscriptionSettingsViewer(isIOSApp() ? locator.mobilePaymentsFacade : null),
+						() => new SubscriptionSettingsViewer(EnvProvider.get().isIOSApp() ? locator.mobilePaymentsFacade : null),
 						undefined,
 					),
 				)
@@ -645,8 +645,8 @@ export class SettingsView extends BaseTopLevelView implements TopLevelView<Setti
 		return getConfirmation("confirmDeleteTemplateGroup_msg").confirmed(() =>
 			showProgressDialog(
 				"pleaseWait_msg",
-				locator.serviceExecutor.delete(
-					TemplateGroupService,
+				locator.serviceExecutor.execute(
+					TemplateGroupService_DELETE,
 					createUserAreaGroupDeleteData({
 						group: templateInfo.groupInfo.group,
 					}),
@@ -832,9 +832,9 @@ export class SettingsView extends BaseTopLevelView implements TopLevelView<Setti
 			}
 		}
 
-		await this._currentViewer?.entityEventsReceived(updates)
+		await this._currentViewer?.onEntityUpdatesReceived(updates)
 
-		await this.detailsViewer?.entityEventsReceived(updates)
+		await this.detailsViewer?.onEntityUpdatesReceived(updates)
 	}
 
 	private async reloadTemplateData(): Promise<SettingsFolder<TemplateGroupInstance>[]> {

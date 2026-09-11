@@ -1,16 +1,17 @@
-import { assertWorkerOrNode, ProgrammingError, TutanotaError } from "@tutao/app-env"
+import { EnvProvider, ProgrammingError, TutanotaError } from "@tutao/app-env"
 import { assertNotNull, KeyVersion, lazyAsync } from "@tutao/utils"
 import { EntityClient } from "../../network/EntityClient.js"
 import { UserFacade } from "../facades/UserFacade.js"
 import { KeyLoaderFacade } from "./KeyLoaderFacade.js"
 import { AsymmetricCryptoFacade } from "./AsymmetricCryptoFacade.js"
 import { AesKey, cryptoUtils, CryptoWrapper, PublicKeyIdentifierType, VersionedAes256Key, VersionedEncryptedKey, VersionedKey } from "@tutao/crypto"
-import { brandKeyMac, KeyAuthenticationFacade } from "../../network/KeyAuthenticationFacade.js"
+import { brandKeyMac, KeyAuthenticationFacade, SystemMapKind } from "../../network/KeyAuthenticationFacade.js"
 import { Group, PubEncKeyData, UserTypeRef } from "@tutao/entities/sys"
 import { CacheManager } from "./persistence/CacheManager"
 import { elementIdToId, idToElementId } from "@tutao/meta"
+import { isNull } from "../../utils/Utils"
 
-assertWorkerOrNode()
+EnvProvider.assertWorkerOrNode()
 
 export class AdminKeyLoaderFacade {
 	constructor(
@@ -62,7 +63,7 @@ export class AdminKeyLoaderFacade {
 	/**
 	 * @returns true if the group currently has an adminEncGKey. This may be an asymmetrically encrypted one.
 	 */
-	hasAdminEncGKey(group: Group) {
+	hasAdminEncGKey(group: Group): boolean {
 		return (group.adminGroupEncGKey != null && group.adminGroupEncGKey.length !== 0) || group.pubAdminGroupEncGKey != null
 	}
 
@@ -82,7 +83,7 @@ export class AdminKeyLoaderFacade {
 			if (!this.hasAdminEncGKey(group)) {
 				throw new ProgrammingError("Group doesn't have adminGroupEncGKey, you can't get group key this way")
 			}
-			if (!(group.admin && this.userFacade.hasGroup(group.admin))) {
+			if (isNull(group.admin) || !this.userFacade.hasGroup(group.admin)) {
 				throw new Error(`The user is not a member of the admin group ${group.admin} when trying to get the group key for group ${groupId}`)
 			}
 
@@ -138,7 +139,7 @@ export class AdminKeyLoaderFacade {
 		return versionedDecryptedUserGroupKey
 	}
 
-	private async verifyUserGroupKeyMac(pubEncKeyData: PubEncKeyData, userGroup: Group, receivedUserGroupKey: VersionedAes256Key) {
+	private async verifyUserGroupKeyMac(pubEncKeyData: PubEncKeyData, userGroup: Group, receivedUserGroupKey: VersionedAes256Key): Promise<void> {
 		const givenUserGroupKeyMac = brandKeyMac(assertNotNull(pubEncKeyData.symKeyMac))
 
 		// The given mac is authenticated by the previous user group key, so we can get the version from there.
@@ -170,7 +171,7 @@ export class AdminKeyLoaderFacade {
 
 		this.keyAuthenticationFacade.verifyTag(
 			{
-				tagType: "USER_GROUP_KEY_TAG",
+				tagType: SystemMapKind.USER_GROUP_KEY_TAG,
 				sourceOfTrust: { currentUserGroupKey: previousUserGroupKey.object },
 				untrustedKey: { newUserGroupKey: receivedUserGroupKey.object },
 				bindingData: {

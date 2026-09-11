@@ -1,4 +1,4 @@
-import { assertMainOrNode } from "@tutao/app-env"
+import { EnvProvider } from "@tutao/app-env"
 import { MailboxDetail, MailboxModel } from "../../../common/mailFunctionality/MailboxModel"
 import { ImapImporter, ImportResult, InitializeImapImportParams, MailSetMapping } from "../../workerUtils/imapimport/ImapImporter"
 import { MailModel } from "../../mail/model/MailModel"
@@ -20,10 +20,8 @@ import { showUpdateImapCredentialsDialog } from "../../../common/gui/dialogs/Upd
 import { OAuthHandler } from "./oauth/OAuthHandler"
 import { Dialog } from "../../../../ui/base/Dialog"
 import { ImapErrorHandler, ReadableImapError } from "./ImapErrorHandler"
-import { ImapErrorCause } from "../../../common/api/common/error/ImapError"
-import { lang } from "../../../../ui/utils/LanguageViewModel"
 
-assertMainOrNode()
+EnvProvider.assertMainOrNode()
 
 export type ImapImportUiSession = {
 	provider: ImapProvider
@@ -93,6 +91,11 @@ export class ImapMailImportController {
 						imapAccountSyncState.status === ImapAccountSyncStatus.GMAIL_ALL_MAILS_IMAP_DISABLED_ERROR
 					if (shouldDisplayGmailAllMailsIMAPDisabledErrorDialog) {
 						Dialog.message("migrationGmailAllMailsDisabledImapError_msg")
+					}
+
+					// in case another client does pause/stop the imap import, we need to stop it here as well
+					if (imapAccountSyncState.status !== ImapAccountSyncStatus.RUNNING) {
+						this.stopLocalImport(imapAccountSyncStateId)
 					}
 				}
 			}
@@ -233,6 +236,13 @@ export class ImapMailImportController {
 		this.isInStateTransition = false
 	}
 
+	async stopLocalImport(accountSyncStateId: IdTuple) {
+		this.isInStateTransition = true
+		await this.imapImporter.stopLocalImport(accountSyncStateId)
+		await this.updateActiveUiSessions()
+		this.isInStateTransition = false
+	}
+
 	async deleteImport(accountSyncStateId: IdTuple) {
 		this.isInStateTransition = true
 		await this.imapImporter.deleteImport(accountSyncStateId)
@@ -309,24 +319,23 @@ export class ImapMailImportController {
 
 	async doInitialConnectAndGetImapMailboxes(imapCredentials: ImapCredentials): Promise<ImapImportUiGetMailboxResult> {
 		const imapImportUiGetMailboxResult: ImapImportUiGetMailboxResult = {}
-		const imapGetMailboxResult = await this.imapImporter.getImapMailboxesFromServer(imapCredentials)
-		if (imapGetMailboxResult.result) {
+		try {
+			const imapMailboxes = await this.imapImporter.getImapMailboxesFromServer(imapCredentials)
 			imapImportUiGetMailboxResult.result = {
-				imapMailboxes: imapGetMailboxResult.result,
-				imapCredentials: imapCredentials,
+				imapMailboxes,
+				imapCredentials,
 			}
-		} else if (imapGetMailboxResult.error) {
-			const imapErrorHandlerResult = await this.imapErrorHandler.handleImapError(imapGetMailboxResult.error, imapCredentials)
+		} catch (e) {
+			const isImapError = !Number.isNaN(e.data?.cause) && e.data?.code
+			if (!isImapError) {
+				throw e
+			}
+			const imapErrorHandlerResult = await this.imapErrorHandler.handleImapError(e, imapCredentials)
 			if (imapErrorHandlerResult.shouldRetry) {
 				const updatedImapCredentials = imapErrorHandlerResult.updatedImapCredentials ?? imapCredentials
 				return await this.doInitialConnectAndGetImapMailboxes(updatedImapCredentials)
 			}
 			imapImportUiGetMailboxResult.error = imapErrorHandlerResult.readableImapError
-		} else {
-			imapImportUiGetMailboxResult.error = {
-				cause: ImapErrorCause.UNKNOWN,
-				errorMessage: lang.getTranslationText("migrationAccountConnectionFailure_msg"),
-			}
 		}
 		return imapImportUiGetMailboxResult
 	}
@@ -393,6 +402,7 @@ export class ImapMailImportController {
 			imapProvider: ImapProvider.Other,
 			customCertificateData: null,
 			ignoreCertificateErrors: false,
+			useSSL: true,
 		}
 
 		if (!env.dist) {

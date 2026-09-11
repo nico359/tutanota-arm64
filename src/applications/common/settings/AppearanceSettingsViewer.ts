@@ -8,7 +8,7 @@ import { LanguageDropdown } from "../gui/LanguageDropdown"
 import { DropDownSelector, DropDownSelectorAttrs } from "../../../ui/base/DropDownSelector"
 import { ThemeId, themeOptions, ThemePreference } from "../../../ui/theme"
 import { lang } from "../../../ui/utils/LanguageViewModel"
-import { client } from "../../../platform-kit/app-env/boot/ClientDetector"
+import { ClientDetector } from "../../../platform-kit/app-env/boot/ClientDetector"
 import { EntityUpdateData, isUpdateForTypeRef } from "../../../platform-kit/instance-pipeline/utils/EntityUpdateUtils"
 import { getHourCycle } from "../../../entities/tutanota/Utils"
 import { UserSettingsGroupRootTypeRef } from "@tutao/entities/tutanota"
@@ -70,7 +70,7 @@ export class AppearanceSettingsViewer implements UpdatableSettingsViewer {
 		const themeDropDownAttrs: DropDownSelectorAttrs<ThemePreference> = {
 			label: "switchColorTheme_action",
 			items: [
-				...themeOptions(client.isCalendarApp()).map(({ name, value }) => ({
+				...themeOptions(ClientDetector.get().isCalendarApp()).map(({ name, value }) => ({
 					name: lang.get(name),
 					value: value,
 				})),
@@ -83,7 +83,7 @@ export class AppearanceSettingsViewer implements UpdatableSettingsViewer {
 		return m("#colortheme", m(DropDownSelector, themeDropDownAttrs))
 	}
 
-	entityEventsReceived(updates: ReadonlyArray<EntityUpdateData>): Promise<void> {
+	onEntityUpdatesReceived(updates: ReadonlyArray<EntityUpdateData>): Promise<void> {
 		return promiseMap(updates, (update) => {
 			if (isUpdateForTypeRef(UserSettingsGroupRootTypeRef, update)) {
 				return locator.entityClient.load(UserSettingsGroupRootTypeRef, idToElementId(update.instanceId)).then((settings) => {

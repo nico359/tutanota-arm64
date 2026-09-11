@@ -18,7 +18,7 @@ import { Icons } from "../../../ui/base/icons/Icons.js"
 import { NotAuthorizedError } from "@tutao/rest-client/error"
 import { Dialog } from "../../../ui/base/Dialog.js"
 import { locator } from "../api/main/CommonLocator.js"
-import { client } from "../../../platform-kit/app-env/boot/ClientDetector"
+import { ClientDetector } from "../../../platform-kit/app-env/boot/ClientDetector"
 import {
 	AuditLogEntry,
 	AuditLogEntryTypeRef,
@@ -76,7 +76,7 @@ export class AccountMaintenanceSettings implements Component<AccountMaintenanceS
 			showActionButtonColumn: true,
 			lines: this.auditLogLines,
 			addButtonAttrs: {
-				title: "refresh_action",
+				label: "refresh_action",
 				click: () => showProgressDialog("loading_msg", this.updateAuditLog()).then(() => m.redraw()),
 				icon: Icons.Sync,
 				size: ButtonSize.Compact,
@@ -163,7 +163,7 @@ export class AccountMaintenanceSettings implements Component<AccountMaintenanceS
 											reason: reason.reason,
 											version: SURVEY_VERSION_NUMBER,
 											clientVersion: env.versionNumber,
-											clientPlatform: client.getClientPlatform().valueOf().toString(),
+											clientPlatform: ClientDetector.get().getClientPlatform().valueOf().toString(),
 										})
 										showDeleteAccountDialog(surveyData)
 									} else {
@@ -295,7 +295,7 @@ export class AccountMaintenanceSettings implements Component<AccountMaintenanceS
 							return {
 								cells: [auditLogEntry.action, auditLogEntry.modifiedEntity, formatDateTimeFromYesterdayOn(auditLogEntry.date)],
 								actionButtonAttrs: {
-									title: "showMore_action",
+									label: "showMore_action",
 									icon: Icons.More,
 									click: () => this.showAuditLogDetails(auditLogEntry, customer),
 									size: ButtonSize.Compact,

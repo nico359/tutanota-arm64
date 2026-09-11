@@ -4,12 +4,13 @@ import { bytesToEd25519PublicKey, cryptoUtils, PublicKeyIdentifier, PublicKeyIde
 import { Versioned } from "@tutao/utils"
 import { NotFoundError } from "@tutao/rest-client/error"
 import { EntityClient } from "../../network/EntityClient"
-import { brandKeyMac, KeyAuthenticationFacade } from "../../network/KeyAuthenticationFacade"
-import { createIdentityKeyGetIn, GroupTypeRef, IdentityKeyService } from "@tutao/entities/sys"
+import { brandKeyMac, KeyAuthenticationFacade, SystemMapKind } from "../../network/KeyAuthenticationFacade"
+import { createIdentityKeyGetIn, GroupTypeRef, IdentityKeyService_GET } from "@tutao/entities/sys"
 import { SYSTEM_GROUP_MAIL_ADDRESS } from "../../../entities/sys/Utils"
 import { IdentityKeySourceOfTrust } from "@tutao/app-env"
 import { IdentityKeyTrustDatabase, TrustDBEntry } from "./persistence/IdentityKeyTrustDatabase"
-import { ElementId, idToElementId } from "@tutao/meta"
+import { idToElementId } from "@tutao/meta"
+import { isNull } from "../../utils/Utils"
 
 type IdentityKeyRawData = {
 	identityKeyVersion: NumberString
@@ -48,7 +49,7 @@ export class PublicIdentityKeyProvider {
 		const group = await this.entityClient.load(GroupTypeRef, idToElementId(groupId))
 		const groupIdentityKeyPair = group.identityKeyPair
 
-		if (!groupIdentityKeyPair) {
+		if (isNull(groupIdentityKeyPair)) {
 			return null
 		}
 
@@ -64,7 +65,7 @@ export class PublicIdentityKeyProvider {
 
 		this.keyAuthenticationFacade.verifyTag(
 			{
-				tagType: "IDENTITY_PUB_KEY_TAG",
+				tagType: SystemMapKind.IDENTITY_PUB_KEY_TAG,
 				sourceOfTrust: {
 					symmetricGroupKey: taggingGroupKey,
 				},
@@ -109,7 +110,7 @@ export class PublicIdentityKeyProvider {
 		})
 
 		try {
-			const identityKeyGetOut = await this.serviceExecutor.get(IdentityKeyService, requestData, null)
+			const identityKeyGetOut = await this.serviceExecutor.execute(IdentityKeyService_GET, requestData, null)
 			const identityKeyFromServer = this.convertFromIdentityKeyRawData({
 				publicIdentityKey: identityKeyGetOut.publicIdentityKey,
 				identityKeyVersion: identityKeyGetOut.publicIdentityKeyVersion,

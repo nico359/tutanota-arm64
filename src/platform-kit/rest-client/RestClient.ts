@@ -1,5 +1,5 @@
-import { assertWorkerOrNode, CancelledError, getApiBaseUrl, isAdminClient, isAndroidApp, isWebClient, isWorker } from "@tutao/app-env"
-import { assertNotNull, newPromise, typedEntries, uint8ArrayToArrayBuffer } from "@tutao/utils"
+import { CancelledError, DomainConfig, EnvProvider } from "@tutao/app-env"
+import { assertNotNull, isNotNull, newPromise, Nullable, typedEntries, uint8ArrayToArrayBuffer } from "@tutao/utils"
 import * as restSuspension from "./SuspensionHandler.js"
 import { ConnectionError, handleRestError, PayloadTooLargeError, SuspensionError } from "./error.js"
 import {
@@ -14,8 +14,11 @@ import {
 	SuspensionBehavior,
 } from "./types"
 import { once } from "../utils/memoized"
+import { TypeChecks } from "../app-env/TsTypeChecks"
+import { isNull } from "../utils/Utils"
+import { TsDate } from "../app-env/TranspileCompatibility"
 
-assertWorkerOrNode()
+EnvProvider.assertWorkerOrNode()
 
 const TAG = "[RestClient]"
 
@@ -72,8 +75,8 @@ export class RestClient implements RestClientInterface {
 
 	request(path: string, method: HttpMethod, options: RestClientOptions): Promise<any | null> {
 		// @ts-ignore
-		const debug = typeof self !== "undefined" && self.debug
-		const verbose = isWorker() && debug
+		const debug: boolean = TypeChecks.hasProperty("self") && self.debug
+		const verbose: boolean = EnvProvider.isWorker() && debug
 
 		this.checkRequestSizeLimit(path, method, options.body ?? null)
 
@@ -92,14 +95,14 @@ export class RestClient implements RestClientInterface {
 					queryParams["_body"] = options.body.payload // get requests are not allowed to send a body. Therefore, we convert our body to a parameter
 				}
 
-				if (options.noCORS) {
-					queryParams["cv"] = env.versionNumber
-					if (env.networkDebugging) {
+				if (isNotNull(options.noCORS) && options.noCORS) {
+					queryParams["cv"] = EnvProvider.get().getVersionNumber()
+					if (EnvProvider.get().networkDebuggingEnabled()) {
 						queryParams["network-debugging"] = "enable-network-debugging"
 					}
 				}
 
-				const origin = options.baseUrl ?? getApiBaseUrl(this.domainConfig)
+				const origin = options.baseUrl ?? EnvProvider.get().getApiBaseUrl(this.domainConfig)
 				const resourceURL = new URL(origin)
 				resourceURL.pathname = path
 				const url = addParamsToUrl(resourceURL, queryParams)
@@ -112,11 +115,11 @@ export class RestClient implements RestClientInterface {
 
 				// We time out reqeuests if there is no progress for some time
 				let requestTimeoutTimeoutID: TimeoutID | null = null
-				const abortOnTimeout = () => {
+				const abortOnTimeout = (): void => {
 					console.log(TAG, `${id}: ${String(new Date())} aborting ${requestTimeoutTimeoutID}`)
 					xhr.abort()
 				}
-				const restartTimeoutTimer = () => {
+				const restartTimeoutTimer = (): void => {
 					if (!usingTimeoutAbort()) {
 						return
 					}
@@ -125,15 +128,15 @@ export class RestClient implements RestClientInterface {
 						clearTimeout(requestTimeoutTimeoutID)
 					}
 					const isBlobRequest = options.body instanceof RestBinaryBody
-					requestTimeoutTimeoutID = setTimeout(abortOnTimeout, isBlobRequest ? BLOB_REQUEST_TIMEOUT_MS : env.timeout)
+					requestTimeoutTimeoutID = setTimeout(abortOnTimeout, isBlobRequest ? BLOB_REQUEST_TIMEOUT_MS : EnvProvider.get().getTimeOutValue())
 				}
-				const cancelTimeoutTimer = () => {
+				const cancelTimeoutTimer = (): void => {
 					if (requestTimeoutTimeoutID != null) clearTimeout(requestTimeoutTimeoutID)
 				}
 
 				restartTimeoutTimer()
 
-				if (options.abortSignal) {
+				if (isNotNull(options.abortSignal)) {
 					options.abortSignal.addEventListener(
 						"abort",
 						() => {
@@ -144,10 +147,10 @@ export class RestClient implements RestClientInterface {
 				}
 
 				if (verbose) {
-					console.log(TAG, `${id}: set initial timeout ${String(requestTimeoutTimeoutID)} of ${env.timeout}`)
+					console.log(TAG, `${id}: set initial timeout ${String(requestTimeoutTimeoutID)} of ${EnvProvider.get().getTimeOutValue()}`)
 				}
 
-				xhr.onload = async () => {
+				xhr.onload = async (): Promise<void> => {
 					try {
 						// XMLHttpRequestProgressEvent, but not needed
 						if (verbose) {
@@ -169,14 +172,14 @@ export class RestClient implements RestClientInterface {
 								resolve(null)
 							}
 						} else {
-							const suspensionTime = xhr.getResponseHeader("Retry-After") || xhr.getResponseHeader("Suspension-Time")
+							const suspensionTime = xhr.getResponseHeader("Retry-After") ?? xhr.getResponseHeader("Suspension-Time") ?? null
 							const isSuspensionResp = restSuspension.isSuspensionResponse(xhr.status, suspensionTime)
 
 							if (isSuspensionResp && options.suspensionBehavior === SuspensionBehavior.Throw) {
 								reject(
 									new SuspensionError(
 										`blocked for ${suspensionTime}, not suspending (${xhr.status})`,
-										suspensionTime && (parseInt(suspensionTime) * 1000).toString(),
+										isNotNull(suspensionTime) ? (parseInt(suspensionTime) * 1000).toString() : "unknown time",
 									),
 								)
 							} else if (isSuspensionResp) {
@@ -202,7 +205,7 @@ export class RestClient implements RestClientInterface {
 					}
 				}
 
-				xhr.onerror = function () {
+				xhr.onerror = (): void => {
 					try {
 						cancelTimeoutTimer()
 						logFailedRequest(method, url, xhr, options)
@@ -215,8 +218,8 @@ export class RestClient implements RestClientInterface {
 				}
 
 				// don't add an EventListener for non-CORS requests, otherwise it would not meet the 'CORS-Preflight simple request' requirements
-				if (!options.noCORS) {
-					xhr.upload.onprogress = (pe: ProgressEvent) => {
+				if (isNull(options.noCORS) || !options.noCORS) {
+					xhr.upload.onprogress = (pe: ProgressEvent): void => {
 						if (verbose) {
 							console.log(TAG, `${id}: ${String(new Date())} upload progress. Clearing Timeout ${String(requestTimeoutTimeoutID)}`, pe)
 						}
@@ -224,7 +227,7 @@ export class RestClient implements RestClientInterface {
 						restartTimeoutTimer()
 
 						if (verbose) {
-							console.log(TAG, `${id}: set new timeout ${String(requestTimeoutTimeoutID)} of ${env.timeout}`)
+							console.log(TAG, `${id}: set new timeout ${String(requestTimeoutTimeoutID)} of ${EnvProvider.get().getTimeOutValue()}`)
 						}
 
 						if (options.progressListener != null && pe.lengthComputable) {
@@ -233,34 +236,34 @@ export class RestClient implements RestClientInterface {
 						}
 					}
 
-					xhr.upload.ontimeout = (e) => {
+					xhr.upload.ontimeout = (e): void => {
 						if (verbose) {
 							console.log(TAG, `${id}: ${String(new Date())} upload timeout. calling error handler.`, e)
 						}
 						xhr.onerror?.(e)
 					}
 
-					xhr.upload.onerror = (e) => {
+					xhr.upload.onerror = (e): void => {
 						if (verbose) {
 							console.log(TAG, `${id}: ${String(new Date())} upload error. calling error handler.`, e)
 						}
 						xhr.onerror?.(e)
 					}
 
-					xhr.upload.onabort = (e) => {
+					xhr.upload.onabort = (e): void => {
 						cancelTimeoutTimer()
-						if (options.abortSignal?.aborted) {
+						if (options.abortSignal?.aborted ?? false) {
 							reject(new CancelledError(`upload has been aborted ${method} ${path}`))
 						} else {
 							if (verbose) {
 								console.log(TAG, `${id}: ${String(new Date())} upload aborted. calling error handler.`, e)
 							}
-							reject(new ConnectionError(`Reached timeout of ${env.timeout}ms ${xhr.statusText} | ${method} ${path}`))
+							reject(new ConnectionError(`Reached timeout of ${EnvProvider.get().getTimeOutValue()}ms ${xhr.statusText} | ${method} ${path}`))
 						}
 					}
 				}
 
-				xhr.onprogress = (pe: ProgressEvent) => {
+				xhr.onprogress = (pe: ProgressEvent): void => {
 					if (verbose) {
 						console.log(TAG, `${id}: ${String(new Date())} download progress. Clearing Timeout ${String(requestTimeoutTimeoutID)}`, pe)
 					}
@@ -268,7 +271,7 @@ export class RestClient implements RestClientInterface {
 					restartTimeoutTimer()
 
 					if (verbose) {
-						console.log(TAG, `${id}: set new timeout ${String(requestTimeoutTimeoutID)} of ${env.timeout}`)
+						console.log(TAG, `${id}: set new timeout ${String(requestTimeoutTimeoutID)} of ${EnvProvider.get().getTimeOutValue()}`)
 					}
 
 					if (options.progressListener != null && pe.lengthComputable) {
@@ -277,12 +280,12 @@ export class RestClient implements RestClientInterface {
 					}
 				}
 
-				xhr.onabort = () => {
+				xhr.onabort = (): void => {
 					cancelTimeoutTimer()
-					if (options.abortSignal?.aborted) {
+					if (options.abortSignal?.aborted ?? false) {
 						reject(new CancelledError(`Request canceled | ${method} ${path}`))
 					} else {
-						reject(new ConnectionError(`Reached timeout of ${env.timeout}ms ${xhr.statusText} | ${method} ${path}`))
+						reject(new ConnectionError(`Reached timeout of ${EnvProvider.get().getTimeOutValue()}ms ${xhr.statusText} | ${method} ${path}`))
 					}
 				}
 
@@ -297,7 +300,7 @@ export class RestClient implements RestClientInterface {
 		}
 	}
 
-	private saveServerTimeOffsetFromRequest(xhr: XMLHttpRequest) {
+	private saveServerTimeOffsetFromRequest(xhr: XMLHttpRequest): void {
 		// Dates sent in the `Date` field of HTTP headers follow the format specified by rfc7231
 		// JavaScript's Date expects dates in the format specified by rfc2822
 		// rfc7231 provides three options of formats, the preferred one being IMF-fixdate. This one is definitely
@@ -309,10 +312,10 @@ export class RestClient implements RestClientInterface {
 
 		if (serverTimestamp != null) {
 			// check that serverTimestamp has been returned
-			const serverTime = new Date(serverTimestamp).getTime()
+			const serverTime = new TsDate(serverTimestamp).getTime()
 
 			if (!isNaN(serverTime)) {
-				const now = Date.now()
+				const now = TsDate.now()
 				this.serverTimeOffsetMs = serverTime - now
 			}
 		}
@@ -325,7 +328,7 @@ export class RestClient implements RestClientInterface {
 	 */
 	getServerTimestampMs(): number {
 		const timeOffset = assertNotNull(this.serverTimeOffsetMs, "You can't get server time if no rest requests were made")
-		return Date.now() + timeOffset
+		return TsDate.now() + timeOffset
 	}
 
 	/**
@@ -333,8 +336,8 @@ export class RestClient implements RestClientInterface {
 	 * Ignores the method because GET requests etc. should not exceed the limits neither.
 	 * This is done to avoid making the request, because the server will return a PayloadTooLargeError anyway.
 	 * */
-	private checkRequestSizeLimit(path: string, method: HttpMethod, body: RestBody | null) {
-		if (isAdminClient()) {
+	private checkRequestSizeLimit(path: string, method: HttpMethod, body: RestBody | null): void {
+		if (EnvProvider.get().isAdminClient()) {
 			return
 		}
 
@@ -345,15 +348,15 @@ export class RestClient implements RestClientInterface {
 		}
 	}
 
-	setHeaders(xhr: XMLHttpRequest, options: RestClientOptions) {
+	setHeaders(xhr: XMLHttpRequest, options: RestClientOptions): void {
 		if (options.headers == null) {
 			options.headers = {}
 		}
 		const { headers, body, responseType } = options
 
 		// don't add custom and content-type headers for non-CORS requests, otherwise it would not meet the 'CORS-Preflight simple request' requirements
-		if (!options.noCORS) {
-			headers["cv"] = env.versionNumber
+		if (isNull(options.noCORS) || !options.noCORS) {
+			headers["cv"] = EnvProvider.get().getVersionNumber()
 			headers["cp"] = this.clientPlatform
 			if (body instanceof RestBinaryBody) {
 				headers["Content-Type"] = MediaType.Binary
@@ -364,16 +367,17 @@ export class RestClient implements RestClientInterface {
 			// add networkDebugging header iff network debugging is activated
 			// network debugging can be activated by building with --network-debugging,
 			// and essentially activates both attributeNames and attributeIds in the request/response payload
-			if (env.networkDebugging) {
+			if (EnvProvider.get().networkDebuggingEnabled()) {
 				headers["Network-Debugging"] = "enable-network-debugging"
 			}
 		}
 
-		if (env.clientName != null) {
-			headers["Client-Name"] = env.clientName
+		const clientName = EnvProvider.get().getClientName()
+		if (isNotNull(clientName)) {
+			headers["Client-Name"] = clientName
 		}
 
-		if (responseType) {
+		if (isNotNull(responseType)) {
 			headers["Accept"] = responseType
 		}
 		for (const i in headers) {
@@ -382,10 +386,10 @@ export class RestClient implements RestClientInterface {
 	}
 }
 
-export function addParamsToUrl(url: URL, urlParams: Dict): URL {
-	if (urlParams) {
+export function addParamsToUrl(url: URL, urlParams: Nullable<Dict>): URL {
+	if (isNotNull(urlParams)) {
 		for (const [key, value] of typedEntries(urlParams)) {
-			if (value !== undefined) {
+			if (isNotNull(value)) {
 				url.searchParams.set(key, value)
 			}
 		}
@@ -413,5 +417,5 @@ function logFailedRequest(method: HttpMethod, url: URL, xhr: XMLHttpRequest, opt
 
 /** We only need to track timeout directly here on some platforms. Other platforms do it inside their network driver. */
 function usingTimeoutAbort(): boolean {
-	return isWebClient() || isAndroidApp()
+	return EnvProvider.get().isWebClient() || EnvProvider.get().isAndroidApp()
 }

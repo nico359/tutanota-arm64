@@ -1,6 +1,6 @@
 import m, { Children } from "mithril"
 import { showAddImapImportWizard } from "./AddImapImportWizard.js"
-import { assertMainOrNode, UpgradePromptType } from "@tutao/app-env"
+import { EnvProvider, UpgradePromptType } from "@tutao/app-env"
 import { UpdatableSettingsViewer } from "../../../common/settings/Interfaces"
 import { ImapImportUiSession, ImapMailImportController } from "./ImapMailImportController.js"
 import { mailLocator } from "../../mailLocator.js"
@@ -29,7 +29,7 @@ import { ImapAccountSyncStatus } from "../../../../entities/tutanota/Utils"
 import { showUpgradeWizardOrSwitchSubscriptionDialog } from "../../../common/misc/SubscriptionDialogs"
 import { elementIdToId, isSameSingleId } from "@tutao/meta"
 
-assertMainOrNode()
+EnvProvider.assertMainOrNode()
 
 class ImapImportSettingsViewer implements UpdatableSettingsViewer {
 	private mailboxIdToImportHistoryExpanded: Map<Id, boolean> = new Map<Id, boolean>()
@@ -104,7 +104,7 @@ class ImapImportSettingsViewer implements UpdatableSettingsViewer {
 				// Running
 				buttons.push(
 					m(IconButton, {
-						title: "pauseMigration_action",
+						label: "pauseMigration_action",
 						icon: Icons.PauseOutline,
 						size: ButtonSize.Normal,
 						disabled: this.imapImportController().shouldDisableButtons(),
@@ -117,7 +117,7 @@ class ImapImportSettingsViewer implements UpdatableSettingsViewer {
 				// Finished or Postponed
 				buttons.push(
 					m(IconButton, {
-						title: "resyncMigration_action",
+						label: "resyncMigration_action",
 						icon: Icons.Refresh,
 						size: ButtonSize.Normal,
 						disabled: this.imapImportController().shouldDisableButtons(),
@@ -130,7 +130,7 @@ class ImapImportSettingsViewer implements UpdatableSettingsViewer {
 									.continueImport(accountSyncStateId, true)
 									.catch((e) => {
 										//Auth failing errors do not need to bubble up as programming errors.
-										if (e.data !== ImapErrorCause.AUTH_FAILED) {
+										if (e.data.cause !== ImapErrorCause.AUTH_FAILED) {
 											throw e
 										}
 									})
@@ -142,7 +142,7 @@ class ImapImportSettingsViewer implements UpdatableSettingsViewer {
 				// Paused
 				buttons.push(
 					m(IconButton, {
-						title: "resumeMigration_action",
+						label: "resumeMigration_action",
 						icon: Icons.PlayOutline,
 						size: ButtonSize.Normal,
 						disabled: this.imapImportController().shouldDisableButtons(),
@@ -151,7 +151,7 @@ class ImapImportSettingsViewer implements UpdatableSettingsViewer {
 								.continueImport(accountSyncStateId)
 								.catch((e) => {
 									//Auth failing errors do not need to bubble up as programming errors.
-									if (e.data !== ImapErrorCause.AUTH_FAILED) {
+									if (e.data.cause !== ImapErrorCause.AUTH_FAILED) {
 										throw e
 									}
 								})
@@ -161,7 +161,7 @@ class ImapImportSettingsViewer implements UpdatableSettingsViewer {
 			}
 			buttons.push(
 				m(IconButton, {
-					title: "cancel_action",
+					label: "cancel_action",
 					icon: Icons.X,
 					size: ButtonSize.Normal,
 					disabled: this.imapImportController().shouldDisableButtons(),
@@ -351,7 +351,7 @@ class ImapImportSettingsViewer implements UpdatableSettingsViewer {
 		)
 	}
 
-	async entityEventsReceived(updates: ReadonlyArray<EntityUpdateData>): Promise<void> {
+	async onEntityUpdatesReceived(updates: ReadonlyArray<EntityUpdateData>): Promise<void> {
 		for (const update of updates) {
 			if (isUpdateForTypeRef(ImapAccountSyncStateTypeRef, update) || isUpdateForTypeRef(ImapFolderSyncStateTypeRef, update)) {
 				await this.imapImportController().updateActiveUiSessions()

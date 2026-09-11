@@ -13,24 +13,15 @@ import {
 	getFirstOrThrow,
 	isEmpty,
 	isNotEmpty,
+	lazy,
 	lazyMemoized,
 	neverNull,
 	noOp,
 	promiseMap,
 } from "../../../../platform-kit/utils"
-import {
-	CancelledError,
-	EncryptionAuthStatus,
-	isAndroidApp,
-	isApp,
-	isDesktop,
-	isIOSApp,
-	MailAuthenticationStatus,
-	ProgrammingError,
-	secondsToMillis,
-} from "../../../../platform-kit/app-env"
+import { CancelledError, EncryptionAuthStatus, EnvProvider, MailAuthenticationStatus, ProgrammingError, TimeConstants } from "../../../../platform-kit/app-env"
 import { getReportConfirmation } from "./MailReportDialog"
-import { lang, Translation } from "../../../../ui/utils/LanguageViewModel"
+import { lang, Translation, TranslationKey } from "../../../../ui/utils/LanguageViewModel"
 import { DownloadPostProcessing, DownloadReturn, FileController, handleDownloadErrors } from "../../../common/file/FileController"
 import { DomRectReadOnlyPolyfilled, Dropdown, DropdownChildAttrs } from "../../../../ui/base/Dropdown.js"
 import { modal } from "../../../../ui/base/Modal.js"
@@ -40,12 +31,12 @@ import { InlineImageReference, InlineImages } from "../../../common/mailFunction
 import { MailModel, MoveMode } from "../model/MailModel.js"
 import { isTutaTeamMail } from "../../../common/mailFunctionality/SharedMailUtils.js"
 import {
-	MailSetInfo,
-	getMailSetName,
 	getIndentedFolderNameForDropdown,
+	getMailSetName,
 	getMoveTargetFolderSystems,
 	getMoveTargetFolderSystemsForMailsInFolder,
 	getSystemFolderName,
+	MailSetInfo,
 	MoveService,
 	RegularMoveTargets,
 	SimpleMoveTargets,
@@ -53,7 +44,7 @@ import {
 import { FontIcons } from "../../../../ui/base/icons/FontIcons.js"
 import { isOfTypeOrSubfolderOf } from "../model/MailChecks.js"
 import { LabelsPopup } from "./LabelsPopup"
-import { styles } from "../../../../ui/styles"
+import { Styles } from "../../../../ui/styles"
 import { showSnackBar } from "../../../../ui/base/SnackBar"
 import { UndoModel } from "../../UndoModel"
 import { FolderSystem, IndentedMailSet } from "../../../common/api/common/mail/FolderSystem"
@@ -76,8 +67,10 @@ import { getMailFolderType, SimpleMoveMailTarget } from "../MailUtils"
 import { $Promisable } from "../../workerUtils/index/IndexerPromiseUtils"
 import { FileOpenError } from "../../../common/api/common/error/FileOpenError"
 import { NativeFileApp } from "../../../../app-kit/native-bridge/common/FileApp"
+import type { Shortcut } from "../../../../ui/utils/KeyManager"
+import { Keys } from "../../../../ui/utils/KeyboardKeys"
 
-const UNDO_SNACKBAR_SHOW_TIME = secondsToMillis(10)
+const UNDO_SNACKBAR_SHOW_TIME = TimeConstants.secondsToMillis(10)
 
 /**
  * A function that returns an array of mails, or a promise that eventually returns one.
@@ -188,7 +181,7 @@ export async function showUndoMailSnackbar(
 				isVisible: () => isVisible,
 			},
 			dismissButton: {
-				title: "close_alt",
+				label: "close_alt",
 				click: () => cancelSnackbar(),
 				icon: Icons.X,
 			},
@@ -482,7 +475,7 @@ export function replaceCidsWithInlineImages(
 				imageElement.setAttribute("src", inlineImage.objectUrl)
 				imageElement.classList.remove("tutanota-placeholder")
 
-				if (isApp()) {
+				if (EnvProvider.get().isApp()) {
 					// Add long press action for apps
 					let timeoutId: TimeoutID | null
 					let startCoords:
@@ -524,7 +517,7 @@ export function replaceCidsWithInlineImages(
 					})
 				}
 
-				if (isDesktop()) {
+				if (EnvProvider.get().isDesktop()) {
 					// add right click action for desktop apps
 					imageElement.addEventListener("contextmenu", (e: MouseEvent) => {
 						onContext(inlineImage.cid, e, imageElement)
@@ -891,7 +884,7 @@ export function showLabelsPopup(
 	const popup = new LabelsPopup(
 		dom ?? (document.activeElement as HTMLElement),
 		opts?.origin ?? dom?.getBoundingClientRect() ?? getDetachedDropdownBounds(),
-		opts?.width ?? (styles.isDesktopLayout() ? 300 : 200),
+		opts?.width ?? (Styles.get().isDesktopLayout() ? 300 : 200),
 		new LabelsPopupViewModel(mailModel.getLabelsForMails(selectedMails), labels, labelSystem),
 		async (addedLabels, removedLabels) => mailModel.applyLabels(await getActionableMails(selectedMails), addedLabels, removedLabels),
 	)
@@ -956,6 +949,216 @@ export async function showDownloadProgressDialog(
 	}
 }
 
+export function checkMailSetName(system: FolderSystem, name: string, parentId: IdTuple | null, isLabel: boolean): TranslationKey | null {
+	if (name.trim() === "") {
+		return isLabel ? "enterName_msg" : "folderNameNeutral_msg"
+	} else if (system.getCustomFoldersOfParent(parentId).some((ms) => ms.name === name)) {
+		return isLabel ? "labelNameInvalidExisting_msg" : "folderNameInvalidExisting_msg"
+	} else {
+		return null
+	}
+}
+
+export function getCommonShortcuts(
+	createAction: (() => void | Promise<void>) | null,
+	createFolderAction: (() => void | Promise<void>) | null,
+	toggleUnreadAction: (() => void | Promise<void>) | null,
+	deleteOrTrashAction: (() => void | Promise<void>) | null,
+	labelAction: (() => void | Promise<void>) | null,
+	moveMailsToFolderAction: ((kind: MailSetKind) => void | Promise<void>) | null,
+	moveMailsFromFolderAction: (() => void | Promise<void>) | null,
+	switchToFolderAction: ((kind: MailSetKind) => Promise<void>) | null,
+	undoAction: (() => void | Promise<void>) | null,
+	isDragAndDropExportEnabled: lazy<boolean>,
+	isInternalUserLoggedIn: lazy<boolean>,
+	isInternalCommunicationEnabled: lazy<boolean>,
+	isNewMailActionAvailable: lazy<boolean>,
+): Shortcut[] {
+	return [
+		{
+			key: Keys.N,
+			exec: () => {
+				createAction?.()
+			},
+			enabled: () => createAction !== null && isNewMailActionAvailable(),
+			help: "newMail_action",
+		},
+		{
+			key: Keys.DELETE,
+			exec: () => {
+				deleteOrTrashAction?.()
+			},
+			help: "deleteEmails_action",
+			enabled: () => deleteOrTrashAction !== null,
+		},
+		{
+			key: Keys.BACKSPACE,
+			exec: () => {
+				deleteOrTrashAction?.()
+			},
+			help: "deleteEmails_action",
+			enabled: () => deleteOrTrashAction !== null,
+		},
+		{
+			key: Keys.DELETE,
+			shift: true,
+			exec: () => {
+				moveMailsToFolderAction?.(MailSetKind.SPAM)
+			},
+			help: "reportSpam_action",
+			enabled: () => moveMailsToFolderAction !== null,
+		},
+		{
+			key: Keys.BACKSPACE,
+			shift: true,
+			exec: () => {
+				moveMailsToFolderAction?.(MailSetKind.SPAM)
+			},
+			help: "reportSpam_action",
+			enabled: () => moveMailsToFolderAction !== null,
+		},
+		{
+			key: Keys.A,
+			exec: () => {
+				moveMailsToFolderAction?.(MailSetKind.ARCHIVE)
+			},
+			help: "archive_action",
+			enabled: () => moveMailsToFolderAction !== null && isInternalUserLoggedIn(),
+		},
+		{
+			key: Keys.I,
+			exec: () => {
+				moveMailsToFolderAction?.(MailSetKind.INBOX)
+			},
+			help: "moveToInbox_action",
+			enabled: () => moveMailsToFolderAction !== null,
+		},
+		{
+			key: Keys.N,
+			shift: true,
+			ctrlOrCmd: true,
+			exec: () => {
+				createFolderAction?.()
+				return true
+			},
+			help: "addFolder_action",
+			enabled: () => createFolderAction !== null,
+		},
+		{
+			key: Keys.V,
+			exec: () => {
+				moveMailsFromFolderAction?.()
+				return true
+			},
+			help: "move_action",
+		},
+		{
+			key: Keys.L,
+			exec: () => {
+				labelAction?.()
+				return true
+			},
+			help: "labels_label",
+			enabled: () => labelAction !== null,
+		},
+		{
+			key: Keys.U,
+			exec: () => {
+				toggleUnreadAction?.()
+			},
+			help: "toggleUnread_action",
+			enabled: () => toggleUnreadAction !== null,
+		},
+		{
+			key: Keys.Z,
+			exec: () => {
+				undoAction?.()
+			},
+			ctrlOrCmd: true,
+			help: "undo_action",
+			enabled: () => undoAction !== null,
+		},
+		{
+			key: Keys.ONE,
+			exec: () => {
+				switchToFolderAction?.(MailSetKind.INBOX)
+				return true
+			},
+			help: "switchInbox_action",
+			enabled: () => switchToFolderAction !== null,
+		},
+		{
+			key: Keys.TWO,
+			exec: () => {
+				switchToFolderAction?.(MailSetKind.DRAFT)
+				return true
+			},
+			help: "switchDrafts_action",
+			enabled: () => switchToFolderAction !== null,
+		},
+		{
+			key: Keys.THREE,
+			exec: () => {
+				// This should be removed once the batch job to add the Scheduled Mail set to all users is run
+				const goToScheduledFolder = async () => {
+					try {
+						await switchToFolderAction?.(MailSetKind.SCHEDULED)
+					} catch (e) {
+						console.log("SCHEDULED FOLDER NOT FOUND", e)
+					}
+				}
+				goToScheduledFolder()
+
+				return true
+			},
+			help: "switchScheduledFolder_action",
+			enabled: () => switchToFolderAction !== null,
+		},
+		{
+			key: Keys.FOUR,
+			exec: () => {
+				switchToFolderAction?.(MailSetKind.SENT)
+				return true
+			},
+			help: "switchSentFolder_action",
+			enabled: () => switchToFolderAction !== null,
+		},
+		{
+			key: Keys.FIVE,
+			exec: () => {
+				switchToFolderAction?.(MailSetKind.TRASH)
+				return true
+			},
+			help: "switchTrash_action",
+			enabled: () => switchToFolderAction !== null,
+		},
+		{
+			key: Keys.SIX,
+			exec: () => {
+				switchToFolderAction?.(MailSetKind.ARCHIVE)
+				return true
+			},
+			enabled: () => switchToFolderAction !== null && isInternalUserLoggedIn(),
+			help: "switchArchive_action",
+		},
+		{
+			key: Keys.SEVEN,
+			exec: () => {
+				switchToFolderAction?.(MailSetKind.SPAM)
+				return true
+			},
+			enabled: () => switchToFolderAction !== null && isInternalUserLoggedIn() && !isInternalCommunicationEnabled(),
+			help: "switchSpam_action",
+		},
+		{
+			key: Keys.CTRL,
+			exec: () => false,
+			enabled: isDragAndDropExportEnabled,
+			help: "dragAndDrop_action",
+		},
+	]
+}
+
 export class AttachmentDownloader {
 	constructor(
 		private readonly fileController: FileController,
@@ -966,14 +1169,14 @@ export class AttachmentDownloader {
 	canOpenAttachment(attachment: Attachment): boolean {
 		// Can Open: Desktop, Android, iOS
 		// Data files can only be downloaded
-		return (isApp() || isDesktop()) && !isDataFile(attachment)
+		return (EnvProvider.get().isApp() || EnvProvider.get().isDesktop()) && !isDataFile(attachment)
 	}
 
 	canDownloadAttachment(attachment: Attachment): boolean {
 		// Can Download: Web, Desktop, Android
 		// on iOS you always open and then choose where to save
 		// downloading a file reference does not make any sense, since the file is already on the file system
-		return !isIOSApp() && !isFileReference(attachment)
+		return !EnvProvider.get().isIOSApp() && !isFileReference(attachment)
 	}
 
 	async openOrDownloadAttachment(attachment: Attachment, postDownload: DownloadPostProcessing) {

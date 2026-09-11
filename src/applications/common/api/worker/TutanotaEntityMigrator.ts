@@ -10,7 +10,7 @@ import {
 	PermissionTypeRef,
 	PushIdentifierTypeRef,
 } from "@tutao/entities/sys"
-import { createEncryptTutanotaPropertiesData, EncryptTutanotaPropertiesService, TutanotaPropertiesTypeRef } from "@tutao/entities/tutanota"
+import { createEncryptTutanotaPropertiesData, EncryptTutanotaPropertiesService_POST, TutanotaPropertiesTypeRef } from "@tutao/entities/tutanota"
 import { assertNotNull, downcast, ofClass, uint8ArrayToBase64 } from "@tutao/utils"
 import { GroupType } from "../../../../entities/sys/Utils"
 import { SessionKeyNotFoundError } from "@tutao/crypto/error"
@@ -63,7 +63,7 @@ export class TutanotaEntityMigrator implements EntityMigrator {
 
 		if (!customerGroupPermission) throw new SessionKeyNotFoundError("Permission not found, could not apply OwnerGroup migration")
 		const customerGroupKeyVersion = cryptoUtils.parseKeyVersion(customerGroupPermission.symKeyVersion ?? "0")
-		const customerGroupKey = await this.symGroupKeyLoader.loadSymGroupKey(customerGroupMembership.group, customerGroupKeyVersion)
+		const customerGroupKey = await this.symGroupKeyLoader.loadSymGroupKey(customerGroupMembership.group, customerGroupKeyVersion, null)
 		const versionedCustomerGroupKey = { object: customerGroupKey, version: customerGroupKeyVersion }
 		const listKey = decryptKey(customerGroupKey, assertNotNull(customerGroupPermission.symEncSessionKey))
 		const groupInfoSk = decryptKey(listKey, assertNotNull(data._listEncSessionKey))
@@ -95,13 +95,13 @@ export class TutanotaEntityMigrator implements EntityMigrator {
 			symKeyVersion: String(groupEncSessionKey.encryptingKeyVersion),
 			symEncSessionKey: groupEncSessionKey.key,
 		})
-		await this.serviceExecutor.post(EncryptTutanotaPropertiesService, migrationData, null)
+		await this.serviceExecutor.execute(EncryptTutanotaPropertiesService_POST, migrationData, null)
 		return instance
 	}
 
 	async updateOwnerEncSessionKey(instance: EntityAdapter, ownerGroupKey: VersionedKey, resolvedSessionKey: AesKey) {
 		const newOwnerEncSessionKey = this.cryptoWrapper.encryptKeyWithVersionedKey(ownerGroupKey, resolvedSessionKey)
-		this.crypto.setOwnerEncSessionKey(instance, newOwnerEncSessionKey)
+		this.crypto.setOwnerEncSessionKey(instance, newOwnerEncSessionKey, null)
 
 		const typeModel = await this.typeModelResolver.resolveClientTypeReference(instance._type)
 		const path = EntityUtils.typeModelToRestPath(typeModel) + "/" + stringifyId(instance._id)

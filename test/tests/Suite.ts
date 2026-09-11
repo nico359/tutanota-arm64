@@ -94,6 +94,7 @@ import "./api/worker/search/IndexedDbIndexerTest.js"
 import "./api/worker/search/WebMailIndexerTest.js"
 import "./api/worker/search/OfflineMailIndexerTest.js"
 import "./api/worker/search/MailIndexerTest.js"
+import "./api/worker/search/OfflineStorageMailIndexerBackendTest.js"
 import "./api/worker/search/IndexedDbMailIndexerBackendTest.js"
 import "./api/worker/search/IndexedDbSearchFacadeTest.js"
 import "./api/worker/search/SearchIndexEncodingTest.js"
@@ -116,6 +117,7 @@ import "./calendar/CalendarModelTest.js"
 import "./calendar/CalendarEventUpdateCoordinatorTest.js"
 import "./calendar/CalendarUtilsTest.js"
 import "./calendar/CalendarViewModelTest.js"
+import "./calendar/date/TimeTest.js"
 import "./calendar/EventDragHandlerTest.js"
 import "./calendar/eventeditor/CalendarEventAlarmModelTest.js"
 import "./calendar/eventeditor/CalendarEventModelTest.js"
@@ -159,6 +161,7 @@ import "./mail/view/ConversationViewModelTest.js"
 import "./mail/view/MailViewModelTest.js"
 import "./mail/view/MailViewerViewModelTest.js"
 import "./mail/editor/ParsePastedInputTest.js"
+import "./mail/gui/date/TimeOverviewTest"
 import "./app-env/ClientDetectorTest.js"
 import "./misc/DeviceConfigTest.js"
 import "./misc/FormatValidatorTest.js"
@@ -257,11 +260,26 @@ import "./crypto/InstanceDecryptorTest.js"
 import "./crypto/ParsedCiphertextTest.js"
 import "./crypto/ValueDecryptorTest.js"
 import "./drive/DriveFilePickerTests.js"
+import "./drive/DriveTransferStackTest.js"
+import "./calendar/CalendarSearchTest.js"
+import "./drive/DriveSearchModelTest.js"
+import "./drive/DriveModelTest.js"
 
 import * as td from "testdouble"
 import { EntropySource } from "../../src/platform-kit/crypto"
+import { EnvProvider } from "../../src/platform-kit/app-env"
 
-export async function run({ integration, filter, regexp, exclude }: { integration?: boolean; filter?: string; regexp?: string; exclude?: string } = {}) {
+export async function run({
+	integration,
+	filter,
+	regexp,
+	exclude,
+}: {
+	integration?: boolean
+	filter?: string
+	regexp?: string
+	exclude?: string
+} = {}) {
 	await setupSuite({ integration })
 	const result = await o.run({ filter, regexp, exclude })
 
@@ -357,6 +375,6 @@ async function setupSuite({ integration }: { integration?: boolean }) {
 	o.afterEach(function () {
 		td.reset()
 		// Reset env in case any tests have fiddled with it
-		env = originalEnv
+		EnvProvider.overrideEnv(originalEnv)
 	})
 }

@@ -1,6 +1,6 @@
-import { ApprovalStatus, assertMainOrNode, daysToMillis, minutesToMillis, ProgrammingError } from "@tutao/app-env"
+import { ApprovalStatus, EnvProvider, ProgrammingError, TimeConstants } from "@tutao/app-env"
 import { elementIdPart, elementIdToId, getElementId, idToElementId, isSameId, isSameSingleId, OperationType } from "@tutao/meta"
-import { EntityUpdatesListener, EntityUpdateData, isUpdateForTypeRef, ListenerPriority } from "../../../platform-kit/instance-pipeline/utils/EntityUpdateUtils"
+import { EntityUpdateData, EntityUpdatesListener, isUpdateForTypeRef, ListenerPriority } from "../../../platform-kit/instance-pipeline/utils/EntityUpdateUtils"
 import {
 	ContactTypeRef,
 	ConversationEntry,
@@ -101,7 +101,7 @@ import { UndoModel } from "../../mail-app/UndoModel"
 import { isAliasEnabledForGroupInfo } from "../../../platform-kit/network/GroupUtils"
 import { createApprovalMail } from "@tutao/entities/monitor"
 
-assertMainOrNode()
+EnvProvider.assertMainOrNode()
 
 export const TOO_MANY_VISIBLE_RECIPIENTS = 10
 
@@ -907,13 +907,6 @@ export class SendMailModel {
 		return this.sendAt
 	}
 
-	getSendAtTime(): Time | null {
-		if (this.sendAt) {
-			return Time.fromDate(this.sendAt)
-		}
-		return null
-	}
-
 	setDefaultSendAtDate(): void {
 		let nextDay = new Date()
 		nextDay.setDate(nextDay.getDate() + 1)
@@ -951,9 +944,9 @@ export class SendMailModel {
 		}
 
 		const nowMillis = new Date().getTime()
-		if (this.sendAt.getTime() < nowMillis + minutesToMillis(SEND_LATER_MIN_MINUTES_IN_FUTURE)) {
+		if (this.sendAt.getTime() < nowMillis + TimeConstants.minutesToMillis(SEND_LATER_MIN_MINUTES_IN_FUTURE)) {
 			return SendAtStatus.InThePast
-		} else if (this.sendAt.getTime() > nowMillis + daysToMillis(SEND_LATER_MAX_DAYS_IN_FUTURE)) {
+		} else if (this.sendAt.getTime() > nowMillis + TimeConstants.daysToMillis(SEND_LATER_MAX_DAYS_IN_FUTURE)) {
 			return SendAtStatus.TooFarInTheFuture
 		} else {
 			return SendAtStatus.WithinRange

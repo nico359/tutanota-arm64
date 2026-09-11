@@ -9,9 +9,9 @@ import { ButtonSize } from "../../../../../ui/base/ButtonSize.js"
 import { Icons } from "../../../../../ui/base/icons/Icons.js"
 import { UserController } from "../../../api/main/UserController.js"
 import { MoreInfoLink } from "../MoreInfoLink.js"
-import { isApp } from "@tutao/app-env"
+import { EnvProvider } from "@tutao/app-env"
 import { ifAllowedTutaLinks } from "../../../gui/base/TutaLinkUtils"
-import { createReferralCodePostIn, ReferralCodeService } from "@tutao/entities/sys"
+import { createReferralCodePostIn, ReferralCodeService_POST } from "@tutao/entities/sys"
 
 export type ReferralLinkAttrs = {
 	referralLink: string
@@ -64,13 +64,13 @@ export class ReferralLinkViewer implements Component<ReferralLinkAttrs> {
 
 		return [
 			m(IconButton, {
-				title: "copy_action",
+				label: "copy_action",
 				click: () => this.copyAction(referralLink),
 				icon: Icons.CopyFilled,
 				size: ButtonSize.Compact,
 			}),
 			m(IconButton, {
-				title: "share_action",
+				label: "share_action",
 				click: () => this.shareAction(referralLink),
 				icon: Icons.ShareFilled,
 				size: ButtonSize.Compact,
@@ -84,7 +84,7 @@ export class ReferralLinkViewer implements Component<ReferralLinkAttrs> {
 	}
 
 	private async shareAction(referralLink: string): Promise<void> {
-		if (isApp()) {
+		if (EnvProvider.get().isApp()) {
 			// open native share dialog on mobile
 			const shareMessage = this.getReferralLinkMessage(referralLink)
 			return locator.systemFacade.shareText(shareMessage, lang.get("referralSettings_label")).then()
@@ -115,6 +115,6 @@ export async function getReferralLink(userController: UserController, isCalledBy
 }
 
 async function requestNewReferralCode(): Promise<string> {
-	const { referralCode } = await locator.serviceExecutor.post(ReferralCodeService, createReferralCodePostIn({}), null)
+	const { referralCode } = await locator.serviceExecutor.execute(ReferralCodeService_POST, createReferralCodePostIn({}), null)
 	return referralCode
 }

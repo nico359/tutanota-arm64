@@ -22,6 +22,8 @@ import { getFolderIcon } from "./MailGuiUtils"
 import { IconSize } from "../../../../ui/base/Icon"
 import { FolderSystemKind, MailSetTreeActionAttrs, MailSetTreeAttrs, renderFolderTree } from "./MailSetTreeUtils"
 import { Group } from "@tutao/entities/sys"
+import { MailSetKind } from "../../../../entities/tutanota/Utils"
+import { isSpamOrTrashFolder } from "../model/MailChecks"
 
 export interface MailFolderViewAttrs {
 	mailModel: MailModel
@@ -183,7 +185,7 @@ export class MailFoldersView implements Component<MailFolderViewAttrs> {
 
 	private renderCreateFolderAddButton(parentFolder: MailSet | null, attrs: MailFolderViewAttrs): Child {
 		return m(IconButton, {
-			title: "addFolder_action",
+			label: "addFolder_action",
 			click: () => {
 				return attrs.onShowFolderAddEditDialog(elementIdToId(attrs.mailboxDetail.mailGroup._id), null, parentFolder)
 			},
@@ -194,7 +196,7 @@ export class MailFoldersView implements Component<MailFolderViewAttrs> {
 
 	private renderEditFoldersButton(attrs: MailFolderViewAttrs): Child {
 		return m(IconButton, {
-			title: "edit_action",
+			label: "edit_action",
 			click: () => attrs.onEditMailbox(),
 			icon: Icons.PenFilled,
 			size: ButtonSize.Compact,

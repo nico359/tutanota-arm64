@@ -22,7 +22,7 @@ import {
 	uint8ArrayToBase64,
 	uint8ArrayToString,
 } from "@tutao/utils"
-import { assertWorkerOrNode, CancelledError, isApp, isDesktop, ProgrammingError } from "@tutao/app-env"
+import { CancelledError, EnvProvider, ProgrammingError } from "@tutao/app-env"
 import { BlobElementEntity, PersistentEntity, TypeRef } from "@tutao/meta"
 import { _encryptBytes, aesDecrypt, aesEncrypt, AesKey, asyncDecryptBytes, sha256Hash } from "@tutao/crypto"
 import type { FileUri, NativeFileApp } from "../../../../../../app-kit/native-bridge/common/FileApp.js"
@@ -39,7 +39,7 @@ import {
 	BlobPostOut,
 	BlobPostOutTypeRef,
 	BlobServerAccessInfo,
-	BlobService,
+	BlobService_GET,
 	createBlobGetIn,
 	createBlobId,
 	storageTypeModels,
@@ -49,8 +49,8 @@ import { BlobReferencingInstance } from "../../../../../../entities/storage/Blob
 import { IncomingServerJson } from "../../../../../../platform-kit/instance-pipeline/TypeMapper"
 import { EntityUtils } from "../../../../../../platform-kit/instance-pipeline/EntityUtils"
 
-assertWorkerOrNode()
-export const BLOB_SERVICE_REST_PATH = `/rest/${BlobService.app}/${BlobService.name.toLowerCase()}`
+EnvProvider.assertWorkerOrNode()
+
 export const TAG = "BlobFacade"
 
 export interface FileData {
@@ -353,7 +353,7 @@ export class BlobFacade {
 		sessionKey: AesKey,
 		transferId: TransferId,
 	): Promise<BlobReferenceTokenWrapper[]> {
-		if (!isApp() && !isDesktop()) {
+		if (!EnvProvider.get().isApp() && !EnvProvider.get().isDesktop()) {
 			throw new ProgrammingError("Environment is not app or Desktop!")
 		}
 		const fileHandle = await this.fileApp.openFileForReading(fileUri)
@@ -489,7 +489,7 @@ export class BlobFacade {
 		return tryServers(
 			blobServerAccessInfo.servers,
 			async (serverUrl) => {
-				const response = await this.restClient.request(BLOB_SERVICE_REST_PATH, HttpMethod.POST, {
+				const response = await this.restClient.request(BlobService_GET.serviceRestPath, HttpMethod.POST, {
 					...DEFAULT_REST_CLIENT_OPTIONS,
 					queryParams,
 					body: new RestBinaryBody(encryptedData),
@@ -720,7 +720,7 @@ export class BlobFacade {
 		mimeType: string,
 		transferId: TransferId,
 	): Promise<FileReference> {
-		if (!isApp() && !isDesktop()) {
+		if (!EnvProvider.get().isApp() && !EnvProvider.get().isDesktop()) {
 			throw new ProgrammingError("Environment is not app or Desktop!")
 		}
 		const sessionKey = await this.resolveSessionKey(referencingInstance.entity)
@@ -806,7 +806,7 @@ export class BlobFacade {
 		return tryServers(
 			blobServerAccessInfo.servers,
 			async (serverUrl) => {
-				const response = await this.restClient.request(BLOB_SERVICE_REST_PATH, HttpMethod.POST, {
+				const response = await this.restClient.request(BlobService_GET.serviceRestPath, HttpMethod.POST, {
 					...DEFAULT_REST_CLIENT_OPTIONS,
 					queryParams: queryParams,
 					// noCORS tries to avoid all the things that make the request not a "Simple CORS request". Adding
@@ -857,7 +857,7 @@ export class BlobFacade {
 			return this.suspensionHandler.deferRequest(() => this.uploadNative(location, blobServerAccessInfo, serverUrl, blobHash, chunkId))
 		}
 		const queryParams = await this.blobAccessTokenFacade.createQueryParams(blobServerAccessInfo, { blobHash }, BlobGetInTypeRef)
-		const serviceUrl = new URL(BLOB_SERVICE_REST_PATH, serverUrl)
+		const serviceUrl = new URL(BlobService_GET.serviceRestPath, serverUrl)
 		const fullUrl = addParamsToUrl(serviceUrl, queryParams)
 		const { suspensionTime, responseBody, statusCode, errorId, precondition } = await this.fileApp.upload(
 			location,
@@ -1001,7 +1001,7 @@ export class BlobFacade {
 			const concatBinaryData = await tryServers(
 				blobServerAccessInfo.servers,
 				async (serverUrl) => {
-					return await this.restClient.request(BLOB_SERVICE_REST_PATH, HttpMethod.GET, {
+					return await this.restClient.request(BlobService_GET.serviceRestPath, HttpMethod.GET, {
 						queryParams: queryParams,
 						body: new RestTextBody(outgoingJson.getJsonRepresentation()),
 						responseType: MediaType.Binary,
@@ -1072,7 +1072,7 @@ export class BlobFacade {
 				this.downloadNative(serverUrl, blobServerAccessInfo, sessionKey, fileName, additionalParams, blobId),
 			)
 		}
-		const serviceUrl = new URL(BLOB_SERVICE_REST_PATH, serverUrl)
+		const serviceUrl = new URL(BlobService_GET.serviceRestPath, serverUrl)
 		const url = addParamsToUrl(serviceUrl, await this.blobAccessTokenFacade.createQueryParams(blobServerAccessInfo, additionalParams, BlobGetInTypeRef))
 		const { statusCode, encryptedFileUri, suspensionTime, errorId, precondition } = await this.fileApp.download(
 			url.toString(),

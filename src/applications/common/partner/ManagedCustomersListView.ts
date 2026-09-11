@@ -1,7 +1,7 @@
 import m, { Children } from "mithril"
 import { component_size } from "../../../ui/size.js"
 import { assertNotNull, noOp } from "../../../platform-kit/utils"
-import { assertMainOrNode, FeatureType } from "../../../platform-kit/app-env"
+import { EnvProvider, FeatureType } from "../../../platform-kit/app-env"
 import { Icon } from "../../../ui/base/Icon.js"
 import { Icons } from "../../../ui/base/icons/Icons.js"
 import { ListColumnWrapper } from "../../../ui/ListColumnWrapper.js"
@@ -25,7 +25,7 @@ import { EntityUpdateData, isUpdateForTypeRef } from "../../../platform-kit/inst
 import { elementIdPart, listIdPart } from "../../../platform-kit/meta"
 import { NotFoundError } from "@tutao/rest-client/error"
 
-assertMainOrNode()
+EnvProvider.assertMainOrNode()
 
 function getCustomerInfoDisplayName(groupInfo: CustomerInfo): string {
 	if (groupInfo.company) {
@@ -105,7 +105,7 @@ export class ManagedCustomerListView implements UpdatableSettingsViewer {
 					m(
 						".mr-negative-8",
 						m(IconButton, {
-							title: "addManagedCustomers_action",
+							label: "addManagedCustomers_action",
 							icon: Icons.Plus,
 							click: () => this.addButtonClicked(),
 						}),
@@ -149,7 +149,7 @@ export class ManagedCustomerListView implements UpdatableSettingsViewer {
 		window.open(campaignUrl)
 	}
 
-	async entityEventsReceived<T>(updates: ReadonlyArray<EntityUpdateData>): Promise<void> {
+	async onEntityUpdatesReceived<T>(updates: ReadonlyArray<EntityUpdateData>): Promise<void> {
 		for (const update of updates) {
 			if (isUpdateForTypeRef(PartnerManagedCustomerTypeRef, update)) {
 				const partnerManagedCustomer = await locator.entityClient.load(PartnerManagedCustomerTypeRef, [

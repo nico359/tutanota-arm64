@@ -1,4 +1,4 @@
-import { EntityUpdatesListener, EntityUpdateData, isUpdateForTypeRef, ListenerPriority } from "../../../platform-kit/instance-pipeline/utils/EntityUpdateUtils"
+import { EntityUpdateData, EntityUpdatesListener, isUpdateForTypeRef, ListenerPriority } from "../../../platform-kit/instance-pipeline/utils/EntityUpdateUtils"
 import { AccountingInfo, Braintree3ds2Request, InvoiceInfoTypeRef } from "@tutao/entities/sys"
 import { AvailablePlanType, PaymentMethodType } from "../../../entities/sys/Utils"
 import m, { Children, Vnode, VnodeDOM } from "mithril"
@@ -8,7 +8,7 @@ import type { UpgradeSubscriptionData } from "./UpgradeSubscriptionWizard"
 import { InvoiceDataInput, InvoiceDataInputLocation } from "./InvoiceDataInput"
 import stream from "mithril/stream"
 import Stream from "mithril/stream"
-import { Country, getClientType, InvoiceData, Keys, PaymentDataResultType } from "@tutao/app-env"
+import { getClientType, PaymentDataResultType } from "@tutao/app-env"
 import { showProgressDialog } from "../../../ui/dialogs/ProgressDialog"
 import { assertNotNull, LazyLoaded, neverNull, newPromise, noOp, promiseMap } from "@tutao/utils"
 import { getLazyLoadedPayPalUrl, getPreconditionFailedPaymentMsg, PaymentData, PaymentErrorCode, UpgradeType } from "./utils/SubscriptionUtils"
@@ -20,13 +20,15 @@ import { DefaultAnimationTime } from "../../../ui/animation/Animations"
 import { locator } from "../api/main/CommonLocator"
 import { PaymentInterval } from "./utils/PriceUtils.js"
 import { PrimaryButton } from "../../../ui/base/buttons/VariantButtons.js"
-import { client } from "../../../platform-kit/app-env/boot/ClientDetector.js"
+import { ClientDetector } from "../../../platform-kit/app-env/boot/ClientDetector.js"
 import { SignupFlowStage, SignupFlowUsageTestController } from "./usagetest/UpgradeSubscriptionWizardUsageTestUtils.js"
-import { createAccount, getVisiblePaymentMethods, validateInvoiceData, validatePaymentData } from "./utils/PaymentUtils"
+import { createAccount, getVisiblePaymentMethods, InvoiceData, validateInvoiceData, validatePaymentData } from "./utils/PaymentUtils"
 import { SimplifiedCreditCardViewModel } from "./SimplifiedCreditCardInputModel"
 import { SimplifiedCreditCardInput } from "./SimplifiedCreditCardInput"
 import { PaypalButton } from "./PaypalButton"
 import { idToElementId } from "@tutao/meta"
+import { Country } from "../gui/CountryList"
+import { Keys } from "../../../ui/utils/KeyboardKeys"
 
 /**
  * Wizard page for editing invoice and payment data.
@@ -434,7 +436,7 @@ function verifyCreditCard(accountingInfo: AccountingInfo, braintree3ds: Braintre
 		}
 
 		locator.eventController.addEntityUpdatesListener(entityUpdatesListener)
-		const app = client.isCalendarApp() ? "calendar" : "mail"
+		const app = ClientDetector.get().isCalendarApp() ? "calendar" : "mail"
 		let params = `clientToken=${encodeURIComponent(braintree3ds.clientToken)}&nonce=${encodeURIComponent(braintree3ds.nonce)}&bin=${encodeURIComponent(
 			braintree3ds.bin,
 		)}&price=${encodeURIComponent(price)}&message=${encodeURIComponent(lang.get("creditCardVerification_msg"))}&clientType=${getClientType()}&app=${app}`

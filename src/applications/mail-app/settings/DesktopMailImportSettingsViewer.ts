@@ -24,7 +24,7 @@ import { FileImportStatus, MailSetKind } from "../../../entities/tutanota/Utils"
 import { AvailablePlanType, HighestTierPlans, isHighestTierPlan } from "../../../entities/sys/Utils"
 import { elementIdPart, elementIdToId, EntityIdEncoding, generatedIdToTimestamp, isSameId, sortCompareByReverseId } from "../../../platform-kit/meta"
 import { EntityUpdateData } from "../../../platform-kit/instance-pipeline/utils/EntityUpdateUtils"
-import { client } from "../../../platform-kit/app-env/boot/ClientDetector"
+import { ClientDetector } from "../../../platform-kit/app-env/boot/ClientDetector"
 
 /**
  * Settings viewer for mail import rendered only in the Desktop client.
@@ -67,7 +67,7 @@ export class DesktopMailImportSettingsViewer implements UpdatableSettingsViewer 
 		}
 
 		const allowedExtensions = ["eml", "mbox"]
-		const fileUris = client.isMacOS
+		const fileUris = ClientDetector.get().isMacOS
 			? await mailLocator.fileApp.openMacImportFileChooser()
 			: await mailLocator.fileApp.openFileChooser(dom.getBoundingClientRect(), allowedExtensions, true)
 		await this.fileMailImportController().onStartBtnClick(fileUris.map((fp) => fp.location))
@@ -169,14 +169,14 @@ export class DesktopMailImportSettingsViewer implements UpdatableSettingsViewer 
 			}),
 		)
 		const resumeMailImportIconButtonAttrs: IconButtonAttrs = {
-			title: "resumeMailImport_action",
+			label: "resumeMailImport_action",
 			icon: Icons.PlayOutline,
 			click: () => this.fileMailImportController().onResumeBtnClick(),
 			size: ButtonSize.Normal,
 			hidden: this.fileMailImportController().shouldDisableResumeButton(),
 		}
 		const pauseMailImportIconButtonAttrs: IconButtonAttrs = {
-			title: "pauseMailImport_action",
+			label: "pauseMailImport_action",
 			icon: Icons.PauseOutline,
 			click: () => {
 				this.fileMailImportController().onPauseBtnClick()
@@ -185,7 +185,7 @@ export class DesktopMailImportSettingsViewer implements UpdatableSettingsViewer 
 			hidden: this.fileMailImportController().shouldDisablePauseButton(),
 		}
 		const cancelMailImportIconButtonAttrs: IconButtonAttrs = {
-			title: "cancelMailImport_action",
+			label: "cancelMailImport_action",
 			icon: Icons.X,
 			click: () => {
 				this.fileMailImportController().onCancelBtnClick()
@@ -307,7 +307,7 @@ export class DesktopMailImportSettingsViewer implements UpdatableSettingsViewer 
 		}
 	}
 
-	async entityEventsReceived(updates: ReadonlyArray<EntityUpdateData>): Promise<void> {}
+	async onEntityUpdatesReceived(updates: ReadonlyArray<EntityUpdateData>): Promise<void> {}
 }
 
 export function getReadableUiImportStatus(uiStatus: UiImportStatus): string {

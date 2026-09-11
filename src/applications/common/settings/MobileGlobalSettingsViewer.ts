@@ -2,7 +2,7 @@ import { idToElementId, OperationType } from "@tutao/meta"
 import { EntityUpdateData, isUpdateForTypeRef } from "../../../platform-kit/instance-pipeline/utils/EntityUpdateUtils"
 import { CustomerPropertiesTypeRef, CustomerServerProperties, CustomerServerPropertiesTypeRef, CustomerTypeRef } from "@tutao/entities/sys"
 import m, { Children } from "mithril"
-import { assertMainOrNode } from "@tutao/app-env"
+import { EnvProvider } from "@tutao/app-env"
 import { AccountMaintenanceSettings, AccountMaintenanceUpdateNotifier } from "./AccountMaintenanceSettings.js"
 import { UpdatableSettingsViewer } from "./Interfaces.js"
 import { LazyLoaded, neverNull, noOp, promiseMap } from "@tutao/utils"
@@ -11,7 +11,7 @@ import { EntityClient } from "../../../platform-kit/network/EntityClient"
 import { LoginController } from "../api/main/LoginController"
 import { CustomerFacade } from "../api/worker/facades/lazy/CustomerFacade"
 
-assertMainOrNode()
+EnvProvider.assertMainOrNode()
 
 export class MobileGlobalSettingsViewer implements UpdatableSettingsViewer {
 	private readonly props = stream<Readonly<CustomerServerProperties>>()
@@ -51,7 +51,7 @@ export class MobileGlobalSettingsViewer implements UpdatableSettingsViewer {
 		})
 	}
 
-	entityEventsReceived(updates: ReadonlyArray<EntityUpdateData>): Promise<void> {
+	onEntityUpdatesReceived(updates: ReadonlyArray<EntityUpdateData>): Promise<void> {
 		this.accountMaintenanceUpdateNotifier?.(updates)
 
 		return promiseMap(updates, (update) => {

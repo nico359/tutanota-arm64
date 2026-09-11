@@ -1,6 +1,6 @@
 import m, { Children, Vnode } from "mithril"
 import { ImapImportData } from "./AddImapImportWizard.js"
-import { assertMainOrNode } from "@tutao/app-env"
+import { EnvProvider } from "@tutao/app-env"
 import { emitWizardEvent, WizardEventType, WizardPageAttrs, WizardPageN } from "../../../../ui/base/WizardDialog.js"
 import { TitleSection, TitleSectionAttrs } from "../../../../ui/TitleSection.js"
 import { Icons } from "../../../../ui/base/icons/Icons.js"
@@ -13,11 +13,19 @@ import { PrimaryButton } from "../../../../ui/base/buttons/VariantButtons"
 import { ToggleButton } from "../../../../ui/base/buttons/ToggleButton"
 import { ButtonSize } from "../../../../ui/base/ButtonSize"
 import { isMailAddress } from "@tutao/utils"
+import { IMAP_SSL_PORT, IMAP_UNSAFE_PORT } from "../../../common/api/common/utils/imapImportUtils/ImapKnownConfigs"
+import { Checkbox } from "../../../../ui/base/Checkbox"
 
-assertMainOrNode()
+EnvProvider.assertMainOrNode()
 
 export class ImapImportCredentialsPage implements WizardPageN<ImapImportData> {
 	shouldRevealImapAccountPassword = false
+	shouldDisplayUseSSLSwitch = false
+
+	async oninit(vnode: Vnode<WizardPageAttrs<ImapImportData>>) {
+		this.shouldDisplayUseSSLSwitch = vnode.attrs.data.imapAccountPort !== parseInt(IMAP_SSL_PORT)
+	}
+
 	view(vnode: Vnode<WizardPageAttrs<ImapImportData>>): Children {
 		return m(".mt-24", [
 			m(TitleSection, {
@@ -75,12 +83,35 @@ export class ImapImportCredentialsPage implements WizardPageN<ImapImportData> {
 					oninput: (value) => {
 						const typedNumber = Number.parseInt(value)
 						vnode.attrs.data.imapAccountPort = Number.isNaN(typedNumber) ? 0 : typedNumber
+						if (value === IMAP_SSL_PORT) {
+							vnode.attrs.data.useSSL = true
+							this.shouldDisplayUseSSLSwitch = false
+						} else if (value === IMAP_UNSAFE_PORT) {
+							vnode.attrs.data.useSSL = false
+							this.shouldDisplayUseSSLSwitch = true
+						} else {
+							vnode.attrs.data.useSSL = true
+							this.shouldDisplayUseSSLSwitch = true
+						}
 					},
 					leadingIcon: {
 						icon: Icons.KeyFilled,
 						color: theme.on_surface_variant,
 					},
 				}),
+			]),
+			m(".mt-16", [
+				this.shouldDisplayUseSSLSwitch
+					? m(".tutaui-switch", [
+							m(Checkbox, {
+								label: () => lang.getTranslationText("migrationUseSSL_label"),
+								checked: vnode.attrs.data.useSSL,
+								onChecked: (value: boolean) => {
+									vnode.attrs.data.useSSL = value
+								},
+							}),
+						])
+					: null,
 			]),
 			m(
 				".flex-end.full-width.pt-32.mb-32",

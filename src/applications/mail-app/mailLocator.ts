@@ -1,19 +1,6 @@
-import {
-	AppType,
-	assertMainOrNode,
-	Const,
-	FeatureType,
-	isAdminClient,
-	isAndroidApp,
-	isApp,
-	isBrowser,
-	isDesktop,
-	isIOSApp,
-	isTest,
-	ProgrammingError,
-} from "@tutao/app-env"
+import { AppType, Const, EnvProvider, FeatureType, ProgrammingError } from "@tutao/app-env"
 import { EventController } from "../common/api/main/EventController.js"
-import { SearchModel } from "./search/model/SearchModel.js"
+import { MailSearchModel } from "./search/model/MailSearchModel.js"
 import { type MailboxDetail, MailboxModel } from "../common/mailFunctionality/MailboxModel.js"
 import { MinimizedMailEditorViewModel } from "./mail/model/MinimizedMailEditorViewModel.js"
 import { ContactModel } from "../common/contactsFunctionality/ContactModel.js"
@@ -78,9 +65,8 @@ import { OfflineIndicatorViewModel } from "../common/gui/base/OfflineIndicatorVi
 import { Router, ScopedThrottledRouter, ThrottledRouter } from "../../ui/ScopedThrottledRouter.js"
 import { DeviceConfig, deviceConfig } from "../common/misc/DeviceConfig.js"
 import { InboxRuleHandler } from "./mail/model/InboxRuleHandler.js"
-import { SearchViewModel } from "./search/view/SearchViewModel.js"
 import { SearchRouter } from "../common/search/view/SearchRouter.js"
-import { MailOpenedListener } from "./mail/view/MailViewModel.js"
+import { MailOpenedListener, MailViewModel } from "./mail/view/MailViewModel.js"
 import { getEnabledMailAddressesWithUser } from "../common/mailFunctionality/SharedMailUtils.js"
 import { ReceivedGroupInvitationsModel } from "../common/sharing/model/ReceivedGroupInvitationsModel.js"
 import { CalendarViewModel } from "../calendar-app/calendar/view/CalendarViewModel.js"
@@ -92,11 +78,11 @@ import { ConversationViewModel, ConversationViewModelFactory } from "./mail/view
 import { CreateMailViewerOptions } from "./mail/view/MailViewer.js"
 import { MailViewerViewModel } from "./mail/view/MailViewerViewModel.js"
 import { ExternalLoginViewModel } from "./mail/view/ExternalLoginView.js"
-import { MailAddressNameChanger, MailAddressTableModel, UserInfo } from "../common/settings/mailaddress/MailAddressTableModel.js"
+import { MailAddressNameChanger, MailAddressTableModel, MailAddressTableInfo } from "../common/settings/mailaddress/MailAddressTableModel.js"
 import { DrawerMenuAttrs, isPartnerEnabled } from "../common/gui/nav/DrawerMenu.js"
+import type { GroupInfo } from "@tutao/entities/sys"
 import { DomainConfigProvider } from "../common/api/common/DomainConfigProvider.js"
 import { CredentialRemovalHandler } from "../common/login/CredentialRemovalHandler.js"
-import { LoginViewModel } from "../common/login/LoginViewModel.js"
 import { EntropyCollector } from "../common/api/main/EntropyCollector.js"
 import { notifications } from "../../ui/Notifications.js"
 import { windowFacade } from "../common/misc/WindowFacade.js"
@@ -170,15 +156,27 @@ import { ClientModelInfo } from "@tutao/instance-pipeline"
 import { ImapImporter } from "./workerUtils/imapimport/ImapImporter"
 
 import { ParsedEventAlarmTuple } from "../calendar-app/calendar/export/CalendarParser"
+import { showWindowCloseConfirmation } from "../../ui/base/GuiUtils"
 import type { ImapMailImportController } from "./settings/imapimport/ImapMailImportController"
 import type { AlarmInterval } from "../common/calendar/date/CalendarUtils"
+import { MailSearchViewModel } from "./search/view/MailSearchViewModel"
+import { ContactSearchViewModel } from "./search/view/ContactSearchViewModel"
+import { CalendarSearchViewModel } from "../calendar-app/calendar/search/view/CalendarSearchViewModel"
+import { DriveSearchViewModel } from "../drive-app/search/view/DriveSearchViewModel"
+import { CalendarSearchModel } from "../calendar-app/search/model/CalendarSearchModel"
+import { ContactSearchModel } from "./search/model/ContactSearchModel"
+import type { DriveSearchModel } from "../drive-app/search/model/DriveSearchModel"
+import type { DriveTransferController } from "../drive-app/drive/view/DriveTransferController"
+import { registerIndexingNotAvailableHandler } from "../common/misc/ErrorHandlerImpl"
+import { DriveModel } from "../drive-app/drive/model/DriveModel"
+import { ContactEditor } from "./contacts/ContactEditor"
+import { ContactViewModel } from "./contacts/view/ContactViewModel"
 
-assertMainOrNode()
+EnvProvider.assertMainOrNode()
 
 class MailLocator implements CommonLocator {
 	clientModelInfo!: ClientModelInfo
 	eventController!: EventController
-	search!: SearchModel
 	mailboxModel!: MailboxModel
 	mailModel!: MailModel
 	minimizedMailModel!: MinimizedMailEditorViewModel
@@ -290,7 +288,12 @@ class MailLocator implements CommonLocator {
 		}
 	}
 
-	readonly mailViewModel = lazyMemoized(async () => {
+	readonly mailSearchModel: lazyAsync<MailSearchModel> = lazyMemoized(async () => {
+		const { MailSearchModel } = await import("./search/model/MailSearchModel.js")
+		return new MailSearchModel(this.searchFacade, this.eventController, this.entityClient, registerIndexingNotAvailableHandler)
+	})
+
+	readonly mailViewModel: lazyAsync<MailViewModel> = lazyMemoized(async () => {
 		const { MailViewModel } = await import("./mail/view/MailViewModel.js")
 		const conversationViewModelFactory = await this.conversationViewModelFactory()
 		const router = new ScopedThrottledRouter("/mail")
@@ -308,6 +311,9 @@ class MailLocator implements CommonLocator {
 			router,
 			await this.redraw(),
 			this.syncTracker,
+			await this.unscopedSearchRouter(),
+			this.mailSearchModel,
+			this.logins,
 		)
 	})
 
@@ -328,34 +334,6 @@ class MailLocator implements CommonLocator {
 		return new ProcessInboxHandler(this.logins, this.mailFacade, this.cryptoFacade, this.spamClassificationHandler, this.inboxRuleHandler)
 	})
 
-	async searchViewModelFactory(): Promise<() => SearchViewModel> {
-		const { SearchViewModel } = await import("./search/view/SearchViewModel.js")
-		const conversationViewModelFactory = await this.conversationViewModelFactory()
-		const redraw = await this.redraw()
-		const searchRouter = await this.scopedSearchRouter()
-		const calendarEventsRepository = await this.calendarEventsRepository()
-		const calendarModel = await this.calendarModel()
-		return () => {
-			return new SearchViewModel(
-				searchRouter,
-				this.search,
-				this.mailboxModel,
-				this.logins,
-				this.indexerFacade,
-				this.entityClient,
-				this.eventController,
-				this.mailOpenedListener,
-				this.calendarFacade,
-				this.progressTracker,
-				conversationViewModelFactory,
-				calendarEventsRepository,
-				calendarModel,
-				redraw,
-				deviceConfig.getMailAutoSelectBehavior(),
-			)
-		}
-	}
-
 	readonly throttledRouter: lazy<Router> = lazyMemoized(() => new ThrottledRouter())
 
 	readonly scopedSearchRouter: lazyAsync<SearchRouter> = lazyMemoized(async () => {
@@ -369,7 +347,7 @@ class MailLocator implements CommonLocator {
 	})
 
 	readonly mailOpenedListener: MailOpenedListener = {
-		onEmailOpened: isDesktop()
+		onEmailOpened: EnvProvider.get().isDesktop()
 			? (mail) => {
 					this.desktopSystemFacade.sendSocketMessage(getDisplayedSender(mail).address)
 				}
@@ -381,10 +359,24 @@ class MailLocator implements CommonLocator {
 		return new QuickActionsModel()
 	})
 
-	readonly contactViewModel = lazyMemoized(async () => {
+	readonly contactSearchModel: lazyAsync<ContactSearchModel> = lazyMemoized(async () => {
+		const { ContactSearchModel } = await import("./search/model/ContactSearchModel.js")
+		return new ContactSearchModel(this.searchFacade, this.eventController, this.entityClient, registerIndexingNotAvailableHandler)
+	})
+
+	readonly contactViewModel: lazyAsync<ContactViewModel> = lazyMemoized(async () => {
 		const { ContactViewModel } = await import("./contacts/view/ContactViewModel.js")
 		const router = new ScopedThrottledRouter("/contact")
-		return new ContactViewModel(this.contactModel, this.entityClient, this.eventController, router, await this.redraw(), this.connectivityModel)
+		return new ContactViewModel(
+			this.contactModel,
+			this.entityClient,
+			this.eventController,
+			router,
+			await this.redraw(),
+			this.syncTracker,
+			await this.unscopedSearchRouter(),
+			this.contactSearchModel,
+		)
 	})
 
 	readonly contactListViewModel = lazyMemoized(async () => {
@@ -413,7 +405,12 @@ class MailLocator implements CommonLocator {
 		return new ReceivedGroupInvitationsModel<TypeOfGroup>(groupType, this.eventController, this.entityClient, this.logins)
 	}
 
-	readonly calendarViewModel = lazyMemoized<Promise<CalendarViewModel>>(async () => {
+	readonly calendarSearchModel: lazyAsync<CalendarSearchModel> = lazyMemoized(async () => {
+		const { CalendarSearchModel } = await import("../calendar-app/search/model/CalendarSearchModel.js")
+		return new CalendarSearchModel(this.eventController, this.calendarEventsRepository, this.progressTracker)
+	})
+
+	readonly calendarViewModel: lazyAsync<CalendarViewModel> = lazyMemoized(async () => {
 		const { CalendarViewModel } = await import("../calendar-app/calendar/view/CalendarViewModel.js")
 		const { DefaultDateProvider } = await import("../common/calendar/date/CalendarUtils")
 		const timeZone = new DefaultDateProvider().timeZone()
@@ -427,6 +424,7 @@ class MailLocator implements CommonLocator {
 			(...args) => this.calendarEventPreviewModel(...args),
 			(...args) => this.calendarContactPreviewModel(...args),
 			await this.calendarModel(),
+			this.calendarSearchModel,
 			await this.calendarEventsRepository(),
 			this.entityClient,
 			this.eventController,
@@ -438,7 +436,8 @@ class MailLocator implements CommonLocator {
 			this.contactModel,
 			this.groupSettingsModel,
 			this.operationProgressTracker,
-			this.connectivityModel,
+			this.syncTracker,
+			await this.unscopedSearchRouter(),
 		)
 	})
 
@@ -524,7 +523,7 @@ class MailLocator implements CommonLocator {
 	}
 
 	private async contactSuggestionProvider(): Promise<ContactSuggestionProvider> {
-		if (isApp()) {
+		if (EnvProvider.get().isApp()) {
 			const { MobileContactSuggestionProvider } = await import("../common/native/MobileContactSuggestionProvider.js")
 			return new MobileContactSuggestionProvider(this.mobileContactsFacade)
 		} else {
@@ -563,8 +562,8 @@ class MailLocator implements CommonLocator {
 		return new ContactImporter(
 			this.contactFacade,
 			this.systemPermissionHandler,
-			isApp() ? this.mobileContactsFacade : null,
-			isApp() ? this.nativeContactsSyncManager() : null,
+			EnvProvider.get().isApp() ? this.mobileContactsFacade : null,
+			EnvProvider.get().isApp() ? this.nativeContactsSyncManager() : null,
 		)
 	}
 
@@ -573,7 +572,7 @@ class MailLocator implements CommonLocator {
 		const { AttachmentDownloader } = await import("./mail/view/MailGuiUtils.js")
 		const eventRepository = await this.calendarEventsRepository()
 		const undoModel = await this.undoModel()
-		const fileApp = isBrowser() ? null : this.fileApp
+		const fileApp = EnvProvider.get().isBrowser() ? null : this.fileApp
 		const fileDownloader = new AttachmentDownloader(this.fileController, fileApp, this.transferProgressDispatcher)
 
 		return ({ mail, showFolder, highlightedTokens }) =>
@@ -583,7 +582,7 @@ class MailLocator implements CommonLocator {
 				this.entityClient,
 				this.mailboxModel,
 				this.mailModel,
-				isBrowser() ? null : this.commonSystemFacade,
+				EnvProvider.get().isBrowser() ? null : this.commonSystemFacade,
 				this.contactModel,
 				this.configFacade,
 				this.fileController,
@@ -591,7 +590,6 @@ class MailLocator implements CommonLocator {
 				this.logins,
 				this.eventController,
 				this.workerFacade,
-				this.search,
 				this.mailFacade,
 				this.cryptoFacade,
 				() => this.contactImporter(),
@@ -600,7 +598,7 @@ class MailLocator implements CommonLocator {
 				undoModel,
 				this.transferProgressDispatcher,
 				this.operationProgressTracker,
-				this.connectivityModel,
+				this.syncTracker,
 			)
 	}
 
@@ -662,13 +660,28 @@ class MailLocator implements CommonLocator {
 			this.mailAddressFacade,
 			this.logins,
 			this.eventController,
-			{ user: this.logins.getUserController().user, userGroupInfo: this.logins.getUserController().userGroupInfo },
+			{ user: this.logins.getUserController().user, groupInfo: this.logins.getUserController().userGroupInfo },
 			nameChanger,
 			await this.redraw(),
 		)
 	}
 
-	async mailAddressTableModelForAdmin(mailGroupId: Id, userId: Id, userInfo: UserInfo): Promise<MailAddressTableModel> {
+	async mailAddressTableModelForSharedMailbox(mailGroupInfo: GroupInfo): Promise<MailAddressTableModel> {
+		const { MailAddressTableModel } = await import("../common/settings/mailaddress/MailAddressTableModel.js")
+		const nameChanger = await this.sharedMailboxNameChanger(mailGroupInfo.group)
+		return new MailAddressTableModel(
+			this.entityClient,
+			this.serviceExecutor,
+			this.mailAddressFacade,
+			this.logins,
+			this.eventController,
+			{ user: null, groupInfo: mailGroupInfo },
+			nameChanger,
+			await this.redraw(),
+		)
+	}
+
+	async mailAddressTableModelForAdmin(mailGroupId: Id, userId: Id, userInfo: MailAddressTableInfo): Promise<MailAddressTableModel> {
 		const { MailAddressTableModel } = await import("../common/settings/mailaddress/MailAddressTableModel.js")
 		const nameChanger = await this.adminNameChanger(mailGroupId, userId)
 		return new MailAddressTableModel(
@@ -686,6 +699,11 @@ class MailLocator implements CommonLocator {
 	async ownMailAddressNameChanger(): Promise<MailAddressNameChanger> {
 		const { OwnMailAddressNameChanger } = await import("../common/settings/mailaddress/OwnMailAddressNameChanger.js")
 		return new OwnMailAddressNameChanger(this.mailboxModel, this.entityClient)
+	}
+
+	async sharedMailboxNameChanger(mailGroupId: Id): Promise<MailAddressNameChanger> {
+		const { SharedMailboxNameChanger } = await import("../common/settings/mailaddress/SharedMailboxNameChanger.js")
+		return new SharedMailboxNameChanger(this.mailAddressFacade, mailGroupId)
 	}
 
 	async adminNameChanger(mailGroupId: Id, userId: Id): Promise<MailAddressNameChanger> {
@@ -708,14 +726,14 @@ class MailLocator implements CommonLocator {
 
 	async credentialsRemovalHandler(): Promise<CredentialRemovalHandler> {
 		const { NoopCredentialRemovalHandler, AppsCredentialRemovalHandler } = await import("../common/login/CredentialRemovalHandler.js")
-		return isBrowser()
+		return EnvProvider.get().isBrowser()
 			? new NoopCredentialRemovalHandler()
 			: new AppsCredentialRemovalHandler(this.pushService, this.configFacade, async (login, userId) => {
-					if (isApp()) {
+					if (EnvProvider.get().isApp()) {
 						await mailLocator.nativeContactsSyncManager().disableSync(userId, login)
 					}
 					await mailLocator.indexerFacade.deleteIndex(userId)
-					if (isDesktop()) {
+					if (EnvProvider.get().isDesktop()) {
 						await mailLocator.exportFacade.clearExportState(userId)
 					}
 				})
@@ -725,11 +743,11 @@ class MailLocator implements CommonLocator {
 		const { LoginViewModel } = await import("../common/login/LoginViewModel.js")
 		const credentialsRemovalHandler = await mailLocator.credentialsRemovalHandler()
 		const { MobileAppLock, NoOpAppLock } = await import("../common/login/AppLock.js")
-		const appLock = isApp()
+		const appLock = EnvProvider.get().isApp()
 			? new MobileAppLock(assertNotNull(this.nativeInterfaces).mobileSystemFacade, assertNotNull(this.nativeInterfaces).nativeCredentialsFacade)
 			: new NoOpAppLock()
 		return () => {
-			const domainConfig = isBrowser()
+			const domainConfig = EnvProvider.get().isBrowser()
 				? mailLocator.domainConfigProvider().getDomainConfigForHostname(location.hostname, location.protocol, location.port)
 				: // in this case, we know that we have a staticUrl set that we need to use
 					mailLocator.domainConfigProvider().getCurrentDomainConfig()
@@ -741,7 +759,7 @@ class MailLocator implements CommonLocator {
 				deviceConfig,
 				domainConfig,
 				credentialsRemovalHandler,
-				isBrowser() ? null : this.pushService,
+				EnvProvider.get().isBrowser() ? null : this.pushService,
 				appLock,
 			)
 		}
@@ -874,7 +892,6 @@ class MailLocator implements CommonLocator {
 		this.progressTracker = new ProgressTracker()
 		this.eventController = new EventController(mailLocator.logins)
 		this.syncTracker = new SyncTracker()
-		this.search = new SearchModel(this.searchFacade, () => this.calendarEventsRepository())
 		this.entityClient = new EntityClient(restInterface, this.clientModelInfo)
 		this.cryptoFacade = cryptoFacade
 		this.cacheStorage = cacheStorage
@@ -894,10 +911,11 @@ class MailLocator implements CommonLocator {
 			this.connectivityModel,
 			this.processInboxHandler,
 			this.bulkMailLoader,
+			registerIndexingNotAvailableHandler,
 		)
 		this.operationProgressTracker = new OperationProgressTracker()
 		this.infoMessageHandler = new InfoMessageHandler((state: SearchIndexStateInfo) => {
-			mailLocator.search.indexState(state)
+			this.mailSearchModel().then((model) => model.indexState(state))
 		})
 		this.autosaveFacade = autosaveFacade
 		this.imapImporter = imapImporter
@@ -929,7 +947,7 @@ class MailLocator implements CommonLocator {
 
 		this.transferProgressDispatcher = new TransferProgressDispatcher()
 
-		if (!isBrowser()) {
+		if (!EnvProvider.get().isBrowser()) {
 			const { WebDesktopFacade } = await import("../common/native/WebDesktopFacade")
 			const { WebMobileFacade } = await import("../common/native/WebMobileFacade.js")
 			const { WebCommonNativeFacade } = await import("../common/native/WebCommonNativeFacade.js")
@@ -980,12 +998,12 @@ class MailLocator implements CommonLocator {
 			)
 
 			this.credentialsProvider = await this.createCredentialsProvider()
-			if (isDesktop() || isAdminClient()) {
+			if (EnvProvider.get().isDesktop() || EnvProvider.get().isAdminClient()) {
 				const desktopInterfaces = createDesktopInterfaces(this.native)
 				this.searchTextFacade = desktopInterfaces.searchTextFacade
 				this.interWindowEventSender = desktopInterfaces.interWindowEventSender
-				this.webAuthn = new WebauthnClient(new WebAuthnFacadeSendDispatcher(this.native), this.domainConfigProvider(), isApp())
-				if (isDesktop()) {
+				this.webAuthn = new WebauthnClient(new WebAuthnFacadeSendDispatcher(this.native), this.domainConfigProvider(), EnvProvider.get().isApp())
+				if (EnvProvider.get().isDesktop()) {
 					this.desktopSettingsFacade = desktopInterfaces.desktopSettingsFacade
 					this.desktopSystemFacade = desktopInterfaces.desktopSystemFacade
 					this.fileMailImportController = new FileMailImportController(
@@ -1013,10 +1031,10 @@ class MailLocator implements CommonLocator {
 						new ImapErrorHandler(this.entityClient, this.serviceExecutor),
 					)
 				}
-			} else if (isAndroidApp() || isIOSApp()) {
+			} else if (EnvProvider.get().isAndroidApp() || EnvProvider.get().isIOSApp()) {
 				const { SystemPermissionHandler } = await import("../common/native/SystemPermissionHandler.js")
 				this.systemPermissionHandler = new SystemPermissionHandler(this.systemFacade)
-				this.webAuthn = new WebauthnClient(new WebAuthnFacadeSendDispatcher(this.native), this.domainConfigProvider(), isApp())
+				this.webAuthn = new WebauthnClient(new WebAuthnFacadeSendDispatcher(this.native), this.domainConfigProvider(), EnvProvider.get().isApp())
 
 				this.systemFacade.storeServerRemoteOrigin(assertNotNull(env.staticUrl)).catch((e) => console.log("Failed to store remote URL: ", e))
 			}
@@ -1028,7 +1046,7 @@ class MailLocator implements CommonLocator {
 			this.webAuthn = new WebauthnClient(
 				new BrowserWebauthn(navigator.credentials, this.domainConfigProvider().getCurrentDomainConfig()),
 				this.domainConfigProvider(),
-				isApp(),
+				EnvProvider.get().isApp(),
 			)
 		}
 		this.secondFactorHandler = new SecondFactorHandler(
@@ -1063,7 +1081,11 @@ class MailLocator implements CommonLocator {
 				}
 				case "richNotifications": {
 					const { RichNotificationsNews } = await import("../common/misc/news/items/RichNotificationsNews.js")
-					return new RichNotificationsNews(this.newsModel, isApp() || isDesktop() ? this.pushService : null, this.systemPermissionHandler)
+					return new RichNotificationsNews(
+						this.newsModel,
+						EnvProvider.get().isApp() || EnvProvider.get().isDesktop() ? this.pushService : null,
+						this.systemPermissionHandler,
+					)
 				}
 				case "colorCustomizationUpdate": {
 					const { UpdateColorCustomizationNews } = await import("../common/misc/news/items/UpdateColorCustomizationNews.js")
@@ -1101,8 +1123,10 @@ class MailLocator implements CommonLocator {
 			},
 		}
 		const selectedThemeFacade =
-			isApp() || isDesktop() ? new NativeThemeFacade(new LazyLoaded<ThemeFacade>(async () => mailLocator.themeFacade)) : new WebThemeFacade(deviceConfig)
-		const lazySanitizer = isTest()
+			EnvProvider.get().isApp() || EnvProvider.get().isDesktop()
+				? new NativeThemeFacade(new LazyLoaded<ThemeFacade>(async () => mailLocator.themeFacade))
+				: new WebThemeFacade(deviceConfig)
+		const lazySanitizer = EnvProvider.isTest()
 			? () => Promise.resolve(sanitizerStub as HtmlSanitizer)
 			: () => import("../common/misc/HtmlSanitizer").then(({ getHtmlSanitizer }) => getHtmlSanitizer())
 
@@ -1132,9 +1156,9 @@ class MailLocator implements CommonLocator {
 			this.fileController,
 			this.contactModel,
 			timeZone,
-			!isBrowser() ? this.externalCalendarFacade : null,
+			!EnvProvider.get().isBrowser() ? this.externalCalendarFacade : null,
 			deviceConfig,
-			!isBrowser() ? this.pushService : null,
+			!EnvProvider.get().isBrowser() ? this.pushService : null,
 			this.syncTracker,
 			noOp,
 			lang,
@@ -1314,7 +1338,7 @@ class MailLocator implements CommonLocator {
 	}
 
 	readonly nativeContactsSyncManager: () => NativeContactsSyncManager = lazyMemoized(() => {
-		assert(isApp(), "isApp")
+		assert(EnvProvider.get().isApp(), "isApp")
 		return new NativeContactsSyncManager(this.logins, this.mobileContactsFacade, this.entityClient, this.eventController, this.contactModel, deviceConfig)
 	})
 
@@ -1338,7 +1362,7 @@ class MailLocator implements CommonLocator {
 	})
 
 	showSetupWizard = async () => {
-		if (isApp()) {
+		if (EnvProvider.get().isApp()) {
 			const { showSetupWizard } = await import("../common/native/wizard/SetupWizard.js")
 			return showSetupWizard(
 				this.systemPermissionHandler,
@@ -1355,12 +1379,12 @@ class MailLocator implements CommonLocator {
 	}
 
 	async updateClients(): Promise<void> {
-		if (isDesktop()) {
+		if (EnvProvider.get().isDesktop()) {
 			await this.desktopSettingsFacade.manualUpdate()
-		} else if (isApp()) {
-			if (isAndroidApp()) {
+		} else if (EnvProvider.get().isApp()) {
+			if (EnvProvider.get().isAndroidApp()) {
 				this.nativeInterfaces?.mobileSystemFacade.openLink("market://details?id=de.tutao.tutanota")
-			} else if (isIOSApp()) {
+			} else if (EnvProvider.get().isIOSApp()) {
 				this.nativeInterfaces?.mobileSystemFacade.openLink("itms-apps://itunes.apple.com/app/id922429609")
 			}
 		} else {
@@ -1376,9 +1400,9 @@ class MailLocator implements CommonLocator {
 
 	readonly credentialFormatMigrator: () => Promise<CredentialFormatMigrator> = lazyMemoized(async () => {
 		const { CredentialFormatMigrator } = await import("../common/misc/credentials/CredentialFormatMigrator.js")
-		if (isDesktop()) {
+		if (EnvProvider.get().isDesktop()) {
 			return new CredentialFormatMigrator(deviceConfig, this.nativeCredentialsFacade, null)
-		} else if (isApp()) {
+		} else if (EnvProvider.get().isApp()) {
 			return new CredentialFormatMigrator(deviceConfig, this.nativeCredentialsFacade, this.systemFacade)
 		} else {
 			return new CredentialFormatMigrator(deviceConfig, null, null)
@@ -1414,35 +1438,61 @@ class MailLocator implements CommonLocator {
 	 */
 	private async createCredentialsProvider(): Promise<CredentialsProvider> {
 		const { CredentialsProvider } = await import("../common/misc/credentials/CredentialsProvider.js")
-		if (isDesktop() || isApp()) {
-			return new CredentialsProvider(this.nativeCredentialsFacade, this.sqlCipherFacade, isDesktop() ? this.interWindowEventSender : null)
+		if (EnvProvider.get().isDesktop() || EnvProvider.get().isApp()) {
+			return new CredentialsProvider(
+				this.nativeCredentialsFacade,
+				this.sqlCipherFacade,
+				EnvProvider.get().isDesktop() ? this.interWindowEventSender : null,
+			)
 		} else {
 			const { WebCredentialsFacade } = await import("../common/misc/credentials/WebCredentialsFacade.js")
 			return new CredentialsProvider(new WebCredentialsFacade(deviceConfig), null, null)
 		}
 	}
 
+	readonly driveTransferController: lazyAsync<DriveTransferController> = lazyMemoized(async () => {
+		const { DriveTransferController } = await import("../drive-app/drive/view/DriveTransferController.js")
+		const redraw = await this.redraw()
+		return new DriveTransferController(this.driveFacade, this.blobFacade, redraw, this.fileController)
+	})
+	readonly driveOperations: lazyAsync<DriveModel> = lazyMemoized(async () => {
+		const { DriveModel } = await import("../drive-app/drive/model/DriveModel.js")
+		return new DriveModel(
+			await this.driveTransferController(),
+			this.driveFacade,
+			this.entityClient,
+			this.eventController,
+			this.transferProgressDispatcher,
+			windowFacade,
+			() => showWindowCloseConfirmation("closeWindowWithActiveTransfers_msg"),
+		)
+	})
+
+	readonly driveSearchModel: lazyAsync<DriveSearchModel> = lazyMemoized(async () => {
+		const { DriveSearchModel } = await import("../drive-app/search/model/DriveSearchModel.js")
+		return new DriveSearchModel(this.eventController, this.entityClient)
+	})
+
 	readonly driveViewModel: lazyAsync<DriveViewModel> = lazyMemoized(async () => {
 		const { DriveViewModel } = await import("../drive-app/drive/view/DriveViewModel.js")
 		const router = new ScopedThrottledRouter("/drive")
-		const { DriveTransferController } = await import("../drive-app/drive/view/DriveTransferController.js")
 		const { WebFileResolver } = await import("../drive-app/drive/view/WebFileResolver.js")
 
 		const redraw = await this.redraw()
-		const driveUploadStackModel = new DriveTransferController(this.driveFacade, this.blobFacade, redraw, this.fileController)
 
 		const model = new DriveViewModel(
 			this.entityClient,
 			this.driveFacade,
 			router,
-			this.transferProgressDispatcher,
 			this.eventController,
 			this.logins,
 			this.userManagementFacade,
-			driveUploadStackModel,
-			isDesktop() ? new WebFileResolver(window.nativeApp, this.fileApp, this.desktopSystemFacade) : null,
+			EnvProvider.get().isDesktop() ? new WebFileResolver(window.nativeApp, this.fileApp, this.desktopSystemFacade) : null,
 			redraw,
-			this.connectivityModel,
+			this.syncTracker,
+			this.driveSearchModel,
+			await this.unscopedSearchRouter(),
+			await this.driveOperations(),
 		)
 		await model.init()
 
@@ -1455,13 +1505,90 @@ class MailLocator implements CommonLocator {
 	}
 
 	async driveFilePicker(): Promise<DriveFilePicker> {
-		if (isDesktop() || isApp()) {
+		if (EnvProvider.get().isDesktop() || EnvProvider.get().isApp()) {
 			const { AppFilePicker } = await import("../drive-app/drive/view/DriveFilePicker.js")
 			return new AppFilePicker(this.fileApp)
 		} else {
 			const { WebFilePicker } = await import("../drive-app/drive/view/DriveFilePicker.js")
 			return new WebFilePicker()
 		}
+	}
+	async contactSearchViewModelFactory(): Promise<() => ContactSearchViewModel> {
+		const { ContactSearchViewModel } = await import("./search/view/ContactSearchViewModel.js")
+		const redraw = await this.redraw()
+		const router = await this.scopedSearchRouter()
+		const contactSearchModel = await this.contactSearchModel()
+		return () => new ContactSearchViewModel(this.logins, router, this.entityClient, contactSearchModel, redraw)
+	}
+
+	async mailSearchViewModelFactory(): Promise<() => MailSearchViewModel> {
+		const { MailSearchViewModel } = await import("./search/view/MailSearchViewModel.js")
+		const redraw = await this.redraw()
+		const router = await this.scopedSearchRouter()
+		const mailSearchModel = await this.mailSearchModel()
+		const dateProvider = await this.noZoneDateProvider()
+		const conversationViewModelFactory = await this.conversationViewModelFactory()
+		return () =>
+			new MailSearchViewModel(
+				router,
+				mailSearchModel,
+				this.mailboxModel,
+				this.mailModel,
+				this.logins,
+				this.indexerFacade,
+				deviceConfig.getMailAutoSelectBehavior(),
+				conversationViewModelFactory,
+				this.mailOpenedListener,
+				dateProvider,
+				redraw,
+			)
+	}
+
+	async calendarSearchViewModelFactory(): Promise<() => CalendarSearchViewModel> {
+		const { CalendarSearchViewModel } = await import("../calendar-app/calendar/search/view/CalendarSearchViewModel.js")
+		const calendarModel = await this.calendarModel()
+		const redraw = await this.redraw()
+		const calendarSearchModel = await this.calendarSearchModel()
+		const router = await this.scopedSearchRouter()
+		return () =>
+			new CalendarSearchViewModel(
+				calendarModel,
+				this.logins,
+				calendarSearchModel,
+				router,
+				this.eventController,
+				this.entityClient,
+				this.mailboxModel,
+				(...args) => this.calendarEventModel(...args),
+				(...args) => this.calendarEventPreviewModel(...args),
+				redraw,
+			)
+	}
+	async driveSearchViewModelFactory(): Promise<() => DriveSearchViewModel> {
+		const { DriveSearchViewModel } = await import("../drive-app/search/view/DriveSearchViewModel.js")
+		const redraw = await this.redraw()
+		const searchRouter = await this.scopedSearchRouter()
+		const driveSearchModel = await this.driveSearchModel()
+		const router = await this.throttledRouter()
+		const dateProvider = await this.noZoneDateProvider()
+		const driveOperations = await this.driveOperations()
+		return () =>
+			new DriveSearchViewModel(
+				searchRouter,
+				driveSearchModel,
+				router,
+				dateProvider,
+				this.logins,
+				this.driveFacade,
+				redraw,
+				this.transferProgressDispatcher,
+				driveOperations,
+			)
+	}
+
+	async contactEditor(contact: Contact): Promise<ContactEditor> {
+		const { ContactEditor } = await import("./contacts/ContactEditor.js")
+		return new ContactEditor(this.entityClient, contact)
 	}
 }
 

@@ -12,7 +12,7 @@ o.spec("VCardImporterTest", function () {
 		// @ts-ignore
 		window.whitelabelCustomizations = null
 
-		if (globalThis.isBrowser) {
+		if (globalThis.isBrowserTest) {
 			globalThis.TextDecoder = window.TextDecoder
 		} else {
 			// @ts-ignore

@@ -1,6 +1,6 @@
-import { styles } from "./styles"
+import { Styles } from "./styles"
 import { component_size, font_size, layout_size, px, size } from "./size"
-import { assertMainOrNode, isAdminClient, isAndroidApp, isApp, isDesktop } from "../platform-kit/app-env"
+import { EnvProvider } from "@tutao/app-env"
 import { lang } from "./utils/LanguageViewModel"
 import { noselect, position_absolute } from "./mixins"
 import { BaseThemeProvider, getElevatedBackground, getNavigationMenuBg, isLightTheme, theme } from "./theme"
@@ -9,9 +9,9 @@ import { goEuropeanBlue } from "./builtinThemes"
 import { DefaultAnimationTime } from "./animation/Animations"
 import { FontIcons } from "./base/icons/FontIcons"
 import type { IWindowFacade } from "./IWindowFacade.js"
-import { client } from "../platform-kit/app-env/boot/ClientDetector"
+import { ClientDetector } from "../platform-kit/app-env/boot/ClientDetector"
 
-assertMainOrNode()
+EnvProvider.assertMainOrNode()
 
 export function getFonts(): string {
 	// see https://bitsofco.de/the-new-system-font-stack/
@@ -45,15 +45,15 @@ export class MainStyles {
 	) {}
 	public init() {
 		this.windowFacade.addResizeListener((width: number, height: number) => {
-			styles.bodyWidth = width
-			styles.bodyHeight = height
+			Styles.get().bodyWidth = width
+			Styles.get().bodyHeight = height
 		})
 
-		styles.registerStyle("main", () => {
+		Styles.get().registerStyle("main", () => {
 			const lightTheme = this.baseThemeProvider.getBaseTheme("light")
 			return {
 				"#link-tt":
-					isDesktop() || isAdminClient()
+					EnvProvider.get().isDesktop() || EnvProvider.get().isAdminClient()
 						? {
 								"pointer-events": "none",
 								"font-size": px(font_size.small),
@@ -74,14 +74,14 @@ export class MainStyles {
 							}
 						: {},
 				"#link-tt.reveal":
-					isDesktop() || isAdminClient()
+					EnvProvider.get().isDesktop() || EnvProvider.get().isAdminClient()
 						? {
 								opacity: 1,
 								transition: "opacity .1s linear",
 								"z-index": 9999,
 							}
 						: {},
-				"*:not(input):not(textarea)": isAdminClient()
+				"*:not(input):not(textarea)": EnvProvider.get().isAdminClient()
 					? {}
 					: {
 							"user-select": "none",
@@ -153,10 +153,10 @@ export class MainStyles {
 				":root": {
 					// We need it because we can't get env() value from JS directly
 					// environment-variables return 0px on Android, that's why we are using var for Android
-					"--safe-area-inset-bottom": isAndroidApp() ? "var(--safe-area-inset-bottom)" : "env(safe-area-inset-bottom)",
-					"--safe-area-inset-top": isAndroidApp() ? "var(--safe-area-inset-top)" : "env(safe-area-inset-top)",
-					"--safe-area-inset-right": isAndroidApp() ? "var(--safe-area-inset-right)" : "env(safe-area-inset-right)",
-					"--safe-area-inset-left": isAndroidApp() ? "var(--safe-area-inset-left)" : "env(safe-area-inset-left)",
+					"--safe-area-inset-bottom": EnvProvider.get().isAndroidApp() ? "var(--safe-area-inset-bottom)" : "env(safe-area-inset-bottom)",
+					"--safe-area-inset-top": EnvProvider.get().isAndroidApp() ? "var(--safe-area-inset-top)" : "env(safe-area-inset-top)",
+					"--safe-area-inset-right": EnvProvider.get().isAndroidApp() ? "var(--safe-area-inset-right)" : "env(safe-area-inset-right)",
+					"--safe-area-inset-left": EnvProvider.get().isAndroidApp() ? "var(--safe-area-inset-left)" : "env(safe-area-inset-left)",
 				},
 				"html, body": {
 					height: "100%",
@@ -918,7 +918,7 @@ export class MainStyles {
 					"text-decoration": "underline",
 				},
 				".hover-ul:hover": {
-					"text-decoration": isApp() ? "none" : "underline",
+					"text-decoration": EnvProvider.get().isApp() ? "none" : "underline",
 				},
 				// positioning1
 				".fill-absolute": {
@@ -959,7 +959,7 @@ export class MainStyles {
 					"max-width": px(200),
 				},
 				".scroll": {
-					"overflow-y": client.overflowAuto,
+					"overflow-y": ClientDetector.get().overflowAuto,
 					"-webkit-overflow-scrolling": "touch",
 				},
 				".scroll-no-overlay": {
@@ -972,16 +972,16 @@ export class MainStyles {
 				},
 				"*": {
 					"scrollbar-color": `${theme.on_surface_variant} transparent`,
-					"scrollbar-width": !client.isMobileDevice() ? "thin" : "none",
+					"scrollbar-width": !ClientDetector.get().isMobileDevice() ? "thin" : "none",
 				},
-				"::-webkit-scrollbar": !client.isMobileDevice()
+				"::-webkit-scrollbar": !ClientDetector.get().isMobileDevice()
 					? {
 							background: "transparent",
 							width: scrollbarWidthHeight, // width of vertical scrollbar
 							height: scrollbarWidthHeight, // width of horizontal scrollbar
 						}
 					: {},
-				"::-webkit-scrollbar-thumb": !client.isMobileDevice()
+				"::-webkit-scrollbar-thumb": !ClientDetector.get().isMobileDevice()
 					? {
 							background: theme.on_surface_variant,
 							// reduce the background
@@ -1080,7 +1080,7 @@ export class MainStyles {
 				},
 				// Stretch editor a little bit more than parent so that the content is visible
 				".full-height": {
-					"min-height": client.isIos() ? "101%" : "100%",
+					"min-height": ClientDetector.get().isIos() ? "101%" : "100%",
 				},
 				".full-width": {
 					width: "100%",
@@ -1524,6 +1524,13 @@ export class MainStyles {
 					height: px(component_size.button_height),
 					"max-width": px(component_size.button_height),
 					"max-height": px(component_size.button_height),
+				},
+				".icon-button-small": {
+					"border-radius": "25%",
+					width: px(component_size.button_height_sm),
+					height: px(component_size.button_height_sm),
+					"max-width": px(component_size.button_height_sm),
+					"max-height": px(component_size.button_height_sm),
 				},
 				".center-h": {
 					margin: "0 auto",
@@ -2052,19 +2059,19 @@ export class MainStyles {
 					"flex-shrink": 0,
 					"-webkit-tap-highlight-color": "rgba(255, 255, 255, 0)",
 				},
-				".nav-button:hover": !isApp()
+				".nav-button:hover": !EnvProvider.get().isApp()
 					? {
 							// "text-decoration": "underline",
 							// opacity: 0.7,
 						}
 					: {},
-				".nav-button:focus": client.isDesktopDevice()
+				".nav-button:focus": ClientDetector.get().isDesktopDevice()
 					? {
 							// "text-decoration": "underline",
 							// opacity: 0.7,
 						}
 					: {},
-				"button:focus, button:hover": client.isDesktopDevice()
+				"button:focus, button:hover": ClientDetector.get().isDesktopDevice()
 					? {
 							opacity: 0.7,
 						}
@@ -2673,16 +2680,6 @@ export class MainStyles {
 					"border-bottom": "9px solid transparent",
 					"border-left": "6px solid green",
 				},
-				".time-field": {
-					width: "80px",
-				},
-				".time-picker input": {
-					color: "rgba(0, 0, 0, 0)",
-				},
-				".time-picker-fake-display": {
-					bottom: "1.6em",
-					left: "0.1em",
-				},
 				".calendar-agenda-time-column": {
 					width: px(80),
 				},
@@ -2718,7 +2715,7 @@ export class MainStyles {
 					padding: "35%",
 					margin: "-35% -35%",
 				},
-				".color-option:not(.selected):focus-within, .color-option:not(.selected):hover": client.isDesktopDevice()
+				".color-option:not(.selected):focus-within, .color-option:not(.selected):hover": ClientDetector.get().isDesktopDevice()
 					? {
 							opacity: 0.7,
 						}
@@ -2876,7 +2873,7 @@ export class MainStyles {
 						"background-color": "white",
 					},
 					"html, body": {
-						position: "initial",
+						position: "initial !important",
 						overflow: "visible !important",
 						color: lightTheme.on_surface,
 						"background-color": `${lightTheme.surface} !important`,
@@ -2906,15 +2903,15 @@ export class MainStyles {
 						display: "none",
 					},
 					".mail-viewer": {
-						overflow: "visible",
-						display: "block",
+						overflow: "visible !important",
+						display: "block !important",
 					},
 					'.mail-viewer, [data-testid="collapsed-mail-view"]': {
 						color: `${lightTheme.on_surface} !important`,
 						"background-color": `${lightTheme.surface}`,
 					},
 					"#mail-body": {
-						overflow: "visible",
+						overflow: "visible !important",
 					},
 					"#login-view": {
 						display: "none",
@@ -2923,7 +2920,7 @@ export class MainStyles {
 						display: "none",
 					},
 					".dialog-container": {
-						overflow: "visible",
+						overflow: "visible !important",
 						position: "static !important",
 					},
 					"#wizard-paging": {
@@ -2940,6 +2937,12 @@ export class MainStyles {
 					},
 					".folder-column": {
 						display: "none",
+					},
+					".search-highlight": {
+						// this removes word highlight when printing from search view
+						"font-weight": "inherit !important",
+						"background-color": "transparent !important",
+						color: `${lightTheme.on_surface} !important`,
 					},
 					pre: {
 						"word-break": "normal",
@@ -3056,6 +3059,11 @@ export class MainStyles {
 				".tutaui-text-field::placeholder": {
 					color: theme.on_surface_variant,
 				},
+				".tutaui-text-field[aria-invalid='true']": {
+					color: theme.on_error_container,
+					"background-color": theme.error_container,
+					"border-color": theme.on_error_container,
+				},
 				".text-editor-placeholder": {
 					position: "absolute",
 					top: px(size.spacing_12),
@@ -3150,11 +3158,6 @@ export class MainStyles {
 					display: "grid",
 					"grid-template-columns": "6fr 3fr",
 					"column-gap": px(size.spacing_8),
-				},
-				".time-selection-grid > *": {
-					overflow: "hidden",
-					"white-space": "nowrap",
-					"text-overflow": "clip",
 				},
 				".invisible": {
 					all: "none",

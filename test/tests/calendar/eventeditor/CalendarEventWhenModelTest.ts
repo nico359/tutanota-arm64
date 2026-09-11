@@ -9,15 +9,14 @@ import {
 } from "../../../../src/applications/calendar-app/calendar/gui/eventeditor-model/CalendarEventWhenModel.js"
 import { Time } from "../../../../src/applications/common/calendar/date/Time.js"
 
-import { CalendarEvent, CalendarEventTypeRef, CalendarRepeatRule, CalendarRepeatRuleParams } from "@tutao/entities/tutanota"
+import { CalendarEvent, CalendarEventTypeRef, CalendarRepeatRule } from "@tutao/entities/tutanota"
 
 import { createDateWrapper, createRepeatRule, DateWrapperTypeRef, RepeatRuleTypeRef } from "@tutao/entities/sys"
 import { getTimeZone } from "../../../../src/applications/common/calendar/date/CalendarUtils"
 
-const TEST_NAME = "CalendarEventWhenModel"
-o.spec(TEST_NAME, function () {
+o.spec("CalendarEventWhenModel", function () {
 	if (getTimeZone() !== "Europe/Berlin") {
-		console.info(`Skipping time zone dependent test "${TEST_NAME}" for zone ${getTimeZone()}`)
+		console.info(`Skipping time zone dependent test "CalendarEventWhenModel" for zone ${getTimeZone()}`)
 		return
 	}
 	type PartialCalendarEvent = {
@@ -54,6 +53,20 @@ o.spec(TEST_NAME, function () {
 			const result = model.result
 			o(result.startTime.toISOString()).equals("2023-04-27T08:30:00.000Z")
 			o(result.endTime.toISOString()).equals("2023-04-27T09:00:00.000Z")
+		})
+		o("setting start time to 01:00 then to 13:00 maintains correct end time, maintaining event duration", function () {
+			const model = getModelBerlin({
+				startTime: new Date("2023-04-27T08:27:00.000Z"),
+				endTime: new Date("2023-04-27T08:57:00.000Z"),
+			})
+
+			model.startTime = new Time(1, 0)
+			o(model.startTime.to24HourString()).equals("01:00")
+			o(model.endTime.to24HourString()).equals("01:30")
+
+			model.startTime = new Time(13, 0)
+			o(model.startTime.to24HourString()).equals("13:00")
+			o(model.endTime.to24HourString()).equals("13:30")
 		})
 		o("if the start date is changed while not all-day, the end time changes by the same amount", function () {
 			const model = getModelBerlin({
@@ -293,6 +306,27 @@ o.spec(TEST_NAME, function () {
 		// 	o(result.endTime.toISOString()).equals(eventWithDefaults.endTime?.toISOString())("default end time was correctly applied")
 		// 	o(isAllDayEvent(result)).equals(false)("the result is not considered all-day")
 		// })
+		o("changing from a 2 day duration to a 1 day duration for an all-day event is allowed", function () {
+			const model = new CalendarEventWhenModel(
+				createTestEntity(CalendarEventTypeRef, { startTime: new Date("2023-04-27T00:00:00.000Z"), endTime: new Date("2023-04-28T00:00:00.000Z") }),
+				"UTC",
+				noOp,
+			)
+			model.isAllDay = true
+			model.endDate = new Date("2023-04-27T00:00:00.000Z")
+
+			o(model.startDate.getFullYear()).equals(2023)
+			o(model.startDate.getMonth() + 1).equals(4)
+			o(model.startDate.getDate()).equals(27)
+			o(model.startDate.getHours()).equals(0)
+			o(model.startDate.getMinutes()).equals(0)
+
+			o(model.endDate.getFullYear()).equals(2023)
+			o(model.endDate.getMonth() + 1).equals(4)
+			o(model.endDate.getDate()).equals(27)
+			o(model.endDate.getHours()).equals(0)
+			o(model.endDate.getMinutes()).equals(0)
+		})
 	})
 
 	o.spec("timezones", function () {
@@ -346,7 +380,95 @@ o.spec(TEST_NAME, function () {
 			const newResult = krasnoyarskModel.result
 			o(newResult.repeatRule?.timeZone).equals(krasnoyarskModel.calendarTimeZone)
 		})
+
+		o("Set start = 10pm Pacific/Efate and end = 4pm America/New_York, get correct dates and times from model and result", function () {
+			const model = new CalendarEventWhenModel(
+				createTestEntity(CalendarEventTypeRef, {
+					startTime: new Date("2026-07-31T12:00:00.000Z"),
+					endTime: new Date("2026-07-31T12:30:00.000Z"),
+				}),
+				"UTC",
+				noOp,
+			)
+
+			model.setStartTimeZone("Pacific/Efate") // UTC+11
+			model.startTime = new Time(22, 0)
+			model.setEndTimeZone("America/New_York") // UTC-4
+			model.endTime = new Time(16, 0)
+
+			//
+			// Model should preserve the time and date values, as they were set
+			//
+			o(model.startDate.getDate()).equals(31)
+			o(model.endDate.getDate()).equals(31)
+
+			o(model.startTime.hour).equals(22)
+			o(model.startTime.minute).equals(0)
+
+			o(model.endTime.hour).equals(16)
+			o(model.endTime.minute).equals(0)
+
+			//
+			// The result should convert the start and end to a JS date with the correct time stamp.
+			// We are using a UTC+0 calendar time zone, so we can check the results of getUTCDate, getUTCHours, etc.
+			//
+			o(model.result.startTime.getUTCDate()).equals(31)
+			o(model.result.startTime.getUTCHours()).equals(11) // 22:00 (UTC+11) - 11 = 11:00 (UTC+2)
+			o(model.result.startTime.getUTCMinutes()).equals(0)
+
+			o(model.result.endTime.getUTCDate()).equals(31)
+			o(model.result.endTime.getUTCHours()).equals(20) // 16:00 (UTC-4) + 4 = 20:00 (UTC+2)
+			o(model.result.endTime.getUTCMinutes()).equals(0)
+		})
 	})
+
+	o(
+		"Set start = 4pm America/New_York and end 10pm Pacific/Efate, get correct dates and times from model and result, ensure hasValidStartBeforeEnd is false",
+		function () {
+			const model = new CalendarEventWhenModel(
+				createTestEntity(CalendarEventTypeRef, {
+					startTime: new Date("2026-07-31T12:00:00.000Z"),
+					endTime: new Date("2026-07-31T12:30:00.000Z"),
+				}),
+				"UTC",
+				noOp,
+			)
+
+			model.setStartTimeZone("America/New_York") // UTC-4
+			model.startTime = new Time(16, 0)
+			model.setEndTimeZone("Pacific/Efate") // UTC+11
+			model.endTime = new Time(22, 0)
+
+			//
+			// Model should preserve the time and date values, as they were set
+			//
+			o(model.startDate.getDate()).equals(31)
+			o(model.endDate.getDate()).equals(31)
+
+			o(model.startTime.hour).equals(16)
+			o(model.startTime.minute).equals(0)
+
+			o(model.endTime.hour).equals(22)
+			o(model.endTime.minute).equals(0)
+
+			//
+			// Ensure that model is flags as having an invalid start after end
+			//
+			o(model.hasValidStartBeforeEnd()).equals(false)
+
+			//
+			// The result should convert the start and end to a JS date with the correct time stamp.
+			// We are using a UTC+0 calendar time zone, so we can check the results of getUTCDate, getUTCHours, etc.
+			//
+			o(model.result.startTime.getUTCDate()).equals(31)
+			o(model.result.startTime.getUTCHours()).equals(20) // 16:00 (UTC-4) + 4 = 20:00 (UTC+2)
+			o(model.result.startTime.getUTCMinutes()).equals(0)
+
+			o(model.result.endTime.getUTCDate()).equals(31)
+			o(model.result.endTime.getUTCHours()).equals(11) // 22:00 (UTC+11) - 11 = 11:00 (UTC+2)
+			o(model.result.endTime.getUTCMinutes()).equals(0)
+		},
+	)
 
 	o.spec("repeat rules", function () {
 		o("the repeat interval is reflected on the result and for display, no repeat", function () {
@@ -393,8 +515,6 @@ o.spec(TEST_NAME, function () {
 					excludedDates: [],
 				}),
 			})
-			const result = model.result
-
 			model.repeatEndType = EndType.Count
 			model.repeatEndOccurrences = 13
 			o(model.repeatEndOccurrences).equals(13)
@@ -735,7 +855,7 @@ o.spec(TEST_NAME, function () {
 			model.excludeDate(exclusions[1])
 			model.excludeDate(exclusions[0])
 
-			o(model.result.repeatRule?.excludedDates).deepEquals(exclusions.map((date) => createDateWrapper({ date })))
+			o(model.getRepeatRuleOrNull()?.excludedDates).deepEquals(exclusions.map((date) => createDateWrapper({ date })))
 			o(model.excludedDates).deepEquals(exclusions)
 		})
 		o("adding two exclusions in order sorts them", async function () {

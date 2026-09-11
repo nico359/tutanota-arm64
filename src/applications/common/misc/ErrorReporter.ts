@@ -7,9 +7,9 @@ import m from "mithril"
 import { Checkbox } from "../../../ui/base/Checkbox.js"
 import { Button, ButtonType } from "../../../ui/base/Button.js"
 import { ExpanderButton, ExpanderPanel } from "../../../ui/base/Expander"
-import { convertTextToHtml, downcast, ErrorInfo, errorToString, neverNull, newPromise, typedKeys, uint8ArrayToString } from "@tutao/utils"
+import { convertTextToHtml, assertNotNull, downcast, neverNull, newPromise, typedKeys, uint8ArrayToString } from "@tutao/utils"
 import { locator } from "../api/main/CommonLocator"
-import { isApp, isBrowser, isDesktop, Keys, Mode, PresentableKeyVerificationState } from "@tutao/app-env"
+import { EnvProvider, Mode, PresentableKeyVerificationState } from "@tutao/app-env"
 import { copyToClipboard } from "../../../ui/utils/ClipboardUtils"
 import { px } from "../../../ui/size"
 import { createLogFile } from "../api/common/Logger.js"
@@ -17,10 +17,12 @@ import { BubbleButton } from "../../../ui/base/buttons/BubbleButton.js"
 import { getTimeZone } from "../calendar/date/CalendarUtils.js"
 import { ConversationType, MailMethod, RecipientType } from "../../../entities/tutanota/Utils"
 import { AccountType } from "../../../entities/sys/Utils"
-import { createErrorReportData, createErrorReportFile, createReportErrorIn, ReportErrorService } from "@tutao/entities/monitor"
-import { client } from "../../../platform-kit/app-env/boot/ClientDetector"
+import { createErrorReportData, createErrorReportFile, createReportErrorIn, ReportErrorService_POST } from "@tutao/entities/monitor"
+import { ClientDetector } from "../../../platform-kit/app-env/boot/ClientDetector"
 import { ErrorReportClientType } from "../../../platform-kit/app-env/boot/ClientConstants"
 import { DataFile } from "../../../entities/tutanota/MailBundle"
+import { ErrorInfo, errorToString } from "../../../platform-kit/utils/ErrorInfo"
+import { Keys } from "../../../ui/utils/KeyboardKeys"
 
 type FeedbackContent = {
 	message: string
@@ -333,7 +335,7 @@ export async function sendFeedbackMail(content: FeedbackContent): Promise<void> 
 
 async function sendToServer(error: ErrorInfo, userMessage: string | null, logs: DataFile[]) {
 	function getReportingClientType(): ErrorReportClientType {
-		if (isBrowser()) {
+		if (EnvProvider.get().isBrowser()) {
 			return ErrorReportClientType.Browser
 		} else {
 			switch (env.platformId) {
@@ -364,7 +366,7 @@ async function sendToServer(error: ErrorInfo, userMessage: string | null, logs: 
 			errorMessage: error.message,
 			userMessage: userMessage,
 			stackTrace: error.stack ?? "",
-			additionalInfo: client.userAgent,
+			additionalInfo: ClientDetector.get().getUserAgent(),
 			time: new Date(),
 		}),
 		files: logs.map((log) => {
@@ -375,7 +377,7 @@ async function sendToServer(error: ErrorInfo, userMessage: string | null, logs: 
 			})
 		}),
 	})
-	await locator.serviceExecutor.post(ReportErrorService, errorData, null)
+	await locator.serviceExecutor.execute(ReportErrorService_POST, errorData, null)
 }
 
 function prepareFeedbackContent(error: ErrorInfo, loggedIn: boolean): FeedbackContent {
@@ -443,9 +445,9 @@ export async function getLogAttachments(timestamp?: Date): Promise<Array<DataFil
 		logs.push(workerLogFile)
 	}
 
-	if (isDesktop() || isApp()) {
+	if (EnvProvider.get().isDesktop() || EnvProvider.get().isApp()) {
 		const nativeLog = await locator.commonSystemFacade.getLog()
-		const nativeLogFile = createLogFile(nativeLog, isDesktop() ? "desktop" : "device", timestamp?.getTime())
+		const nativeLogFile = createLogFile(nativeLog, EnvProvider.get().isDesktop() ? "desktop" : "device", timestamp?.getTime())
 		logs.push(nativeLogFile)
 	}
 

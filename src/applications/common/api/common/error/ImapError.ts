@@ -15,17 +15,20 @@ export enum ImapErrorCause {
 	CERT_ERROR,
 	HOST_NOT_REACHABLE,
 	GMAIL_ALL_MAILS_IMAP_DISABLED,
+	GREETING_TIMEOUT,
 }
 
-export class ImapError extends TutanotaError {
-	// uses data and stack as variable name because otherwise objToError fails to properly create error instance with promise reject
-	data: ImapErrorCause
-	stack: string
+export type ImapErrorData = {
+	cause: ImapErrorCause
+	code: string
+}
+
+export class ImapError extends TutanotaError<ImapErrorData> {
+	data: ImapErrorData
 
 	constructor(message: string, cause: ImapErrorCause = ImapErrorCause.UNKNOWN, code: string = "") {
 		super("ImapError", message)
-		this.data = cause
-		this.stack = code
+		this.data = { cause, code }
 	}
 }
 
@@ -65,10 +68,13 @@ export function fromImapFlowError(imapFlowError: any) {
 		case "EHOSTUNREACH":
 			cause = ImapErrorCause.HOST_NOT_REACHABLE
 			break
+		case "GREETING_TIMEOUT":
+			cause = ImapErrorCause.GREETING_TIMEOUT
+			break
 		default:
 			if (imapFlowError.authenticationFailed) {
 				cause = ImapErrorCause.AUTH_FAILED
-				new ImapError(imapFlowError.message, cause, "AUTHENTICATIONFAILED")
+				return new ImapError(imapFlowError.message, cause, "AUTHENTICATIONFAILED")
 			} else {
 				cause = ImapErrorCause.UNKNOWN
 				console.warn("Unknown IMAP error code: " + code)

@@ -1,7 +1,9 @@
 import {
+	assert,
 	assertNotNull,
 	downcast,
 	first,
+	isNotNull,
 	KeyVersion,
 	lazy,
 	neverNull,
@@ -12,8 +14,20 @@ import {
 	uint8ArrayToBase64,
 	Versioned,
 } from "@tutao/utils"
-import { assertWorkerOrNode, CryptoProtocolVersion, EncryptionAuthStatus, PresentableKeyVerificationState } from "@tutao/app-env"
-import { assertEnumValue, AttributeModel, ClientTypeModel, getElementId, getListId, idToElementId, isSameId, isSameTypeRef, stringifyId } from "../../meta"
+import { CryptoProtocolVersion, EncryptionAuthStatus, EnvProvider, PresentableKeyVerificationState } from "@tutao/app-env"
+import {
+	assertEnumValue,
+	AttributeModel,
+	ClientTypeModel,
+	getElementId,
+	getListId,
+	hasError,
+	idToElementId,
+	isSameId,
+	isSameSingleId,
+	isSameTypeRef,
+	stringifyId,
+} from "../../meta"
 import { DEFAULT_REST_CLIENT_OPTIONS, RestClientInterface } from "@tutao/rest-client"
 import { CryptoError, SessionKeyNotFoundError } from "@tutao/crypto/error"
 import {
@@ -61,9 +75,9 @@ import {
 	Permission,
 	PermissionTypeRef,
 	UpdateKdfNoncePostOut,
-	UpdateKdfNonceService,
-	UpdatePermissionKeyService,
-	UpdateSessionKeysService,
+	UpdateKdfNonceService_POST,
+	UpdatePermissionKeyService_POST,
+	UpdateSessionKeysService_POST,
 } from "@tutao/entities/sys"
 import { AccountType, GroupType, PermissionType, SYSTEM_GROUP_MAIL_ADDRESS } from "../../../entities/sys/Utils"
 import { TypeModelResolver } from "../../instance-pipeline/EntityFunctions"
@@ -85,8 +99,10 @@ import { CacheManager } from "./persistence/CacheManager"
 import { InstanceSessionKeysCache } from "./persistence/InstanceSessionKeysCache"
 import { EntityUtils } from "../../instance-pipeline/EntityUtils"
 import { OutgoingServerJson } from "../../instance-pipeline/TypeMapper"
+import { isNull } from "../../utils/Utils"
+import { TypeChecks } from "../../app-env/TsTypeChecks"
 
-assertWorkerOrNode()
+EnvProvider.assertWorkerOrNode()
 
 type ResolvedSessionKeys = {
 	resolvedSessionKeyForInstance: AesKey
@@ -130,7 +146,7 @@ export class CryptoFacade implements SessionKeyResolver, CryptoNetworkHelper {
 
 	async resolveSessionKeyWithOwnerKey(ownerKey: AesKey | null, migratedEntity: PersistentEntity): Promise<Nullable<AesKey>> {
 		try {
-			if (ownerKey && migratedEntity._ownerEncSessionKey) {
+			if (isNotNull(ownerKey) && isNotNull(migratedEntity._ownerEncSessionKey)) {
 				return this.decryptSessionKeyWithOwnerKey(migratedEntity._ownerEncSessionKey, ownerKey)
 			} else {
 				return await this.resolveSessionKey(migratedEntity)
@@ -152,17 +168,22 @@ export class CryptoFacade implements SessionKeyResolver, CryptoNetworkHelper {
 		}
 
 		try {
-			if (instance.bucketKey) {
+			if (isNotNull(instance.bucketKey)) {
 				// if we have a bucket key, then we need to cache the session keys stored in the bucket key for details, files, etc.
 				// we need to do this BEFORE we check the owner enc session key
 				const resolvedSessionKeys = await this.resolveWithBucketKey(instance)
 				return resolvedSessionKeys.resolvedSessionKeyForInstance
-			} else if (instance._ownerEncSessionKey && this.userFacade.isFullyLoggedIn() && this.userFacade.hasGroup(assertNotNull(instance._ownerGroup))) {
+			} else if (
+				isNotNull(instance._ownerEncSessionKey) &&
+				this.userFacade.isFullyLoggedIn() &&
+				this.userFacade.hasGroup(assertNotNull(instance._ownerGroup))
+			) {
 				this.instanceSessionKeysCache.delete(instance)
 
 				const gk = await this.symGroupKeyLoader.loadSymGroupKey(
 					assertNotNull(instance._ownerGroup),
 					cryptoUtils.parseKeyVersion(instance._ownerKeyVersion ?? "0"),
+					null,
 				)
 				return this.decryptSessionKeyWithOwnerKey(instance._ownerEncSessionKey, gk)
 			} else {
@@ -193,7 +214,7 @@ export class CryptoFacade implements SessionKeyResolver, CryptoNetworkHelper {
 	 */
 	public async resolveWithBucketKey(instance: PersistentEntity): Promise<ResolvedSessionKeys> {
 		const instanceSessionKeysFromCache = this.instanceSessionKeysCache.get(instance)
-		if (instanceSessionKeysFromCache) {
+		if (isNotNull(instanceSessionKeysFromCache)) {
 			const instanceId = instance._id
 			const encryptedSessionKeyForInstance = first(
 				instanceSessionKeysFromCache.filter((instanceSessionKey) =>
@@ -209,7 +230,7 @@ export class CryptoFacade implements SessionKeyResolver, CryptoNetworkHelper {
 			} as VersionedEncryptedKey
 			this.setOwnerEncSessionKey(instance, ownerEncSessionKey)
 
-			const gk = await this.symGroupKeyLoader.loadSymGroupKey(assertNotNull(instance._ownerGroup), symKeyVersion)
+			const gk = await this.symGroupKeyLoader.loadSymGroupKey(assertNotNull(instance._ownerGroup), symKeyVersion, null)
 			const resolvedSessionKeyForInstance = this.decryptSessionKeyWithOwnerKey(symEncSessionKey, gk)
 			return {
 				resolvedSessionKeyForInstance,
@@ -223,7 +244,7 @@ export class CryptoFacade implements SessionKeyResolver, CryptoNetworkHelper {
 		let decryptedBucketKey: AesKey
 		let unencryptedSenderAuthStatus: EncryptionAuthStatus | null = null
 		let pqMessageSenderKey: X25519PublicKey | null = null
-		if (bucketKey.keyGroup && bucketKey.pubEncBucketKey) {
+		if (isNotNull(bucketKey.keyGroup) && isNotNull(bucketKey.pubEncBucketKey)) {
 			// bucket key is encrypted with public key for internal recipient
 			const { decryptedAesKey, senderIdentityPubKey } = await this.asymmetricCryptoFacade.loadKeyPairAndDecryptSymKey(
 				bucketKey.keyGroup,
@@ -234,11 +255,10 @@ export class CryptoFacade implements SessionKeyResolver, CryptoNetworkHelper {
 			)
 			decryptedBucketKey = decryptedAesKey
 			pqMessageSenderKey = senderIdentityPubKey
-		} else if (bucketKey.groupEncBucketKey) {
+		} else if (isNotNull(bucketKey.groupEncBucketKey)) {
 			// received as secure external recipient or reply from secure external sender
-			let keyGroup
-			const groupKeyVersion = cryptoUtils.parseKeyVersion(bucketKey.recipientKeyVersion)
-			if (bucketKey.keyGroup) {
+			let keyGroup: Id
+			if (isNotNull(bucketKey.keyGroup)) {
 				// 1. Uses when receiving confidential replies from external users.
 				// 2. legacy code path for old external clients that used to encrypt bucket keys with user group keys.
 				keyGroup = bucketKey.keyGroup
@@ -247,10 +267,11 @@ export class CryptoFacade implements SessionKeyResolver, CryptoNetworkHelper {
 				keyGroup = assertNotNull(instance._ownerGroup)
 			}
 
+			const groupKeyVersion = cryptoUtils.parseKeyVersion(bucketKey.recipientKeyVersion)
 			decryptedBucketKey = await this.resolveWithGroupReference(keyGroup, groupKeyVersion, bucketKey.groupEncBucketKey)
 			unencryptedSenderAuthStatus = EncryptionAuthStatus.AES_NO_AUTHENTICATION
 		} else {
-			throw new SessionKeyNotFoundError(`encrypted bucket key not set on instance ${instance._type} with id: ${downcast(instance)._id}`)
+			throw new SessionKeyNotFoundError(`encrypted bucket key not set on instance ${instance._type} with id: ${stringifyId(downcast(instance)._id)}`)
 		}
 
 		const resolvedSessionKeys = await this.collectAllInstanceSessionKeysAndAuthenticate(
@@ -288,7 +309,7 @@ export class CryptoFacade implements SessionKeyResolver, CryptoNetworkHelper {
 	private async resolveWithGroupReference(keyGroup: Id, groupKeyVersion: KeyVersion, groupEncBucketKey: Uint8Array<ArrayBuffer>): Promise<AesKey> {
 		if (this.userFacade.hasGroup(keyGroup)) {
 			// the logged-in user (most likely external) is a member of that group. Then we have the group key from the memberships
-			const groupKey = await this.symGroupKeyLoader.loadSymGroupKey(keyGroup, groupKeyVersion)
+			const groupKey = await this.symGroupKeyLoader.loadSymGroupKey(keyGroup, groupKeyVersion, null)
 			return decryptKey(groupKey, groupEncBucketKey)
 		} else {
 			// internal user receiving a mail from secure external:
@@ -298,19 +319,19 @@ export class CryptoFacade implements SessionKeyResolver, CryptoNetworkHelper {
 			const externalMailGroup = await this.entityClient.load(GroupTypeRef, idToElementId(externalMailGroupId))
 
 			const externalUserGroupId = externalMailGroup.admin
-			if (!externalUserGroupId) {
+			if (isNull(externalUserGroupId)) {
 				throw new SessionKeyNotFoundError("no admin group on key group: " + externalMailGroupId)
 			}
 			const externalUserGroupKeyVersion = cryptoUtils.parseKeyVersion(externalMailGroup.adminGroupKeyVersion ?? "0")
 			const externalUserGroup = await this.entityClient.load(GroupTypeRef, idToElementId(externalUserGroupId))
 
 			const internalUserGroupId = externalUserGroup.admin
-			const internalUserGroupKeyVersion = cryptoUtils.parseKeyVersion(externalUserGroup.adminGroupKeyVersion ?? "0")
-			if (!(internalUserGroupId && this.userFacade.hasGroup(internalUserGroupId))) {
+			if (isNull(internalUserGroupId) || !this.userFacade.hasGroup(internalUserGroupId)) {
 				throw new SessionKeyNotFoundError("no admin group or no membership of admin group: " + internalUserGroupId)
 			}
 
-			const internalUserGroupKey = await this.symGroupKeyLoader.loadSymGroupKey(internalUserGroupId, internalUserGroupKeyVersion)
+			const internalUserGroupKeyVersion = cryptoUtils.parseKeyVersion(externalUserGroup.adminGroupKeyVersion ?? "0")
+			const internalUserGroupKey = await this.symGroupKeyLoader.loadSymGroupKey(internalUserGroupId, internalUserGroupKeyVersion, null)
 
 			const currentExternalUserGroupKey = decryptKey(internalUserGroupKey, assertNotNull(externalUserGroup.adminGroupEncGKey))
 			const externalUserGroupKey = await this.symGroupKeyLoader.loadSymGroupKey(externalUserGroupId, externalUserGroupKeyVersion, {
@@ -333,14 +354,15 @@ export class CryptoFacade implements SessionKeyResolver, CryptoNetworkHelper {
 			listPermissions.find(
 				(p) =>
 					(p.type === PermissionType.Public_Symmetric || p.type === PermissionType.Symmetric) &&
-					p._ownerGroup &&
+					isNotNull(p._ownerGroup) &&
 					this.userFacade.hasGroup(p._ownerGroup),
 			) ?? null
 
-		if (symmetricPermission) {
+		if (isNotNull(symmetricPermission)) {
 			const gk = await this.symGroupKeyLoader.loadSymGroupKey(
 				assertNotNull(symmetricPermission._ownerGroup),
 				cryptoUtils.parseKeyVersion(symmetricPermission._ownerKeyVersion ?? "0"),
+				null,
 			)
 			return decryptKey(gk, assertNotNull(symmetricPermission._ownerEncSessionKey))
 		} else {
@@ -392,7 +414,7 @@ export class CryptoFacade implements SessionKeyResolver, CryptoNetworkHelper {
 			return instanceSessionKeyWithOwnerEncSessionKey
 		})
 
-		if (resolvedSessionKeyForInstance) {
+		if (isNotNull(resolvedSessionKeyForInstance)) {
 			return { resolvedSessionKeyForInstance, instanceSessionKeys }
 		} else {
 			throw new SessionKeyNotFoundError("no session key for instance " + downcast<PersistentEntity>(instance)._id)
@@ -408,14 +430,14 @@ export class CryptoFacade implements SessionKeyResolver, CryptoNetworkHelper {
 		instanceSessionKeyWithOwnerEncSessionKey: InstanceSessionKey,
 		decryptedSessionKey: AesKey,
 		keyGroup: Id | null,
-	) {
+	): Promise<void> {
 		// we only authenticate mail instances
 		const isMailInstance = isSameTypeRef(MailTypeRef, instance._type)
 		if (isMailInstance) {
 			const mail = await this.getDecryptedMailFromAdapter(instance, resolvedSessionKeyForInstance)
 
-			if (!encryptionAuthStatus) {
-				if (!pqMessageSenderKey) {
+			if (isNull(encryptionAuthStatus)) {
+				if (isNull(pqMessageSenderKey)) {
 					// This message was encrypted with RSA. We check if TutaCrypt could have been used instead.
 					const recipientGroup = assertNotNull(
 						keyGroup,
@@ -448,7 +470,7 @@ export class CryptoFacade implements SessionKeyResolver, CryptoNetworkHelper {
 	}
 
 	private async getDecryptedMailFromAdapter(instance: Entity, resolvedSessionKeyForInstance: AesKey): Promise<Mail> {
-		if (instance.isAdapter) {
+		if (isNotNull(instance.isAdapter) && instance.isAdapter) {
 			const entityAdapter = downcast<EntityAdapter>(instance)
 			const parsedInstance = await this.instancePipeline.cryptoMapper.decryptParsedInstance(
 				entityAdapter.getWrappedEncryptedInstance(),
@@ -538,9 +560,10 @@ export class CryptoFacade implements SessionKeyResolver, CryptoNetworkHelper {
 			const ownerGroupKey = await this.symGroupKeyLoader.loadSymGroupKey(
 				neverNull(bucketPermission._ownerGroup),
 				cryptoUtils.parseKeyVersion(bucketPermission.ownerKeyVersion ?? "0"),
+				null,
 			)
 			bucketKey = decryptKey(ownerGroupKey, bucketPermission.ownerEncBucketKey)
-		} else if (bucketPermission.symEncBucketKey) {
+		} else if (isNotNull(bucketPermission.symEncBucketKey)) {
 			// legacy case: for very old email sent to external user we used symEncBucketKey on the bucket permission.
 			// The bucket key is encrypted with the user group key of the external user.
 			// We maintain this code as we still have some old BucketKeys in some external mailboxes.
@@ -584,9 +607,9 @@ export class CryptoFacade implements SessionKeyResolver, CryptoNetworkHelper {
 
 		const sk = decryptKey(decryptedAesKey, bucketEncSessionKey)
 
-		if (bucketPermission._ownerGroup) {
+		if (isNotNull(bucketPermission._ownerGroup)) {
 			// is not defined for some old AccountingInfos
-			let bucketPermissionOwnerGroupKey = await this.symGroupKeyLoader.getCurrentSymGroupKey(neverNull(bucketPermission._ownerGroup)) // get current key for encrypting
+			let bucketPermissionOwnerGroupKey = await this.symGroupKeyLoader.getCurrentSymGroupKey(bucketPermission._ownerGroup) // get current key for encrypting
 			await this.updateWithSymPermissionKey(instance, pubOrExtPermission, bucketPermission, bucketPermissionOwnerGroupKey, sk).catch(
 				ofClass(NotFoundError, () => {
 					console.log("w> could not find instance to update permission")
@@ -597,12 +620,12 @@ export class CryptoFacade implements SessionKeyResolver, CryptoNetworkHelper {
 	}
 
 	async resolveServiceSessionKey(instance: EntityAdapter): Promise<AesKey | null> {
-		if (instance._ownerPublicEncSessionKey) {
+		if (isNotNull(instance._ownerPublicEncSessionKey)) {
 			// we assume the server uses the current key pair of the recipient
 			const keypair = await this.symGroupKeyLoader.loadCurrentKeyPair(assertNotNull(instance._ownerGroup), null)
 			// we do not authenticate as we could remove data transfer type encryption altogether and only rely on tls
 			return (
-				await this.asymmetricCryptoFacade.decryptSymKeyWithKeyPair(
+				await this.asymmetricCryptoFacade.decryptSymKeyWithAnyKeyPair(
 					keypair.object,
 					assertEnumValue(CryptoProtocolVersion, assertNotNull(instance._publicCryptoProtocolVersion)),
 					assertNotNull(instance._ownerPublicEncSessionKey),
@@ -668,7 +691,7 @@ export class CryptoFacade implements SessionKeyResolver, CryptoNetworkHelper {
 		recipientMailAddress: string,
 		recipientPublicKeys: Versioned<PublicKey>,
 		senderGroupId: Id,
-	) {
+	): Promise<InternalRecipientKeyData> {
 		const pubEncBucketKey = await this.asymmetricCryptoFacade.asymEncryptSymKey(bucketKey, recipientPublicKeys, senderGroupId)
 		return createInternalRecipientKeyData({
 			mailAddress: recipientMailAddress,
@@ -679,7 +702,7 @@ export class CryptoFacade implements SessionKeyResolver, CryptoNetworkHelper {
 		})
 	}
 
-	private async createSymEncInternalRecipientKeyData(recipientMailAddress: string, bucketKey: AesKey) {
+	private async createSymEncInternalRecipientKeyData(recipientMailAddress: string, bucketKey: AesKey): Promise<SymEncInternalRecipientKeyData> {
 		const keyGroup = this.userFacade.getGroupId(GroupType.Mail)
 		const externalMailGroupKey = await this.symGroupKeyLoader.getCurrentSymGroupKey(keyGroup)
 		return createSymEncInternalRecipientKeyData({
@@ -705,13 +728,13 @@ export class CryptoFacade implements SessionKeyResolver, CryptoNetworkHelper {
 		permissionOwnerGroupKey: VersionedKey,
 		sessionKey: AesKey,
 	): Promise<void> {
-		if (instance.isAdapter !== true || !this.userFacade.isLeader()) {
+		if (!instance.isAdapter || !this.userFacade.isLeader()) {
 			// do not update the session key in case of an unencrypted client side instance
 			// or in case we are not the leader client
 			return
 		}
 
-		if (!instance._ownerEncSessionKey && permission._ownerGroup === instance._ownerGroup) {
+		if (isNull(instance._ownerEncSessionKey) && isSameSingleId(permission._ownerGroup, instance._ownerGroup)) {
 			return this.updateOwnerEncSessionKey(downcast<EntityAdapter>(instance), permissionOwnerGroupKey, sessionKey)
 		} else {
 			// instances shared via permissions (e.g. body)
@@ -722,7 +745,7 @@ export class CryptoFacade implements SessionKeyResolver, CryptoNetworkHelper {
 			})
 			updateService.ownerKeyVersion = String(encryptedKey.encryptingKeyVersion)
 			updateService.ownerEncSessionKey = encryptedKey.key
-			await this.serviceExecutor.post(UpdatePermissionKeyService, updateService, null)
+			await this.serviceExecutor.execute(UpdatePermissionKeyService_POST, updateService, null)
 		}
 	}
 
@@ -733,11 +756,12 @@ export class CryptoFacade implements SessionKeyResolver, CryptoNetworkHelper {
 	 * @param childInstances the files that belong to the mainInstance
 	 */
 	async enforceSessionKeyUpdateIfNeeded(instance: PersistentEntity, childInstances: readonly File[]): Promise<File[]> {
-		if (!childInstances.some((f) => f._ownerEncSessionKey == null || f._errors !== undefined)) {
+		const haveOutOfSyncInstance = childInstances.some((f) => isNull(f._ownerEncSessionKey) || (TypeChecks.hasProperty("_errors", f) && hasError(f)))
+		if (!haveOutOfSyncInstance) {
 			return childInstances.slice()
 		}
-		const outOfSyncInstances = childInstances.filter((f) => f._ownerEncSessionKey == null || f._errors !== undefined)
-		if (instance.bucketKey) {
+		const outOfSyncInstances = childInstances.filter((f) => isNull(f._ownerEncSessionKey) || (TypeChecks.hasProperty("_errors", f) && hasError(f)))
+		if (isNotNull(instance.bucketKey)) {
 			// invoke updateSessionKeys service in case a bucket key is still available
 			const resolvedSessionKeys = await this.resolveWithBucketKey(instance)
 			await this.postUpdateSessionKeysService(resolvedSessionKeys.instanceSessionKeys)
@@ -755,10 +779,10 @@ export class CryptoFacade implements SessionKeyResolver, CryptoNetworkHelper {
 		)
 	}
 
-	async postUpdateSessionKeysService(instanceSessionKeys: Array<InstanceSessionKey>, retryCount: number = 0) {
+	async postUpdateSessionKeysService(instanceSessionKeys: Array<InstanceSessionKey>, retryCount: number = 0): Promise<void> {
 		try {
 			const input = createUpdateSessionKeysPostIn({ ownerEncSessionKeys: instanceSessionKeys })
-			await this.serviceExecutor.post(UpdateSessionKeysService, input, null)
+			await this.serviceExecutor.execute(UpdateSessionKeysService_POST, input, null)
 		} catch (e) {
 			// we retry once here in case we get a LockedError, if that fails as well the processInboxHandler is going to retry soon
 			if (e instanceof LockedError && retryCount < 1) {
@@ -779,16 +803,12 @@ export class CryptoFacade implements SessionKeyResolver, CryptoNetworkHelper {
 	 * @returns the generated key
 	 */
 	async setNewOwnerEncSessionKey(clientTypeModel: ClientTypeModel, instance: Entity, keyToEncryptSessionKey: Nullable<VersionedKey>): Promise<AesKey | null> {
-		if (!instance._ownerGroup) {
-			throw new Error(`no owner group set  ${JSON.stringify(instance)}`)
-		}
+		const ownerGroup = assertNotNull(instance._ownerGroup, `no owner group set  ${JSON.stringify(instance)}`)
 
 		if (clientTypeModel.encrypted) {
-			if (instance._ownerEncSessionKey) {
-				throw new Error(`ownerEncSessionKey already set ${JSON.stringify(instance)}`)
-			}
+			assert(isNull(instance._ownerEncSessionKey), `ownerEncSessionKey already set ${JSON.stringify(instance)}`)
 			const sessionKey = aes256RandomKey()
-			const effectiveKeyToEncryptSessionKey = keyToEncryptSessionKey ?? (await this.getCurrentSymGroupKey(instance._ownerGroup))
+			const effectiveKeyToEncryptSessionKey = keyToEncryptSessionKey ?? (await this.getCurrentSymGroupKey(ownerGroup))
 			const encryptedSessionKey = this.cryptoWrapper.encryptKeyWithVersionedKey(effectiveKeyToEncryptSessionKey, sessionKey)
 
 			this.setOwnerEncSessionKey(instance, encryptedSessionKey)
@@ -797,37 +817,37 @@ export class CryptoFacade implements SessionKeyResolver, CryptoNetworkHelper {
 		return null
 	}
 
-	public setOwnerEncSessionKey(instance: Entity, ownerEncSessionKey: VersionedEncryptedKey, ownerGroup?: Id): void {
+	public setOwnerEncSessionKey(instance: Entity, ownerEncSessionKey: VersionedEncryptedKey, ownerGroup: Nullable<Id> = null): void {
 		instance._ownerEncSessionKey = ownerEncSessionKey.key
 		instance._ownerKeyVersion = ownerEncSessionKey.encryptingKeyVersion.toString()
-		if (ownerGroup) {
+		if (isNotNull(ownerGroup)) {
 			instance._ownerGroup = ownerGroup
 		}
 	}
 
 	async decryptSessionKey(ownerGroup: Id, ownerEncSessionKey: VersionedEncryptedKey): Promise<AesKey> {
-		const gk = await this.symGroupKeyLoader.loadSymGroupKey(ownerGroup, ownerEncSessionKey.encryptingKeyVersion)
+		const gk = await this.symGroupKeyLoader.loadSymGroupKey(ownerGroup, ownerEncSessionKey.encryptingKeyVersion, null)
 		return decryptKey(gk, ownerEncSessionKey.key)
 	}
 
 	async postUpdateKdfNonceService(instanceKdfNonce: InstanceKdfNonce): Promise<UpdateKdfNoncePostOut> {
 		const input = createUpdateKdfNoncePostIn({ instanceKdfNonce: instanceKdfNonce })
-		return await this.serviceExecutor.post(UpdateKdfNonceService, input, null)
+		return await this.serviceExecutor.execute(UpdateKdfNonceService_POST, input, null)
 	}
 
-	async updateOwnerEncSessionKey(instance: EntityAdapter, ownerGroupKey: VersionedKey, resolvedSessionKey: AesKey) {
+	async updateOwnerEncSessionKey(instance: EntityAdapter, ownerGroupKey: VersionedKey, resolvedSessionKey: AesKey): Promise<void> {
 		const newOwnerEncSessionKey = this.cryptoWrapper.encryptKeyWithVersionedKey(ownerGroupKey, resolvedSessionKey)
 		this.setOwnerEncSessionKey(instance, newOwnerEncSessionKey)
 
 		const id = instance._id
 		const typeModel = await this.typeModelResolver.resolveClientTypeReference(instance._type)
-		const path = EntityUtils.typeModelToRestPath(typeModel) + "/" + (id instanceof Array ? id.join("/") : id)
+		const path = EntityUtils.typeModelToRestPath(typeModel) + "/" + stringifyId(id)
 		const headers = this.userFacade.createAuthHeaders()
 		headers.v = String(instance.typeModel.version)
 
 		let ownerEncSessionKeyAttributeIdStr = assertNotNull(AttributeModel.getAttributeId(typeModel, "_ownerEncSessionKey")).toString()
 		let ownerKeyVersionAttributeIdStr = assertNotNull(AttributeModel.getAttributeId(typeModel, "_ownerKeyVersion")).toString()
-		if (env.networkDebugging) {
+		if (EnvProvider.get().networkDebuggingEnabled()) {
 			ownerEncSessionKeyAttributeIdStr += ":_ownerEncSessionKey"
 			ownerKeyVersionAttributeIdStr += ":_ownerKeyVersion"
 		}

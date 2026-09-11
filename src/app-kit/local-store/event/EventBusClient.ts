@@ -1,4 +1,4 @@
-import { assertWorkerOrNode, CancelledError, isAdminClient, isBrowser, isTest, OutOfSyncError, SECOND_IN_MILLIS } from "@tutao/app-env"
+import { CancelledError, EnvProvider, OutOfSyncError, TimeConstants } from "@tutao/app-env"
 import {
 	AccessBlockedError,
 	AccessDeactivatedError,
@@ -49,7 +49,7 @@ import { EntityMigrator } from "../../../platform-kit/network/EntityRestClient"
 import { validateKdfNonceLength } from "@tutao/crypto"
 import { IncomingServerJson } from "../../../platform-kit/instance-pipeline/TypeMapper"
 
-assertWorkerOrNode()
+EnvProvider.assertWorkerOrNode()
 
 export const enum EventBusState {
 	Automatic = "automatic",
@@ -62,6 +62,9 @@ export const enum EventBusState {
 // EntityEventBatches expire after 45 days. keep a time diff security of one day.
 export const ENTITY_EVENT_BATCH_EXPIRE_MS = 44 * 24 * 60 * 60 * 1000
 export const MAX_EVENT_QUEUE_LENGTH_BEFORE_FLUSHING = 500
+
+// InitialSyncWorkEstimates (announced through WS) lower than this are not triggering a reload.
+const INITIAL_SYNC_WORK_ESTIMATE_FEW_UPDATES: number = 100
 
 const RETRY_AFTER_SERVICE_UNAVAILABLE_ERROR_MS = 30000
 const NORMAL_SHUTDOWN_CLOSE_CODE = 1
@@ -90,7 +93,7 @@ const enum MessageType {
 export interface EventBusListener {
 	onCounterChanged(counter: WebsocketCounterData): unknown
 
-	onEntityEventsReceived(events: readonly EntityUpdateData[], batchId: Id, groupId: Id, isInitialSyncDone: boolean): Promise<void>
+	onEntityUpdatesReceived(events: readonly EntityUpdateData[], batchId: Id, groupId: Id, isInitialSyncDone: boolean): Promise<void>
 
 	/**
 	 * @param markers only phishing (not spam) markers will be sent as event bus updates
@@ -99,7 +102,7 @@ export interface EventBusListener {
 
 	onError(tutanotaError: Error): void
 
-	onSyncDone(): unknown
+	onSyncStatusChanged(cacheSyncStatus: CacheSyncStatus): unknown
 
 	onOperationStatusUpdate(update: OperationStatusUpdate): unknown
 }
@@ -189,8 +192,6 @@ export class EventBusClient {
 	 * @param connectMode
 	 */
 	async connect(connectMode: ConnectMode) {
-		await this.cache.setCacheSyncStatus(CacheSyncStatus.OnlineSyncOngoing)
-
 		console.log(TAG, "ws connect reconnect:", connectMode === ConnectMode.Reconnect, "state:", this.state)
 		// make sure a retry will be cancelled by setting _serviceUnavailableRetry to null
 		this.serviceUnavailableRetry = null
@@ -410,14 +411,25 @@ export class EventBusClient {
 				await this.waitForEmptyQueue()
 				// if we received no missed batches and lastMissedBatchId remains null, we should call the syncDone listener directly
 				if (this.lastMissedBatchId === null) {
-					this.listener.onSyncDone()
+					this.listener.onSyncStatusChanged(CacheSyncStatus.OnlineSyncDone)
 				}
 				setTimeout(() => this.progressMonitor?.completed(), PROGRESS_SYNC_DONE_TIMEOUT_DEBOUNCE_MS)
 				break
 			}
 			case MessageType.InitialSyncWorkEstimate: {
 				const newWorkEstimate = Number.parseInt(value)
-				console.log(TAG, "InitialSyncWorkEstimate: ", newWorkEstimate)
+				this.isInitialSyncDone = false
+
+				const isFewUpdates = newWorkEstimate < INITIAL_SYNC_WORK_ESTIMATE_FEW_UPDATES
+				console.log(TAG, `InitialSyncWorkEstimate: ${newWorkEstimate}, isFewUpdates: ${isFewUpdates}`)
+				if (isFewUpdates) {
+					await this.cache.setCacheSyncStatus(CacheSyncStatus.OnlineSyncOngoingFewUpdates)
+					await this.listener.onSyncStatusChanged(CacheSyncStatus.OnlineSyncOngoingFewUpdates)
+				} else {
+					await this.cache.setCacheSyncStatus(CacheSyncStatus.OnlineSyncOngoing)
+					await this.listener.onSyncStatusChanged(CacheSyncStatus.OnlineSyncOngoing)
+				}
+
 				if (newWorkEstimate === 0) {
 					break
 				}
@@ -541,7 +553,7 @@ export class EventBusClient {
 					reconnectionInterval = RECONNECT_INTERVAL.LARGE
 				}
 
-				this.tryReconnect(false, false, SECOND_IN_MILLIS * randomIntFromInterval(reconnectionInterval[0], reconnectionInterval[1]))
+				this.tryReconnect(false, false, TimeConstants.SECOND_IN_MILLIS * randomIntFromInterval(reconnectionInterval[0], reconnectionInterval[1]))
 			}
 		}
 	}
@@ -658,6 +670,7 @@ export class EventBusClient {
 		this.reset()
 
 		this.connectivityListener.updateWebSocketState(WsConnectionState.terminated)
+		this.listener.onSyncStatusChanged(CacheSyncStatus.Offline)
 	}
 
 	/**
@@ -701,9 +714,9 @@ export class EventBusClient {
 		try {
 			if (this.isTerminated()) return
 
-			const filteredEvents = await this.cache.entityEventsReceived(batch.events, batch.batchId, batch.groupId)
+			const filteredEvents = await this.cache.onEntityUpdatesReceived(batch.updates, batch.batchId, batch.groupId)
 			if (!this.isTerminated() && isNotEmpty(filteredEvents)) {
-				await this.listener.onEntityEventsReceived(filteredEvents, batch.batchId, batch.groupId, assertNotNull(batch.isInitialSyncDone))
+				await this.listener.onEntityUpdatesReceived(filteredEvents, batch.batchId, batch.groupId, assertNotNull(batch.isInitialSyncDone))
 			}
 
 			if (!(await this.progressMonitor?.isDone())) {
@@ -712,7 +725,7 @@ export class EventBusClient {
 
 			// call syncDone listener right after the last missed batch is processed
 			if (batch.batchId === this.lastMissedBatchId && this.isInitialSyncDone) {
-				this.listener.onSyncDone()
+				this.listener.onSyncStatusChanged(CacheSyncStatus.OnlineSyncDone)
 			}
 		} catch (e) {
 			if (e instanceof ServiceUnavailableError) {
@@ -743,7 +756,7 @@ export class EventBusClient {
 
 	private eventGroups(): Id[] {
 		const user = this.loggedInUserProvider.getLoggedInUser()
-		if ((!isBrowser() && !isAdminClient()) || isTest()) {
+		if ((!EnvProvider.get().isBrowser() && !EnvProvider.get().isAdminClient()) || EnvProvider.isTest()) {
 			return user.memberships
 				.filter((membership) => membership.groupType !== GroupType.MailingList)
 				.concat(user.userGroup)
@@ -761,7 +774,7 @@ export class EventBusClient {
 	}
 
 	private async processAccumulatedEventBatches() {
-		const allMissedEventsFlat = this.eventQueue.eventQueue.flatMap((batch) => batch.events)
+		const allMissedEventsFlat = this.eventQueue.eventQueue.flatMap((batch) => batch.updates)
 		await this.cache.updateCacheWithMissedEntityUpdates(allMissedEventsFlat)
 		// we set the instance and blobInstance to null to make sure that the event queue does not take up too much memory
 		allMissedEventsFlat.map((entityUpdate) => {

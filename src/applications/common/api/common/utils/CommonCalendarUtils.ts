@@ -1,6 +1,6 @@
 import { cleanMailAddress, stringToBase64UrlCustomId } from "@tutao/utils"
 import type { AlarmInterval } from "../../../calendar/date/CalendarUtils.js"
-import { DAY_IN_MILLIS } from "@tutao/app-env"
+import { TimeConstants } from "@tutao/app-env"
 import { CalendarEvent, CalendarEventParams } from "@tutao/entities/tutanota"
 import { IcsCalendarEvent, StrippedCalendarEventAttendee } from "../../../../calendar-app/calendar/export/CalendarParser"
 
@@ -11,7 +11,7 @@ export type CalendarEventDateTimeFields = CalendarEventTimes & CalendarEventTime
 /**
  * the time in ms that element ids for calendar events and alarms  get randomized by
  */
-export const DAYS_SHIFTED_MS = 15 * DAY_IN_MILLIS
+export const DAYS_SHIFTED_MS = 15 * TimeConstants.DAY_IN_MILLIS
 
 /*
  * convenience wrapper for isAllDayEventByTimes
@@ -196,8 +196,8 @@ export enum CalendarViewType {
  * @param {Date} dateA - The first date to compare.
  * @param {Date} dateB - The second date to compare.
  * @param {string} comparisonType - The type of comparison to perform.
- *                              "full" = compare date and time,
- *                              "dayMonthYear" = compare only day, month, and year.
+ *                              "dateTime" = compare date and time (default),
+ *                              "date" = compare only day, month, and year.
  * @returns {boolean} - Returns true if dateA is before dateB according to the comparison type, false otherwise.
  */
 export function isBefore(dateA: Date, dateB: Date, comparisonType: "dateTime" | "date" = "dateTime"): boolean {
@@ -205,7 +205,7 @@ export function isBefore(dateA: Date, dateB: Date, comparisonType: "dateTime" | 
 		case "dateTime":
 			return dateA.getTime() < dateB.getTime()
 		case "date": {
-			return dateA.setHours(0, 0, 0, 0) < dateB.setHours(0, 0, 0, 0)
+			return new Date(dateA).setHours(0, 0, 0, 0) < new Date(dateB).setHours(0, 0, 0, 0)
 		}
 		default:
 			throw new Error("Unknown comparison method")

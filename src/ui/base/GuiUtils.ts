@@ -1,21 +1,21 @@
-import type { MaybeTranslation, TranslationKey } from "../utils/LanguageViewModel"
+import { MaybeTranslation, TranslationKey } from "../utils/LanguageViewModel"
 import { ButtonColor } from "./Button.js"
 import { Icons } from "./icons/Icons"
-import { createAsyncDropdown, DomRectReadOnlyPolyfilled, DropdownChildAttrs } from "./Dropdown.js"
-import type { lazy } from "../../platform-kit/utils"
-import { assertNotNull } from "../../platform-kit/utils"
+import { createAsyncDropdown, DomRectReadOnlyPolyfilled, Dropdown, DropdownButtonAttrs, DropdownChildAttrs } from "./Dropdown.js"
+import { assertNotNull, isEmpty, lazy } from "../../platform-kit/utils"
 import { MaybeLazy, resolveMaybeLazy } from "./MaybeLazy"
 import { Dialog } from "./Dialog"
 import { ProgrammingError } from "../../platform-kit/app-env"
 import m, { Children } from "mithril"
 import { IconButtonAttrs } from "./IconButton.js"
-import { client } from "../../platform-kit/app-env/boot/ClientDetector.js"
+import { ClientDetector } from "../../platform-kit/app-env/boot/ClientDetector.js"
 import { isColorLight, isValidCSSHexColor } from "./Color.js"
 import { font_size, px, size } from "../size"
 
 import { PosRect } from "../utils/PosRect"
 import { Icon, IconSize } from "./Icon"
 import { theme } from "../theme"
+import { modal } from "./Modal"
 
 export const enum DropType {
 	ExternalFile = "ExternalFile",
@@ -56,7 +56,7 @@ export function createMoreActionButtonAttrs(
 	dropdownWidth?: number,
 ): IconButtonAttrs {
 	return {
-		title: "more_label",
+		label: "more_label",
 		colors: ButtonColor.Nav,
 		icon: Icons.More,
 		click: createAsyncDropdown({
@@ -180,7 +180,7 @@ export function getPosAndBoundsFromMouseEvent({ currentTarget, x, y }: MouseEven
 
 /** render two children either next to each other (on desktop devices) or above each other (mobile) */
 export function renderTwoColumnsIfFits(left: Children, right: Children): Children {
-	if (client.isMobileDevice()) {
+	if (ClientDetector.get().isMobileDevice()) {
 		return m(".flex.col", [m(".flex", left), m(".flex", right)])
 	} else {
 		return m(".flex", [m(".flex.flex-half.pr-4", left), m(".flex.flex-half.pl-4", right)])
@@ -385,6 +385,13 @@ export function getDetachedDropdownBounds(): PosRect {
 	return new DomRectReadOnlyPolyfilled(size.spacing_24, size.spacing_32, 0, 0)
 }
 
+export function showWindowCloseConfirmation(message: TranslationKey): Promise<boolean> {
+	return Dialog.choice(message, [
+		{ value: false, text: "dontQuit_action" },
+		{ value: true, text: "quit_action" },
+	])
+}
+
 export function renderDragElement(name: string, icon: Icons, count: number, subString: string | null = null) {
 	const el = document.createElement("div")
 	document.body.append(el)
@@ -467,4 +474,15 @@ export function renderDragElement(name: string, icon: Icons, count: number, subS
 		),
 	)
 	return el
+}
+
+export function contextDropdown(e: MouseEvent, dropdownAttrs: DropdownButtonAttrs[]): void {
+	if (isEmpty(dropdownAttrs)) {
+		return
+	}
+	e.preventDefault()
+	e.stopPropagation()
+	const dropdown = new Dropdown(() => dropdownAttrs, 300)
+	dropdown.setOrigin(new DomRectReadOnlyPolyfilled(e.clientX, e.clientY, 0, 0))
+	modal.displayUniqueOverride(dropdown, false)
 }

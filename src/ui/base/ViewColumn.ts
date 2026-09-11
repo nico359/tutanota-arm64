@@ -3,12 +3,12 @@ import { AriaLandmarks, landmarkAttrs } from "../AriaUtils"
 import { LayerType } from "./RootView"
 import { lazy } from "../../platform-kit/utils"
 import { MaybeLazy, resolveMaybeLazy } from "./MaybeLazy"
-import { assertMainOrNode, TabIndex } from "../../platform-kit/app-env"
+import { EnvProvider, TabIndex } from "../../platform-kit/app-env"
 import { lang, MaybeTranslation } from "../utils/LanguageViewModel.js"
 import { layout_size, px } from "../size"
-import { styles } from "../styles"
+import { Styles } from "../styles"
 
-assertMainOrNode()
+EnvProvider.assertMainOrNode()
 
 export const enum ColumnType {
 	Foreground = 0,
@@ -115,7 +115,7 @@ export class ViewColumn implements Component<Attrs> {
 				},
 			},
 			m(this.component),
-			this.resizeCallback && !styles.isSingleColumnLayout() ? this.renderResizeButton(vnode.attrs.onResize) : null,
+			this.resizeCallback && !Styles.get().isSingleColumnLayout() ? this.renderResizeButton(vnode.attrs.onResize) : null,
 		)
 	}
 

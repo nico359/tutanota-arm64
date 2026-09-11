@@ -39,7 +39,7 @@ import {
 	getWeekNumber,
 	StandardAlarmInterval,
 } from "../../../common/calendar/date/CalendarUtils.js"
-import { DAY_IN_MILLIS, DEFAULT_CALENDAR_COLOR, EndType, isAppleDevice, Keys, RepeatPeriod, ShareCapability, Weekday, WeekStart } from "@tutao/app-env"
+import { DEFAULT_CALENDAR_COLOR, EndType, EnvProvider, RepeatPeriod, ShareCapability, TimeConstants, Weekday, WeekStart } from "@tutao/app-env"
 import { AllIcons } from "../../../../ui/base/Icon.js"
 import { SelectorItemList } from "../../../../ui/base/DropDownSelector.js"
 import { Duration } from "luxon"
@@ -67,6 +67,7 @@ import { CalendarAttendeeStatus } from "../../../../entities/tutanota/Utils"
 import { AccountType, hasCapabilityOnGroup } from "../../../../entities/sys/Utils"
 import { clone } from "@tutao/meta"
 import { IcsCalendarEvent } from "../export/CalendarParser"
+import { Keys } from "../../../../ui/utils/KeyboardKeys"
 
 export interface IntervalOption {
 	value: number
@@ -76,7 +77,7 @@ export interface IntervalOption {
 
 export function renderCalendarSwitchLeftButton(label: TranslationKey, click: () => unknown): Child {
 	return m(IconButton, {
-		title: label,
+		label: label,
 		icon: Icons.ChevronLeft,
 		click,
 	})
@@ -84,7 +85,7 @@ export function renderCalendarSwitchLeftButton(label: TranslationKey, click: () 
 
 export function renderCalendarSwitchRightButton(label: TranslationKey, click: () => unknown): Child {
 	return m(IconButton, {
-		title: label,
+		label: label,
 		icon: Icons.ChevronRight,
 		click,
 	})
@@ -267,7 +268,7 @@ export function getRowDateFromMousePos(mouseEvent: MouseEvent, dayCount: number,
 	const xPosition = mouseEvent.pageX - diffFromOrigin
 	const daysToAdd = Math.floor(xPosition / daysDivisionsWidth)
 
-	return new Date(startOfPeriod.getTime() + DAY_IN_MILLIS * daysToAdd)
+	return new Date(startOfPeriod.getTime() + TimeConstants.DAY_IN_MILLIS * daysToAdd)
 }
 
 export const SELECTED_DATE_INDICATOR_THICKNESS = 4
@@ -1001,7 +1002,7 @@ export function extractCalendarEventModifierKey<T extends MouseEvent | KeyboardE
 	},
 ): Key | undefined {
 	let key
-	if (event.metaKey && isAppleDevice()) {
+	if (event.metaKey && EnvProvider.get().isAppleDevice()) {
 		key = Keys.META
 	} else if (event.ctrlKey) {
 		key = Keys.CTRL

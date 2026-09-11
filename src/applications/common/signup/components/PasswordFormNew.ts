@@ -1,7 +1,7 @@
 import m, { Children, Component, Vnode } from "mithril"
 import { PasswordFieldAttrs, PasswordFieldNew } from "./PasswordFieldNew"
 import { font_size, px } from "../../../../ui/size"
-import { assertMainOrNode } from "@tutao/app-env"
+import { EnvProvider } from "@tutao/app-env"
 import { lang, TranslationKey } from "../../../../ui/utils/LanguageViewModel"
 import Stream from "mithril/stream"
 import stream from "mithril/stream"
@@ -15,12 +15,12 @@ import { theme } from "../../../../ui/theme"
 import { PasswordGenerator } from "../../misc/passwords/PasswordGenerator"
 import { locator } from "../../api/main/CommonLocator"
 import { copyToClipboard } from "../../../../ui/utils/ClipboardUtils"
-import { debounceStart, delay, noOp } from "@tutao/utils"
+import { debounceStart, delay } from "@tutao/utils"
 import { showSnackBar } from "../../../../ui/base/SnackBar"
 import { Icons } from "../../../../ui/base/icons/Icons"
-import { styles } from "../../../../ui/styles"
+import { Styles } from "../../../../ui/styles"
 
-assertMainOrNode()
+EnvProvider.assertMainOrNode()
 
 export interface PasswordFormAttrs {
 	model: PasswordModel
@@ -240,7 +240,7 @@ export class PasswordFormNew implements Component<PasswordFormAttrs> {
 	}
 	view({ attrs }: Vnode<PasswordFormAttrs>): Children {
 		return m(
-			`.flex.flex-column.${styles.isMobileLayout() ? ".gap-8" : ".gap-24"}`,
+			`.flex.flex-column.${Styles.get().isMobileLayout() ? ".gap-8" : ".gap-24"}`,
 			{
 				onremove: () => attrs.model.clear(),
 			},

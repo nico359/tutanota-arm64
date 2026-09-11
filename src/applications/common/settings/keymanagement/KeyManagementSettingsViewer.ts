@@ -90,7 +90,7 @@ export class KeyManagementSettingsViewer implements UpdatableSettingsViewer {
 		}
 	}
 
-	async entityEventsReceived(updates: ReadonlyArray<EntityUpdateData>): Promise<void> {
+	async onEntityUpdatesReceived(updates: ReadonlyArray<EntityUpdateData>): Promise<void> {
 		// we only need to listen for updates of new identity keys of the user group
 		// everything else is only stored locally
 		for (const update of updates) {
@@ -136,7 +136,7 @@ export class KeyManagementSettingsViewer implements UpdatableSettingsViewer {
 							? m(".full-width.flex-space-between.items-center.pl-8", [
 									lang.get("keyManagement.verifyMailAddress_action"),
 									m(IconButton, {
-										title: "keyManagement.verifyMailAddress_action",
+										label: "keyManagement.verifyMailAddress_action",
 										click: async () => {
 											await showKeyVerificationDialog(
 												this.keyVerificationFacade,

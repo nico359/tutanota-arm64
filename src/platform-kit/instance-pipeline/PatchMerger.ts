@@ -22,10 +22,13 @@ import { TypeModelResolver } from "./EntityFunctions"
 import { Patch, UserTypeRef } from "@tutao/entities/sys"
 import { EntityUpdateData } from "./utils/EntityUpdateUtils"
 import { IncomingServerJson } from "./TypeMapper"
+import { EnvProvider } from "@tutao/app-env"
+import { isNull } from "../utils/Utils"
 
 export interface OwnerKeyProvider {
 	(ownerKeyVersion: KeyVersion): Promise<AesKey>
 }
+
 export interface OwnerEncSessionKeyProvider {
 	(instanceElementId: Id, entity: Entity): Promise<VersionedEncryptedKey>
 }
@@ -54,6 +57,7 @@ export interface SessionKeyResolver {
 	 */
 	resolveServiceSessionKey(instance: EntityAdapter): Promise<AesKey | null>
 }
+
 /*
  * Note:
  * This is a subset of interface `CacheStorage`.
@@ -62,9 +66,9 @@ export interface SessionKeyResolver {
  * we should extract the cacheStorage and/or offlineStorage into a separate package and reuse the ` CacheStorage ` interface
  */
 export interface GetOrPutInstance {
-	getParsed(typeRef: TypeRef<unknown>, listId: Id | null, id: Id): Promise<DecryptedParsedInstance | null>
+	getParsed(typeRef: TypeRef<Entity>, listId: Id | null, id: Id): Promise<DecryptedParsedInstance | null>
 
-	put(typeRef: TypeRef<unknown>, instance: DecryptedParsedInstance): Promise<void>
+	put(typeRef: TypeRef<Entity>, instance: DecryptedParsedInstance): Promise<void>
 }
 
 type PathResult = {
@@ -184,7 +188,7 @@ export class PatchMerger {
 	}
 
 	private removeNetworkDebuggingSymbolsIfNeeded(fieldPath: string): string {
-		if (!env.networkDebugging) {
+		if (!EnvProvider.get().networkDebuggingEnabled()) {
 			return fieldPath
 		}
 		return fieldPath
@@ -193,7 +197,11 @@ export class PatchMerger {
 			.join("/")
 	}
 
-	private async applyPatchOperation(patchOperation: Values<PatchOperationType>, pathResult: PathResult, valueInPatchPayload: DecryptedParsedValue) {
+	private async applyPatchOperation(
+		patchOperation: Values<PatchOperationType>,
+		pathResult: PathResult,
+		valueInPatchPayload: DecryptedParsedValue,
+	): Promise<void> {
 		const { attributeId, instanceToChange, typeModel } = pathResult
 		const isValue = isNotNull(typeModel.values[attributeId])
 		const isAssociation = isNotNull(typeModel.associations[attributeId])
@@ -374,14 +382,14 @@ export class PatchMerger {
 	}
 
 	private async traversePath(parsedInstance: DecryptedParsedInstance, serverTypeModel: ServerTypeModel, path: Array<string>): Promise<PathResult | null> {
-		if (path.length === 0) {
+		const pathItem = path.shift() ?? null
+		if (isNull(pathItem)) {
 			throw new PatchOperationError("Invalid attributePath, expected non-empty attributePath")
 		}
-		const pathItem = path.shift()!
 		try {
 			let attributeId: number
 			const attributeIdsInServerTypeModel = Object.keys(serverTypeModel.values).concat(Object.keys(serverTypeModel.associations))
-			if (env.networkDebugging) {
+			if (EnvProvider.get().networkDebuggingEnabled()) {
 				attributeId = parseInt(pathItem.split(":")[0])
 			} else {
 				attributeId = parseInt(pathItem)

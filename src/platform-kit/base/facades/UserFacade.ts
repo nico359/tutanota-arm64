@@ -1,5 +1,5 @@
 import { Aes256Key, AesKey, cryptoUtils, CryptoWrapper, decryptKey, HkdfKeyDerivationDomains, SymmetricEncryptionScheme, VersionedKey } from "@tutao/crypto"
-import { assertNotNull, KeyVersion } from "@tutao/utils"
+import { assertNotNull, isNotNull, KeyVersion } from "@tutao/utils"
 import { ProgrammingError } from "@tutao/app-env"
 import { CryptoError } from "@tutao/crypto/error"
 import { LoggedInUserProvider } from "@tutao/instance-pipeline"
@@ -8,6 +8,7 @@ import { GroupType } from "../../../entities/sys/Utils"
 import { LoginIncompleteError } from "@tutao/rest-client/error"
 import { KeyCache } from "../base-crypto/persistence/KeyCache"
 import { isSameSingleId } from "@tutao/meta"
+import { isNull } from "../../utils/Utils"
 
 /** Holder for the user and session-related data on the worker side. */
 export class UserFacade extends LoggedInUserProvider {
@@ -39,7 +40,7 @@ export class UserFacade extends LoggedInUserProvider {
 	// 1. Access token is set
 	// 2. User is set
 	// 3. UserGroupKey is unlocked
-	setAccessToken(accessToken: string | null) {
+	setAccessToken(accessToken: string | null): void {
 		this.accessToken = accessToken
 	}
 
@@ -47,14 +48,14 @@ export class UserFacade extends LoggedInUserProvider {
 		return this.accessToken
 	}
 
-	setUser(user: User) {
+	setUser(user: User): void {
 		if (this.accessToken == null) {
 			throw new ProgrammingError("invalid state: no access token")
 		}
 		this.user = user
 	}
 
-	unlockUserGroupKey(userPassphraseKey: AesKey) {
+	unlockUserGroupKey(userPassphraseKey: AesKey): void {
 		if (this.user == null) {
 			throw new ProgrammingError("Invalid state: no user")
 		}
@@ -67,7 +68,7 @@ export class UserFacade extends LoggedInUserProvider {
 		this.setUserDistKey(currentUserGroupKey.version, userPassphraseKey)
 	}
 
-	setUserDistKey(currentUserGroupKeyVersion: KeyVersion, userPassphraseKey: AesKey) {
+	setUserDistKey(currentUserGroupKeyVersion: KeyVersion, userPassphraseKey: AesKey): void {
 		if (this.user == null) {
 			throw new ProgrammingError("Invalid state: no user")
 		}
@@ -117,7 +118,7 @@ export class UserFacade extends LoggedInUserProvider {
 		})
 	}
 
-	async updateUser(user: User) {
+	async updateUser(user: User): Promise<void> {
 		if (this.user == null) {
 			throw new ProgrammingError("Update user is called without logging in. This function is not for you.")
 		}
@@ -133,7 +134,7 @@ export class UserFacade extends LoggedInUserProvider {
 	 * @return The map which contains authentication data for the logged-in user.
 	 */
 	createAuthHeaders(): Dict {
-		return this.accessToken
+		return isNotNull(this.accessToken)
 			? {
 					accessToken: this.accessToken,
 				}
@@ -155,13 +156,8 @@ export class UserFacade extends LoggedInUserProvider {
 	}
 
 	getMembership(groupId: Id): GroupMembership {
-		let membership = this.getLoggedInUser().memberships.find((g: GroupMembership) => isSameSingleId(g.group, groupId))
-
-		if (!membership) {
-			console.log(new Error().stack)
-		}
-
-		if (!membership) {
+		const membership = this.getLoggedInUser().memberships.find((g: GroupMembership) => isSameSingleId(g.group, groupId)) ?? null
+		if (isNull(membership)) {
 			throw new Error(`No membership with groupId ${groupId} found!`)
 		}
 
@@ -169,20 +165,19 @@ export class UserFacade extends LoggedInUserProvider {
 	}
 
 	hasGroup(groupId: Id): boolean {
-		if (!this.user) {
-			return false
-		} else {
-			return groupId === this.user.userGroup.group || this.user.memberships.some((m) => m.group === groupId)
+		if (isNotNull(this.user)) {
+			return isSameSingleId(groupId, this.user.userGroup.group) || this.user.memberships.some((m) => isSameSingleId(m.group, groupId))
 		}
+		return false
 	}
 
 	getGroupId(groupType: GroupType): Id {
 		if (groupType === GroupType.User) {
 			return this.getUserGroupId()
 		} else {
-			let membership = this.getLoggedInUser().memberships.find((m) => m.groupType === groupType)
+			let membership = this.getLoggedInUser().memberships.find((m) => m.groupType === groupType) ?? null
 
-			if (!membership) {
+			if (isNull(membership)) {
 				throw new Error("could not find groupType " + groupType + " for user " + this.getLoggedInUser()._id)
 			}
 
@@ -209,7 +204,7 @@ export class UserFacade extends LoggedInUserProvider {
 		return assertNotNull(this.user, "getLoggedInUser called for user not logged in")
 	}
 
-	setLeaderStatus(status: WebsocketLeaderStatus) {
+	setLeaderStatus(status: WebsocketLeaderStatus): void {
 		this.leaderStatus = status
 		console.log("New leader status set:", status.leaderStatus)
 	}
@@ -218,7 +213,7 @@ export class UserFacade extends LoggedInUserProvider {
 		return this.leaderStatus.leaderStatus
 	}
 
-	reset() {
+	reset(): void {
 		this.user = null
 		this.accessToken = null
 		this.keyCache.reset()
@@ -230,7 +225,7 @@ export class UserFacade extends LoggedInUserProvider {
 		})
 	}
 
-	updateUserGroupKey(userGroupKeyDistribution: UserGroupKeyDistribution) {
+	updateUserGroupKey(userGroupKeyDistribution: UserGroupKeyDistribution): void {
 		const userDistKey = this.keyCache.getUserDistKey()
 		if (userDistKey == null) {
 			console.log("could not update userGroupKey because distribution key is not available")
@@ -272,7 +267,7 @@ export class UserFacade extends LoggedInUserProvider {
 	 * NOTE: should only be used with a freshly generated key. For keys received from the server, use `updateUserGroupKey`
 	 * @param userGroupKey
 	 */
-	public setNewUserGroupKey(userGroupKey: VersionedKey) {
+	public setNewUserGroupKey(userGroupKey: VersionedKey): void {
 		console.log(`updating userGroupKey. new version: ${userGroupKey.version}`)
 		this.keyCache.setCurrentUserGroupKey(userGroupKey)
 	}

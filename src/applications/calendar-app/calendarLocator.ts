@@ -1,17 +1,4 @@
-import {
-	AppType,
-	assertMainOrNode,
-	Const,
-	FeatureType,
-	isAdminClient,
-	isAndroidApp,
-	isApp,
-	isBrowser,
-	isDesktop,
-	isIOSApp,
-	Mode,
-	ProgrammingError,
-} from "@tutao/app-env"
+import { AppType, Const, EnvProvider, FeatureType, Mode, ProgrammingError } from "@tutao/app-env"
 import { EventController } from "../common/api/main/EventController.js"
 import { type MailboxDetail, MailboxModel } from "../common/mailFunctionality/MailboxModel.js"
 import { ContactModel } from "../common/contactsFunctionality/ContactModel.js"
@@ -75,7 +62,6 @@ import { SendMailModel } from "../common/mailFunctionality/SendMailModel.js"
 import { OfflineIndicatorViewModel } from "../common/gui/base/OfflineIndicatorViewModel.js"
 import { Router, ScopedThrottledRouter, ThrottledRouter } from "../../ui/ScopedThrottledRouter.js"
 import { DeviceConfig, deviceConfig } from "../common/misc/DeviceConfig.js"
-import { CalendarSearchViewModel } from "./calendar/search/view/CalendarSearchViewModel.js"
 import { SearchRouter } from "../common/search/view/SearchRouter.js"
 import { getEnabledMailAddressesWithUser } from "../common/mailFunctionality/SharedMailUtils.js"
 import { ReceivedGroupInvitationsModel } from "../common/sharing/model/ReceivedGroupInvitationsModel.js"
@@ -86,7 +72,8 @@ import { showProgressDialog } from "../../ui/dialogs/ProgressDialog.js"
 import { ContactSuggestionProvider, RecipientsSearchModel } from "../common/misc/RecipientsSearchModel.js"
 import { NativeInterfaceMain } from "../common/native/NativeInterfaceMain.js"
 import { NativePushServiceApp } from "../common/native/NativePushServiceApp.js"
-import { MailAddressNameChanger, MailAddressTableModel, UserInfo } from "../common/settings/mailaddress/MailAddressTableModel.js"
+import { MailAddressNameChanger, MailAddressTableModel, MailAddressTableInfo } from "../common/settings/mailaddress/MailAddressTableModel.js"
+import type { GroupInfo } from "@tutao/entities/sys"
 import { DrawerMenuAttrs, isPartnerEnabled } from "../common/gui/nav/DrawerMenu.js"
 import { DomainConfigProvider } from "../common/api/common/DomainConfigProvider.js"
 import { CredentialRemovalHandler } from "../common/login/CredentialRemovalHandler.js"
@@ -108,7 +95,6 @@ import { CredentialFormatMigrator } from "../common/misc/credentials/CredentialF
 import { NativeThemeFacade, ThemeController, WebThemeFacade } from "../../ui/ThemeController.js"
 import type { HtmlSanitizer } from "../common/misc/HtmlSanitizer.js"
 import { theme } from "../../ui/theme.js"
-import { CalendarSearchModel } from "./calendar/search/model/CalendarSearchModel.js"
 import { SearchIndexStateInfo } from "../common/api/worker/search/SearchTypes.js"
 import { CALENDAR_PREFIX } from "../../ui/utils/RouteChange.js"
 import { WorkerRandomizer } from "../common/api/worker/workerInterfaces.js"
@@ -138,13 +124,14 @@ import { GroupType, ShareableGroupType } from "../../entities/sys/Utils"
 import { KdfType } from "../../platform-kit/base/base-crypto/Constants"
 import type { ParsedEventAlarmTuple } from "./calendar/export/CalendarParser"
 import type { AlarmInterval } from "../common/calendar/date/CalendarUtils"
+import { CalendarSearchViewModel } from "./calendar/search/view/CalendarSearchViewModel"
+import { CalendarSearchModel } from "./search/model/CalendarSearchModel"
 
-assertMainOrNode()
+EnvProvider.assertMainOrNode()
 
 class CalendarLocator implements CommonLocator {
 	clientModelInfo!: ClientModelInfo
 	eventController!: EventController
-	search!: CalendarSearchModel
 	mailboxModel!: MailboxModel
 	contactModel!: ContactModel
 	entityClient!: EntityClient
@@ -242,28 +229,6 @@ class CalendarLocator implements CommonLocator {
 		}
 	}
 
-	async searchViewModelFactory(): Promise<() => CalendarSearchViewModel> {
-		const { CalendarSearchViewModel } = await import("./calendar/search/view/CalendarSearchViewModel.js")
-		const redraw = await this.redraw()
-		const searchRouter = await this.scopedSearchRouter()
-		const calendarEventsRepository = await this.calendarEventsRepository()
-		const calendarModel = await this.calendarModel()
-		return () => {
-			return new CalendarSearchViewModel(
-				searchRouter,
-				this.search,
-				calendarModel,
-				this.logins,
-				this.entityClient,
-				this.eventController,
-				this.calendarFacade,
-				this.progressTracker,
-				calendarEventsRepository,
-				redraw,
-			)
-		}
-	}
-
 	readonly throttledRouter: lazy<Router> = lazyMemoized(() => new ThrottledRouter())
 
 	readonly scopedSearchRouter: lazyAsync<SearchRouter> = lazyMemoized(async () => {
@@ -281,6 +246,11 @@ class CalendarLocator implements CommonLocator {
 		return new ReceivedGroupInvitationsModel<TypeOfGroup>(groupType, this.eventController, this.entityClient, this.logins)
 	}
 
+	readonly calendarSearchModel: lazyAsync<CalendarSearchModel> = lazyMemoized(async () => {
+		const { CalendarSearchModel } = await import("../calendar-app/search/model/CalendarSearchModel.js")
+		return new CalendarSearchModel(this.eventController, this.calendarEventsRepository, this.progressTracker)
+	})
+
 	readonly calendarViewModel = lazyMemoized<Promise<CalendarViewModel>>(async () => {
 		const { CalendarViewModel } = await import("./calendar/view/CalendarViewModel.js")
 		const { DefaultDateProvider } = await import("../common/calendar/date/CalendarUtils")
@@ -295,6 +265,7 @@ class CalendarLocator implements CommonLocator {
 			(...args) => this.calendarEventPreviewModel(...args),
 			(...args) => this.calendarContactPreviewModel(...args),
 			await this.calendarModel(),
+			this.calendarSearchModel,
 			await this.calendarEventsRepository(),
 			this.entityClient,
 			this.eventController,
@@ -306,7 +277,8 @@ class CalendarLocator implements CommonLocator {
 			this.contactModel,
 			this.groupSettingsModel,
 			this.operationProgressTracker,
-			this.connectivityModel,
+			this.syncTracker,
+			await this.unscopedSearchRouter(),
 		)
 	})
 
@@ -399,7 +371,7 @@ class CalendarLocator implements CommonLocator {
 	}
 
 	private async contactSuggestionProvider(): Promise<ContactSuggestionProvider> {
-		if (isApp()) {
+		if (EnvProvider.get().isApp()) {
 			const { MobileContactSuggestionProvider } = await import("../common/native/MobileContactSuggestionProvider.js")
 			return new MobileContactSuggestionProvider(this.mobileContactsFacade)
 		} else {
@@ -464,13 +436,13 @@ class CalendarLocator implements CommonLocator {
 			this.mailAddressFacade,
 			this.logins,
 			this.eventController,
-			{ user: this.logins.getUserController().user, userGroupInfo: this.logins.getUserController().userGroupInfo },
+			{ user: this.logins.getUserController().user, groupInfo: this.logins.getUserController().userGroupInfo },
 			nameChanger,
 			await this.redraw(),
 		)
 	}
 
-	async mailAddressTableModelForAdmin(mailGroupId: Id, userId: Id, userInfo: UserInfo): Promise<MailAddressTableModel> {
+	async mailAddressTableModelForAdmin(mailGroupId: Id, userId: Id, mailAddressTableInfo: MailAddressTableInfo): Promise<MailAddressTableModel> {
 		const { MailAddressTableModel } = await import("../common/settings/mailaddress/MailAddressTableModel.js")
 		const nameChanger = await this.adminNameChanger(mailGroupId, userId)
 		return new MailAddressTableModel(
@@ -479,7 +451,22 @@ class CalendarLocator implements CommonLocator {
 			this.mailAddressFacade,
 			this.logins,
 			this.eventController,
-			userInfo,
+			mailAddressTableInfo,
+			nameChanger,
+			await this.redraw(),
+		)
+	}
+
+	async mailAddressTableModelForSharedMailbox(mailGroupInfo: GroupInfo): Promise<MailAddressTableModel> {
+		const { MailAddressTableModel } = await import("../common/settings/mailaddress/MailAddressTableModel.js")
+		const nameChanger = await this.sharedMailboxNameChanger(mailGroupInfo.group)
+		return new MailAddressTableModel(
+			this.entityClient,
+			this.serviceExecutor,
+			this.mailAddressFacade,
+			this.logins,
+			this.eventController,
+			{ user: null, groupInfo: mailGroupInfo },
 			nameChanger,
 			await this.redraw(),
 		)
@@ -493,6 +480,11 @@ class CalendarLocator implements CommonLocator {
 	async adminNameChanger(mailGroupId: Id, userId: Id): Promise<MailAddressNameChanger> {
 		const { AnotherUserMailAddressNameChanger } = await import("../common/settings/mailaddress/AnotherUserMailAddressNameChanger.js")
 		return new AnotherUserMailAddressNameChanger(this.mailAddressFacade, mailGroupId, userId)
+	}
+
+	async sharedMailboxNameChanger(mailGroupId: Id): Promise<MailAddressNameChanger> {
+		const { SharedMailboxNameChanger } = await import("../common/settings/mailaddress/SharedMailboxNameChanger.js")
+		return new SharedMailboxNameChanger(this.mailAddressFacade, mailGroupId)
 	}
 
 	async drawerAttrsFactory(): Promise<() => DrawerMenuAttrs> {
@@ -510,7 +502,7 @@ class CalendarLocator implements CommonLocator {
 
 	async credentialsRemovalHandler(): Promise<CredentialRemovalHandler> {
 		const { NoopCredentialRemovalHandler, AppsCredentialRemovalHandler } = await import("../common/login/CredentialRemovalHandler.js")
-		return isBrowser()
+		return EnvProvider.get().isBrowser()
 			? new NoopCredentialRemovalHandler()
 			: new AppsCredentialRemovalHandler(this.pushService, this.configFacade, async () => {
 					// nothing needs to be specifically done for the calendar app right now.
@@ -522,11 +514,11 @@ class CalendarLocator implements CommonLocator {
 		const { LoginViewModel } = await import("../common/login/LoginViewModel.js")
 		const credentialsRemovalHandler = await calendarLocator.credentialsRemovalHandler()
 		const { MobileAppLock, NoOpAppLock } = await import("../common/login/AppLock.js")
-		const appLock = isApp()
+		const appLock = EnvProvider.get().isApp()
 			? new MobileAppLock(assertNotNull(this.nativeInterfaces).mobileSystemFacade, assertNotNull(this.nativeInterfaces).nativeCredentialsFacade)
 			: new NoOpAppLock()
 		return () => {
-			const domainConfig = isBrowser()
+			const domainConfig = EnvProvider.get().isBrowser()
 				? calendarLocator.domainConfigProvider().getDomainConfigForHostname(location.hostname, location.protocol, location.port)
 				: // in this case, we know that we have a staticUrl set that we need to use
 					calendarLocator.domainConfigProvider().getCurrentDomainConfig()
@@ -538,7 +530,7 @@ class CalendarLocator implements CommonLocator {
 				deviceConfig,
 				domainConfig,
 				credentialsRemovalHandler,
-				isBrowser() ? null : this.pushService,
+				EnvProvider.get().isBrowser() ? null : this.pushService,
 				appLock,
 			)
 		}
@@ -644,7 +636,6 @@ class CalendarLocator implements CommonLocator {
 		this.progressTracker = new ProgressTracker()
 		this.eventController = new EventController(calendarLocator.logins)
 		this.syncTracker = new SyncTracker()
-		this.search = new CalendarSearchModel(() => this.calendarEventsRepository())
 		this.entityClient = new EntityClient(restInterface, this.clientModelInfo)
 		this.cryptoFacade = cryptoFacade
 		this.cacheStorage = cacheStorage
@@ -682,7 +673,7 @@ class CalendarLocator implements CommonLocator {
 		this.usageTestController = new UsageTestController(this.usageTestModel)
 
 		this.Const = Const
-		if (!isBrowser()) {
+		if (!EnvProvider.get().isBrowser()) {
 			const { WebDesktopFacade } = await import("../common/native/WebDesktopFacade")
 			const { WebMobileFacade } = await import("../common/native/WebMobileFacade.js")
 			const { WebCommonNativeFacade } = await import("../common/native/WebCommonNativeFacade.js")
@@ -732,19 +723,19 @@ class CalendarLocator implements CommonLocator {
 				AppType.Calendar,
 			)
 
-			if (isDesktop() || isAdminClient()) {
+			if (EnvProvider.get().isDesktop() || EnvProvider.get().isAdminClient()) {
 				const desktopInterfaces = createDesktopInterfaces(this.native)
 				this.searchTextFacade = desktopInterfaces.searchTextFacade
 				this.interWindowEventSender = desktopInterfaces.interWindowEventSender
-				this.webAuthn = new WebauthnClient(new WebAuthnFacadeSendDispatcher(this.native), this.domainConfigProvider(), isApp())
-				if (isDesktop()) {
+				this.webAuthn = new WebauthnClient(new WebAuthnFacadeSendDispatcher(this.native), this.domainConfigProvider(), EnvProvider.get().isApp())
+				if (EnvProvider.get().isDesktop()) {
 					this.desktopSettingsFacade = desktopInterfaces.desktopSettingsFacade
 					this.desktopSystemFacade = desktopInterfaces.desktopSystemFacade
 				}
-			} else if (isAndroidApp() || isIOSApp()) {
+			} else if (EnvProvider.get().isAndroidApp() || EnvProvider.get().isIOSApp()) {
 				const { SystemPermissionHandler } = await import("../common/native/SystemPermissionHandler.js")
 				this.systemPermissionHandler = new SystemPermissionHandler(this.systemFacade)
-				this.webAuthn = new WebauthnClient(new WebAuthnFacadeSendDispatcher(this.native), this.domainConfigProvider(), isApp())
+				this.webAuthn = new WebauthnClient(new WebAuthnFacadeSendDispatcher(this.native), this.domainConfigProvider(), EnvProvider.get().isApp())
 
 				this.systemFacade.storeServerRemoteOrigin(assertNotNull(env.staticUrl)).catch((e) => console.log("Failed to store remote URL: ", e))
 			}
@@ -754,7 +745,7 @@ class CalendarLocator implements CommonLocator {
 			this.webAuthn = new WebauthnClient(
 				new BrowserWebauthn(navigator.credentials, this.domainConfigProvider().getCurrentDomainConfig()),
 				this.domainConfigProvider(),
-				isApp(),
+				EnvProvider.get().isApp(),
 			)
 		}
 		this.secondFactorHandler = new SecondFactorHandler(
@@ -826,7 +817,7 @@ class CalendarLocator implements CommonLocator {
 			},
 		}
 		const selectedThemeFacade =
-			isApp() || isDesktop()
+			EnvProvider.get().isApp() || EnvProvider.get().isDesktop()
 				? new NativeThemeFacade(new LazyLoaded<ThemeFacade>(async () => calendarLocator.themeFacade))
 				: new WebThemeFacade(deviceConfig)
 		const lazySanitizer =
@@ -905,9 +896,9 @@ class CalendarLocator implements CommonLocator {
 			this.fileController,
 			this.contactModel,
 			timeZone,
-			!isBrowser() ? this.externalCalendarFacade : null,
+			!EnvProvider.get().isBrowser() ? this.externalCalendarFacade : null,
 			deviceConfig,
-			!isBrowser() ? this.pushService : null,
+			!EnvProvider.get().isBrowser() ? this.pushService : null,
 			this.syncTracker,
 			() => {
 				this.systemFacade.requestWidgetRefresh()
@@ -1036,7 +1027,7 @@ class CalendarLocator implements CommonLocator {
 	})
 
 	showSetupWizard = async () => {
-		if (isApp()) {
+		if (EnvProvider.get().isApp()) {
 			const { showSetupWizard } = await import("../common/native/wizard/SetupWizard.js")
 			return showSetupWizard(
 				this.systemPermissionHandler,
@@ -1053,10 +1044,10 @@ class CalendarLocator implements CommonLocator {
 	}
 
 	async updateClients(): Promise<void> {
-		if (isApp()) {
-			if (isAndroidApp()) {
+		if (EnvProvider.get().isApp()) {
+			if (EnvProvider.get().isAndroidApp()) {
 				this.nativeInterfaces?.mobileSystemFacade.openLink("market://details?id=de.tutao.calendar")
-			} else if (isIOSApp()) {
+			} else if (EnvProvider.get().isIOSApp()) {
 				this.nativeInterfaces?.mobileSystemFacade.openLink("itms-apps://itunes.apple.com/app/id6657977811")
 			}
 		}
@@ -1064,9 +1055,9 @@ class CalendarLocator implements CommonLocator {
 
 	readonly credentialFormatMigrator: () => Promise<CredentialFormatMigrator> = lazyMemoized(async () => {
 		const { CredentialFormatMigrator } = await import("../common/misc/credentials/CredentialFormatMigrator.js")
-		if (isDesktop()) {
+		if (EnvProvider.get().isDesktop()) {
 			return new CredentialFormatMigrator(deviceConfig, this.nativeCredentialsFacade, null)
-		} else if (isApp()) {
+		} else if (EnvProvider.get().isApp()) {
 			return new CredentialFormatMigrator(deviceConfig, this.nativeCredentialsFacade, this.systemFacade)
 		} else {
 			return new CredentialFormatMigrator(deviceConfig, null, null)
@@ -1085,8 +1076,12 @@ class CalendarLocator implements CommonLocator {
 	 */
 	private async createCredentialsProvider(): Promise<CredentialsProvider> {
 		const { CredentialsProvider } = await import("../common/misc/credentials/CredentialsProvider.js")
-		if (isDesktop() || isApp()) {
-			return new CredentialsProvider(this.nativeCredentialsFacade, this.sqlCipherFacade, isDesktop() ? this.interWindowEventSender : null)
+		if (EnvProvider.get().isDesktop() || EnvProvider.get().isApp()) {
+			return new CredentialsProvider(
+				this.nativeCredentialsFacade,
+				this.sqlCipherFacade,
+				EnvProvider.get().isDesktop() ? this.interWindowEventSender : null,
+			)
 		} else {
 			const { WebCredentialsFacade } = await import("../common/misc/credentials/WebCredentialsFacade.js")
 			return new CredentialsProvider(new WebCredentialsFacade(deviceConfig), null, null)
@@ -1097,6 +1092,26 @@ class CalendarLocator implements CommonLocator {
 		const { GroupSettingsModel } = await import("../common/sharing/model/GroupSettingsModel.js")
 		return new GroupSettingsModel(this.entityClient, this.logins)
 	})
+	async calendarSearchViewModelFactory(): Promise<() => CalendarSearchViewModel> {
+		const { CalendarSearchViewModel } = await import("./calendar/search/view/CalendarSearchViewModel.js")
+		const calendarModel = await this.calendarModel()
+		const calendarSearchModel = await this.calendarSearchModel()
+		const redraw = await this.redraw
+		const router = await this.scopedSearchRouter()
+		return () =>
+			new CalendarSearchViewModel(
+				calendarModel,
+				this.logins,
+				calendarSearchModel,
+				router,
+				this.eventController,
+				this.entityClient,
+				this.mailboxModel,
+				(...args) => this.calendarEventModel(...args),
+				(...args) => this.calendarEventPreviewModel(...args),
+				redraw,
+			)
+	}
 }
 
 export type ICalendarLocator = Readonly<CalendarLocator>

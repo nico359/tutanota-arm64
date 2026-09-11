@@ -1,5 +1,5 @@
 import m, { Children } from "mithril"
-import { ApprovalStatus, assertMainOrNode, Const, isIOSApp, ProgrammingError, UpgradePromptType } from "@tutao/app-env"
+import { ApprovalStatus, Const, EnvProvider, ProgrammingError, UpgradePromptType } from "@tutao/app-env"
 import { elementIdPart, elementIdToId, GENERATED_MAX_ID, getEtId, idToElementId } from "@tutao/meta"
 import { assertNotNull, base64ExtToBase64, base64ToUint8Array, downcast, neverNull, promiseMap, stringToBase64 } from "@tutao/utils"
 import { InfoLink, lang, TranslationKey } from "../../../../ui/utils/LanguageViewModel"
@@ -14,7 +14,7 @@ import * as SignOrderAgreementDialog from "../../subscription/SignOrderProcessin
 import {
 	AccountingInfo,
 	AccountingInfoTypeRef,
-	AppStoreSubscriptionService,
+	AppStoreSubscriptionService_GET,
 	Booking,
 	BookingTypeRef,
 	createAppStoreSubscriptionGetIn,
@@ -27,7 +27,7 @@ import {
 	OrderProcessingAgreement,
 	OrderProcessingAgreementTypeRef,
 	PlanConfiguration,
-	RenewalPreferenceService,
+	RenewalPreferenceService_POST,
 	UserTypeRef,
 } from "@tutao/entities/sys"
 import {
@@ -68,7 +68,6 @@ import { openAppleSubscriptionPage } from "../../subscription/PaymentViewer.js"
 import { theme } from "../../../../ui/theme"
 import { TitleSection } from "../../../../ui/TitleSection"
 import { px } from "../../../../ui/size"
-import { UpdatableSettingsViewer } from "../Interfaces"
 import { SubscriptionStateCard, SubscriptionStateCardAttrs, SubscriptionStatus } from "../../subscription/components/SubscriptionStateCard"
 import { SubscriptionPaidFeaturesCard } from "../../subscription/components/SubscriptionPaidFeaturesCard"
 import { MenuTitle } from "../../../../ui/titles/MenuTitle"
@@ -78,14 +77,15 @@ import { PrimaryButton, SecondaryButton } from "../../../../ui/base/buttons/Vari
 import { showSubscriptionCancellationDialog } from "./SubscriptionCancellationDialog"
 import { showProgressDialog } from "../../../../ui/dialogs/ProgressDialog"
 import { MobilePaymentError } from "../../api/common/error/MobilePaymentError"
-import { client } from "../../../../platform-kit/app-env/boot/ClientDetector"
 import { showUserSatisfactionDialogAfterUpgrade } from "../../ratings/UserSatisfactionUtils"
 import { EntityUpdateData, isUpdateForTypeRef } from "../../../../platform-kit/instance-pipeline/utils/EntityUpdateUtils"
 import { SubscriptionStateCellAttrs } from "../../subscription/components/SubscriptionStateCell"
 import { MessageBanner } from "../../../../ui/base/MessageBanner"
 import { shouldOfferSubscriptionRevocation } from "./RevocationEligibility"
+import { ClientDetector } from "../../../../platform-kit/app-env/boot/ClientDetector"
+import { UpdatableSettingsViewer } from "../Interfaces"
 
-assertMainOrNode()
+EnvProvider.assertMainOrNode()
 export class SubscriptionSettingsViewer implements UpdatableSettingsViewer {
 	readonly view: UpdatableSettingsViewer["view"]
 	private readonly _subscriptionFieldValue: Stream<string>
@@ -250,7 +250,6 @@ export class SubscriptionSettingsViewer implements UpdatableSettingsViewer {
 		const currentStateSubscription = this.getCurrentStateOfSubscription(booking)
 		//Accounting interval can be changed by customer
 		const paymentInterval = Number(asPaymentInterval(accountingInfo.paymentInterval))
-		const isNewPlan = NewPaidPlans.includes(planType as AvailablePlanType)
 		const isAppleSubscription = accountingInfo.paymentMethod === PaymentMethodType.AppStore
 		//Make copy of booking end date to alter it
 		const nextEndDate = new Date(assertNotNull(booking.endDate))
@@ -274,9 +273,7 @@ export class SubscriptionSettingsViewer implements UpdatableSettingsViewer {
 							this.getEndDateAttrs(currentStateSubscription, booking.endDate),
 						],
 					} satisfies SubscriptionStateCardAttrs),
-					(!isNewSubscriptionVisible || isAppleSubscription) &&
-						isNewPlan &&
-						this.renderButtons(booking, currentStateSubscription, isAppleSubscription),
+					(!isNewSubscriptionVisible || isAppleSubscription) && this.renderButtons(booking, currentStateSubscription, isAppleSubscription),
 				),
 				//Next Subscription period
 				isNewSubscriptionVisible &&
@@ -292,7 +289,7 @@ export class SubscriptionSettingsViewer implements UpdatableSettingsViewer {
 									!isAppleSubscription
 										? {
 												icon: Icons.PenFilled,
-												title: "changePlan_action",
+												label: "changePlan_action",
 												click: () => {
 													this.onSubscriptionClick()
 													m.redraw()
@@ -305,7 +302,7 @@ export class SubscriptionSettingsViewer implements UpdatableSettingsViewer {
 								!isAppleSubscription
 									? this.getPriceCellAttrs(this._nextPriceFieldValue(), {
 											icon: Icons.Swap,
-											title: "changePaymentInterval_action",
+											label: "changePaymentInterval_action",
 											click: async () => {
 												const message = lang.getTranslation("subscriptionChangeInterval_msg", {
 													"{period}":
@@ -333,7 +330,7 @@ export class SubscriptionSettingsViewer implements UpdatableSettingsViewer {
 							],
 						} satisfies SubscriptionStateCardAttrs),
 						//Render Buttons
-						isNewPlan && this.renderButtons(booking, currentStateSubscription, isAppleSubscription),
+						this.renderButtons(booking, currentStateSubscription, isAppleSubscription),
 					),
 			),
 
@@ -372,6 +369,9 @@ export class SubscriptionSettingsViewer implements UpdatableSettingsViewer {
 			),
 			m(
 				".flex.justify-end",
+				{
+					id: "managesubscription",
+				},
 				m(PrimaryButton, {
 					label: "subscriptionSettingsMoreFeatures_action",
 					width: "flex",
@@ -392,7 +392,7 @@ export class SubscriptionSettingsViewer implements UpdatableSettingsViewer {
 		}
 		//Render buttons for apple
 		if (isAppleSubscription) {
-			return isIOSApp()
+			return EnvProvider.get().isIOSApp()
 				? m(
 						".flex.justify-end.gap-8",
 
@@ -445,6 +445,9 @@ export class SubscriptionSettingsViewer implements UpdatableSettingsViewer {
 		if (booking.renewalEnabled) {
 			return m(
 				".flex.justify-end",
+				{
+					id: "managesubscription",
+				},
 				m(SecondaryButton, {
 					label: "subscriptionStateCardCancel_action",
 					width: "flex",
@@ -461,6 +464,9 @@ export class SubscriptionSettingsViewer implements UpdatableSettingsViewer {
 		else if (!booking.renewalEnabled) {
 			return m(
 				".flex.justify-end",
+				{
+					id: "managesubscription",
+				},
 				m(PrimaryButton, {
 					label: "subscriptionSettingsKeep_action",
 					width: "flex",
@@ -481,7 +487,7 @@ export class SubscriptionSettingsViewer implements UpdatableSettingsViewer {
 				customerId: customerId,
 			}
 			const data = createRenewalPreferenceServicePostIn(inputData)
-			await showProgressDialog("pleaseWait_msg", locator.serviceExecutor.post(RenewalPreferenceService, data, null))
+			await showProgressDialog("pleaseWait_msg", locator.serviceExecutor.execute(RenewalPreferenceService_POST, data, null))
 		}
 	}
 
@@ -503,7 +509,7 @@ export class SubscriptionSettingsViewer implements UpdatableSettingsViewer {
 	private async onSubscriptionClick() {
 		const paymentMethod = this._accountingInfo ? getPaymentMethodType(this._accountingInfo) : null
 
-		if (isIOSApp() && (paymentMethod == null || paymentMethod === PaymentMethodType.AppStore)) {
+		if (EnvProvider.get().isIOSApp() && (paymentMethod == null || paymentMethod === PaymentMethodType.AppStore)) {
 			// case 1: we are in iOS app and we either are not paying or are already on AppStore
 			void this.handleAppStoreSubscriptionChange()
 		} else if (paymentMethod === PaymentMethodType.AppStore /*&& this._accountingInfo?.appStoreSubscription*/) {
@@ -520,7 +526,7 @@ export class SubscriptionSettingsViewer implements UpdatableSettingsViewer {
 					customer: this._customer,
 					accountingInfo: this._accountingInfo,
 					lastBooking: this._lastBooking,
-					acceptedPlans: (await locator.logins.getUserController().isNewPaidPlan()) ? NewPaidPlans : AvailablePlans,
+					acceptedPlans: NewPaidPlans,
 					reason: null,
 				})
 			}
@@ -528,7 +534,7 @@ export class SubscriptionSettingsViewer implements UpdatableSettingsViewer {
 	}
 
 	private async handleUpgradeSubscription() {
-		if (isIOSApp()) {
+		if (EnvProvider.get().isIOSApp()) {
 			// We pass `null` because we expect no subscription when upgrading
 			const appStoreSubscriptionOwnership = await queryAppStoreSubscriptionOwnership(null)
 
@@ -641,8 +647,8 @@ export class SubscriptionSettingsViewer implements UpdatableSettingsViewer {
 			return true
 		}
 
-		const appStoreSubscriptionData = await locator.serviceExecutor.get(
-			AppStoreSubscriptionService,
+		const appStoreSubscriptionData = await locator.serviceExecutor.execute(
+			AppStoreSubscriptionService_GET,
 			createAppStoreSubscriptionGetIn({ subscriptionId: elementIdPart(assertNotNull(accountingInfo.appStoreSubscription)) }),
 			null,
 		)
@@ -653,9 +659,9 @@ export class SubscriptionSettingsViewer implements UpdatableSettingsViewer {
 
 		const isMailSubscription = appStoreSubscriptionData.app === SubscriptionApp.Mail
 
-		if (client.isCalendarApp() && isMailSubscription) {
+		if (ClientDetector.get().isCalendarApp() && isMailSubscription) {
 			return await this.handleAppOpen(SubscriptionApp.Mail)
-		} else if (!client.isCalendarApp() && !isMailSubscription) {
+		} else if (!ClientDetector.get().isCalendarApp() && !isMailSubscription) {
 			return await this.handleAppOpen(SubscriptionApp.Calendar)
 		}
 
@@ -873,7 +879,7 @@ export class SubscriptionSettingsViewer implements UpdatableSettingsViewer {
 		}
 	}
 
-	async entityEventsReceived(updates: ReadonlyArray<EntityUpdateData>): Promise<void> {
+	async onEntityUpdatesReceived(updates: ReadonlyArray<EntityUpdateData>): Promise<void> {
 		await promiseMap(updates, (update) => this.processUpdate(update))
 	}
 

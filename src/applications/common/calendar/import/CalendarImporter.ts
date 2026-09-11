@@ -19,7 +19,7 @@ import { Dialog } from "../../../../ui/base/Dialog"
 import { DateTime } from "luxon"
 import { clone, elementIdToId } from "@tutao/meta"
 import { EndType } from "@tutao/app-env"
-import { errorsToString } from "../../../../platform-kit/utils/Utils"
+import { errorsToString, errToErrorInfo } from "../../../../platform-kit/utils/ErrorInfo"
 
 export class CalendarImporter {
 	constructor(
@@ -143,12 +143,12 @@ export class CalendarImporter {
 			await this.operationProgressTracker.onProgress(operation.id, (prioritizedEvents.length / progressData.maxOperations) * 100)
 
 			if (isNotEmpty(result.failedEventErrors)) {
-				const errors = errorsToString(result.failedEventErrors)
+				const errors = errorsToString(result.failedEventErrors.map((e) => errToErrorInfo(e)))
 				throw new ImportError(Error(errors), "Failed to create calendar events", result.failedEvents.length)
 			}
 
 			if (isNotEmpty(result.failedAlarms)) {
-				const errors = errorsToString(result.failedAlarmErrors)
+				const errors = errorsToString(result.failedAlarmErrors.map((e) => errToErrorInfo(e)))
 				throw new ImportError(Error(errors), "Failed to create some alarms for imported events", result.failedAlarms.length)
 			}
 
@@ -209,8 +209,8 @@ export class CalendarImporter {
 }
 
 export enum EventImportRejectionReason {
-	Pre1970,
-	Inversed,
+	InvalidPre1970,
+	InvalidEndBeforeStart,
 	InvalidDate,
 	Duplicate,
 	DuplicateInIcs,
@@ -314,12 +314,12 @@ function determineRejectionReason(
 		throw new Error("Uid is not set for imported event")
 	}
 	switch (checkEventValidity(event)) {
-		case CalendarEventValidity.InvalidContainsInvalidDate:
+		case CalendarEventValidity.InvalidDate:
 			return EventImportRejectionReason.InvalidDate
 		case CalendarEventValidity.InvalidEndBeforeStart:
-			return EventImportRejectionReason.Inversed
+			return EventImportRejectionReason.InvalidEndBeforeStart
 		case CalendarEventValidity.InvalidPre1970:
-			return EventImportRejectionReason.Pre1970
+			return EventImportRejectionReason.InvalidPre1970
 	}
 
 	const isExistingDuplicate = existingEventUidGroup.some((ev) => shallowIsSameEvent(ev, event))

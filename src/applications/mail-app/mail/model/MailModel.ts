@@ -16,7 +16,7 @@ import {
 	splitInChunks,
 } from "../../../../platform-kit/utils"
 import { CUSTOM_MIN_ID, elementIdPart, elementIdToId, getElementId, idToElementId, isSameId, listIdPart, OperationType } from "../../../../platform-kit/meta"
-import { FeatureType, isBrowser, ProgrammingError, TutanotaError } from "../../../../platform-kit/app-env"
+import { EnvProvider, FeatureType, ProgrammingError, TutanotaError } from "../../../../platform-kit/app-env"
 
 import m from "mithril"
 import { Notifications, NotificationType } from "../../../../ui/Notifications.js"
@@ -67,6 +67,11 @@ export class MailModel {
 	 */
 	private mailSets: Map<Id, MailboxSets> = new Map()
 
+	#indexingSupported: boolean = true
+	get indexingSupported(): boolean {
+		return this.#indexingSupported
+	}
+
 	constructor(
 		private readonly notifications: Notifications,
 		private readonly mailboxModel: MailboxModel,
@@ -77,6 +82,7 @@ export class MailModel {
 		private readonly connectivityModel: WebsocketConnectivityModel | null,
 		private readonly processInboxHandler: () => ProcessInboxHandler,
 		private readonly bulkMailLoader: BulkMailLoader,
+		private readonly registerIndexingNotAvailableHandler: (handler: () => unknown) => unknown,
 	) {}
 
 	// only init listeners once
@@ -100,6 +106,9 @@ export class MailModel {
 	async init(): Promise<void> {
 		this.initListeners()
 		this.mailSets = await this.loadMailSets()
+		this.registerIndexingNotAvailableHandler(() => {
+			this.#indexingSupported = false
+		})
 	}
 
 	private async loadMailSets(): Promise<Map<Id, MailboxSets>> {
@@ -205,11 +214,10 @@ export class MailModel {
 				const folderSystem = this.getFolderSystemByGroupId(assertNotNull(mail._ownerGroup))
 
 				let targetFolder = sourceMailFolder
-				const isInternalUser = this.logins.getUserController().isInternalUser()
-				if (isInternalUser && mailboxDetail && folderSystem) {
+				if (this.isInternalUser() && mailboxDetail && folderSystem) {
 					targetFolder = await this.processInboxHandler().handleIncomingMail(mail, sourceMailFolder, mailboxDetail, folderSystem, isLeaderClient)
 				}
-				if (isBrowser()) {
+				if (EnvProvider.get().isBrowser()) {
 					this._showNotification(targetFolder, mail)
 				}
 			}
@@ -408,10 +416,14 @@ export class MailModel {
 	}
 
 	canManageLabels(): boolean {
-		return this.logins.getUserController().isInternalUser()
+		return this.isInternalUser()
 	}
 
 	canAssignLabels(): boolean {
+		return this.isInternalUser()
+	}
+
+	isInternalUser(): boolean {
 		return this.logins.getUserController().isInternalUser()
 	}
 
@@ -423,7 +435,7 @@ export class MailModel {
 	 * @return true if the user is allowed to use conversation views (listing and viewing mails)
 	 */
 	canUseConversationView(): boolean {
-		return this.logins.getUserController().isInternalUser()
+		return this.isInternalUser()
 	}
 
 	async markMails(mails: readonly IdTuple[], unread: boolean): Promise<void> {

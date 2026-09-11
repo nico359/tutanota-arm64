@@ -1,7 +1,7 @@
 import { DbEncryptionData } from "../../src/applications/common/api/worker/search/SearchTypes.js"
 import { IndexerCore } from "../../src/applications/mail-app/workerUtils/index/IndexerCore.js"
 import { DbFacade, DbTransaction } from "../../src/applications/common/api/worker/search/DbFacade.js"
-import { assertNotNull, base64ToUint8Array, deepEqual, defer, isNotNull, Thunk, typedEntries, uint8ArrayToString } from "../../src/platform-kit/utils"
+import { assertNotNull, base64ToUint8Array, deepEqual, defer, isNotNull, remove, Thunk, typedEntries, uint8ArrayToString } from "../../src/platform-kit/utils"
 import type { DesktopKeyStoreFacade } from "../../src/applications/common/desktop/DesktopKeyStoreFacade.js"
 import { mock } from "@tutao/otest"
 import { Aes256Key, aes256RandomKey, FIXED_INITIALIZATION_VECTOR } from "../../src/platform-kit/crypto"
@@ -9,18 +9,19 @@ import { ScheduledPeriodicId, ScheduledTimeoutId, Scheduler } from "../../src/ap
 import { matchers, object, when } from "testdouble"
 import {
 	AggregatedEntity,
-	Cardinality,
+	AssociationTypeEnum,
+	CardinalityEnum,
 	clone,
 	create,
 	Entity,
+	EntityTypeEnum,
 	generatedIdToTimestamp,
 	idToElementId,
 	ModelValue,
 	timestampToGeneratedId,
-	Type,
 	TypeModel,
 	TypeRef,
-	ValueType,
+	ValueTypeEnum,
 } from "../../src/platform-kit/meta"
 import { type fetch as undiciFetch, type Response } from "undici"
 import {
@@ -47,7 +48,10 @@ import { KeyLoaderFacade } from "../../src/platform-kit/base/base-crypto/KeyLoad
 import { BrowserData } from "../../src/platform-kit/app-env/boot/ClientConstants"
 import { SYMMETRIC_CIPHER_FACADE, SymmetricCipherFacade } from "../../src/platform-kit/crypto/instance-pipeline-crypto/SymmetricCipherFacade"
 import { OfflineMapper } from "../../src/platform-kit/instance-pipeline/OfflineMapper"
-import { ProgrammingError } from "../../src/platform-kit/app-env"
+import { DomainConfig, EnvProvider, EnvType, ProgrammingError } from "../../src/platform-kit/app-env"
+import { TypeChecks } from "../../src/platform-kit/app-env/TsTypeChecks"
+import { EventController } from "../../src/applications/common/api/main/EventController"
+import { EntityUpdateData, EntityUpdatesListener } from "../../src/platform-kit/instance-pipeline/utils/EntityUpdateUtils"
 
 export const browserDataStub: BrowserData = {
 	needsMicrotaskHack: false,
@@ -68,7 +72,12 @@ export function makeCore(
 	const { transaction } = safeArgs
 	const dbFacade = { createTransaction: () => Promise.resolve(transaction) } as Partial<DbFacade>
 	const defaultDb = new EncryptedDbWrapper(dbFacade as DbFacade)
-	defaultDb.init(safeArgs.encryptionData ?? { key: aes256RandomKey(), initializationVector: FIXED_INITIALIZATION_VECTOR })
+	defaultDb.init(
+		safeArgs.encryptionData ?? {
+			key: aes256RandomKey(),
+			initializationVector: FIXED_INITIALIZATION_VECTOR,
+		},
+	)
 	const { db, browserData } = {
 		...{ db: defaultDb, browserData: browserDataStub },
 		...safeArgs,
@@ -214,39 +223,39 @@ function getDefaultTestValue(valueName: string, value: ModelValue, typeModel: Ty
 		return "0"
 	} else if (valueName === "_id") {
 		switch (typeModel.type) {
-			case Type.DataTransfer:
+			case EntityTypeEnum.DataTransfer:
 				throw new ProgrammingError("No _id for dataTransfer")
-			case Type.Aggregated:
+			case EntityTypeEnum.Aggregated:
 				return `${value.id}_id`
-			case Type.Element:
+			case EntityTypeEnum.Element:
 				return idToElementId(`${value.id}_id`)
-			case Type.ListElement:
-			case Type.BlobElement:
+			case EntityTypeEnum.ListElement:
+			case EntityTypeEnum.BlobElement:
 				return [`${value.id}_listid`, `${value.id}_elementId`]
 		}
 	} else if (valueName === "_permissions") {
 		return `${value.id}_permissions`
-	} else if (value.cardinality === Cardinality.ZeroOrOne) {
+	} else if (value.cardinality === CardinalityEnum.ZeroOrOne) {
 		return null
 	} else {
 		switch (value.type) {
-			case ValueType.Bytes:
+			case ValueTypeEnum.Bytes:
 				return new Uint8Array(0)
 
-			case ValueType.Date:
+			case ValueTypeEnum.Date:
 				return new Date(0)
 
-			case ValueType.Number:
+			case ValueTypeEnum.Number:
 				return "0"
 
-			case ValueType.String:
+			case ValueTypeEnum.String:
 				return ""
 
-			case ValueType.Boolean:
+			case ValueTypeEnum.Boolean:
 				return false
 
-			case ValueType.CustomId:
-			case ValueType.GeneratedId:
+			case ValueTypeEnum.CustomId:
+			case ValueTypeEnum.GeneratedId:
 				return `${value.id}_${valueName}`
 		}
 	}
@@ -263,36 +272,32 @@ export function createTestEntity<T extends Entity>(
 	const entity = create(typeModel, typeRef, getDefaultTestValue)
 	if (opts?.populateAggregates) {
 		for (const [_, assocDef] of typedEntries(typeModel.associations)) {
-			if (assocDef.cardinality === Cardinality.One) {
+			if (assocDef.cardinality === CardinalityEnum.One) {
 				const assocName = assocDef.name
 				switch (assocDef.type) {
-					case "AGGREGATION": {
+					case AssociationTypeEnum.Aggregation: {
 						const assocTypeRef = new TypeRef<AggregatedEntity>(assocDef.dependency ?? typeRef.app, assocDef.refTypeId)
-						entity[assocName] = createTestEntity(assocTypeRef, undefined, opts)
+						entity[assocName] = createTestEntity(assocTypeRef, {}, opts)
 						break
 					}
-					case "ELEMENT_ASSOCIATION":
+					case AssociationTypeEnum.ElementAssociation:
 						entity[assocName] = `elementAssoc_${assocName}`
 						break
-					case "LIST_ASSOCIATION":
+					case AssociationTypeEnum.ListAssociation:
 						entity[assocName] = `listAssoc_${assocName}`
 						break
-					case "LIST_ELEMENT_ASSOCIATION_GENERATED":
-					case "LIST_ELEMENT_ASSOCIATION_CUSTOM":
+					case AssociationTypeEnum.ListElementAssociationGenerated:
+					case AssociationTypeEnum.ListElementAssociationCustom:
 						entity[assocName] = [`listElemAssocList_${assocName}`, `listElemAssocElem_${assocName}`]
 						break
-					case "BLOB_ELEMENT_ASSOCIATION":
+					case AssociationTypeEnum.BlobElementAssociation:
 						entity[assocName] = [`blobElemAssocList_${assocName}`, `blobElemAssocElem_${assocName}`]
 						break
 				}
 			}
 		}
 	}
-	if (values) {
-		return Object.assign(entity, values)
-	} else {
-		return entity
-	}
+	return Object.assign(entity, values ?? {})
 }
 
 export async function createTestEntityWithDummyResolver<T extends Entity>(typeRef: TypeRef<T>, values?: Partial<T>): Promise<T> {
@@ -355,7 +360,9 @@ The last expected item is ${JSON.stringify(expectedArray.at(-1))} but got ${JSON
 
 export function removeOriginals<T extends Entity>(instance: T | null): T | null {
 	if (isNotNull(instance) && typeof instance === "object") {
-		delete instance["_original"]
+		if (TypeChecks.hasProperty("_original", instance)) {
+			instance["_original"] = null
+		}
 		for (const i of Object.values(instance).filter(isNotNull)) {
 			removeOriginals(i)
 		}
@@ -432,17 +439,14 @@ export function offlineMapperFromTypeModelResolver(typeModelResolver: TypeModelR
 	return new OfflineMapper(typeModelResolver)
 }
 
-export async function withOverriddenEnv<F extends (...args: any[]) => any>(override: Partial<typeof env>, action: () => ReturnType<F>) {
-	const previousEnv: typeof env = clone(env)
-	for (const [key, value] of Object.entries(override)) {
-		env[key] = value
-	}
+export async function withOverriddenEnv<F extends (...args: any[]) => any>(override: Partial<EnvType>, action: () => ReturnType<F>) {
+	const previousEnv = structuredClone(env)
+	const newEnv = { ...previousEnv, ...override }
+	EnvProvider.overrideEnv(newEnv)
 	try {
 		return await action()
 	} finally {
-		for (const key of Object.keys(override)) {
-			env[key] = previousEnv[key]
-		}
+		EnvProvider.overrideEnv(previousEnv)
 	}
 }
 
@@ -465,5 +469,27 @@ export async function measureAction(action: () => Promise<void>) {
 	await action()
 	return {
 		time: performance.now() - startTime,
+	}
+}
+
+export class EventControllerMock extends EventController {
+	listeners: EntityUpdatesListener[] = []
+
+	constructor() {
+		super(object())
+	}
+
+	addEntityUpdatesListener(listener: EntityUpdatesListener) {
+		this.listeners.push(listener)
+	}
+
+	removeEntityUpdatesListener(listener: EntityUpdatesListener) {
+		remove(this.listeners, listener)
+	}
+
+	async onEntityUpdateReceived(entityUpdates: readonly EntityUpdateData[], eventOwnerGroupId: Id, isInitialSyncDone: boolean): Promise<void> {
+		for (const listener of this.listeners) {
+			listener.onEntityUpdatesReceived(entityUpdates, eventOwnerGroupId, isInitialSyncDone)
+		}
 	}
 }

@@ -1,7 +1,9 @@
 import { assertNotNull } from "@tutao/utils"
-import { AttributeId, AttributeName, ModelValue, TypeId, TypeModel } from "./EntityTypes"
+import { ModelValue, TypeModel } from "./EntityTypes"
 import { AppName } from "./TypeRef.js"
 import { ProgrammingError } from "@tutao/app-env"
+import { TypeChecks } from "../app-env/TsTypeChecks"
+import { AttributeId, AttributeName, TypeId } from "./EntityConstants"
 
 export class AttributeModel {
 	private static readonly typeIdToAttributeNameMap: Record<AppName, Map<TypeId, Map<AttributeName, AttributeId>>> = {
@@ -25,13 +27,13 @@ export class AttributeModel {
 		return typeIdMap.get(attrName) ?? null
 	}
 
-	private static computeAttributeIdsForTypeIfNotExists(typeModel: TypeModel) {
+	private static computeAttributeIdsForTypeIfNotExists(typeModel: TypeModel): void {
 		if (!AttributeModel.typeIdToAttributeNameMap[typeModel.app].has(typeModel.id)) {
 			AttributeModel.computeAttributeIdsForType(typeModel)
 		}
 	}
 
-	private static computeAttributeIdsForType(typeModel: TypeModel) {
+	private static computeAttributeIdsForType(typeModel: TypeModel): void {
 		let attributeNameToAttributeId: Map<string, number> = new Map()
 		for (const [valueId, value] of Object.entries(typeModel.values)) {
 			attributeNameToAttributeId.set(value.name, parseInt(valueId))
@@ -79,13 +81,13 @@ export function deepMapKeys(obj: Record<string, any>, keyMapper: (rawKey: string
 			mappedObject[mappedKey] = null
 		} else if (Array.isArray(value)) {
 			mappedObject[mappedKey] = value.map((item) => {
-				if (typeof item === "string") {
+				if (TypeChecks.isString(item)) {
 					return item
 				} else {
 					return deepMapKeys(item, keyMapper)
 				}
 			})
-		} else if (typeof value === "object") {
+		} else if (TypeChecks.isObject(value)) {
 			mappedObject[mappedKey] = deepMapKeys(value, keyMapper)
 		} else {
 			mappedObject[mappedKey] = value

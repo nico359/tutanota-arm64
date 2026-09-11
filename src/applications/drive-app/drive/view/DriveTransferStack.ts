@@ -12,11 +12,15 @@ import { Icon, IconSize } from "../../../../ui/base/Icon"
 import { lang, Translation } from "../../../../ui/utils/LanguageViewModel"
 import { TransferId } from "../../../../entities/drive/Utils"
 import { CircleLoadingBar, CircleLoadingBarAttrs } from "../../../../ui/CircleLoadingBar"
+import { calculatePercentage } from "./DriveUtils"
+import { formatDurationNarrow } from "../../../../ui/utils/Formatter"
 
 export interface DriveTransferStackAttrs {
 	driveTransfers: DriveTransfers
 	cancelTransfer: (transferId: TransferId) => unknown
 	cancelAllTransfers: () => unknown
+	retryTransfer: (transferId: TransferId) => unknown
+	retryFailedTransfers: () => unknown
 }
 
 // register custom CSS property so that we can animate it.
@@ -34,6 +38,7 @@ if (typeof CSS.registerProperty === "function") {
 interface TransferStackStatus {
 	progressState: ProgressState
 	percentage: number
+	timeRemainingSec: number | null
 	mainText: Translation
 	infoText?: Translation
 }
@@ -71,10 +76,8 @@ export class DriveTransferStack implements Component<DriveTransferStackAttrs> {
 				infoText = lang.getTranslation("transfersCompleted_msg", { "{done}": doneTransfers, "{total}": totalTransfers })
 			}
 		}
-		const percentagesSum = currentTransfers.reduce((acc, cur) => (cur.transferredSize / cur.totalSize) * 100 + acc, 0)
-		const percentage = Math.min(Math.round(percentagesSum / currentTransfers.length), 100)
-
-		return { progressState, percentage, mainText, infoText }
+		const percentage = calculatePercentage(currentTransfers)
+		return { progressState, percentage, mainText, infoText, timeRemainingSec: driveTransfers.timeRemainingSec }
 	}
 
 	// Sort transfers shown in the stack in an intuitive order.
@@ -92,23 +95,27 @@ export class DriveTransferStack implements Component<DriveTransferStackAttrs> {
 		return 0
 	}
 
-	view({ attrs: { driveTransfers, cancelTransfer, cancelAllTransfers } }: Vnode<DriveTransferStackAttrs>): Children {
+	view({ attrs: { driveTransfers, cancelTransfer, cancelAllTransfers, retryTransfer, retryFailedTransfers } }: Vnode<DriveTransferStackAttrs>): Children {
 		const allTransfers = driveTransfers.allTransfers
 		if (allTransfers.length === 0) {
 			return
 		}
 
+		const hasFailedTransfers = allTransfers.some((transfer) => transfer.state === "failed")
+
 		const stackStatus = this.getStackStatus(driveTransfers)
 
 		const sortedTransfers = allTransfers.toSorted(this.compareTransfers)
-		const transferSnackBars = sortedTransfers.map((transferState, index) => {
+		const transferSnackBars = sortedTransfers.map((transferState) => {
 			return m(ProgressSnackBar, {
 				key: transferState.id,
 				mainText: transferState.filename,
 				runningIcon: () => this.renderRunningIcon(transferState.type),
 				progressState: this.getProgressState(transferState.state),
-				percentage: Math.min(Math.round((transferState.transferredSize / transferState.totalSize) * 100), 100),
+				percentage: Math.min(Math.round((transferState.transferredBytes / transferState.totalBytes) * 100), 100),
+				timeRemainingSec: transferState.timeRemainingSec ?? null,
 				onCancel: () => cancelTransfer(transferState.id),
+				onRetry: () => retryTransfer(transferState.id),
 			} satisfies ProgressSnackBarAttrs & { key: string })
 		})
 		return m(
@@ -135,6 +142,15 @@ export class DriveTransferStack implements Component<DriveTransferStackAttrs> {
 								lang.getTranslationText(stackStatus.mainText),
 							),
 							stackStatus.infoText ? m(".small", { "data-testid": lang.getTestId(stackStatus.infoText) }, stackStatus.infoText.text) : null,
+							m(".flex.row.gap-8", [
+								!this.expanded && stackStatus.timeRemainingSec
+									? m(
+											".small",
+											lang.getTranslation("transferTimeRemaining_msg", { "{time}": formatDurationNarrow(stackStatus.timeRemainingSec) })
+												.text,
+										)
+									: null,
+							]),
 						]),
 					]),
 					m(IconButton, {
@@ -142,14 +158,23 @@ export class DriveTransferStack implements Component<DriveTransferStackAttrs> {
 							this.expanded = !this.expanded
 						},
 						icon: this.expanded ? Icons.ChevronDown : Icons.ChevronUp,
-						title: this.expanded ? "collapseTransferStack_label" : "expandTransferStack_label",
+						label: this.expanded ? "collapseTransferStack_label" : "expandTransferStack_label",
 						size: ButtonSize.Normal,
 					}),
+
+					hasFailedTransfers
+						? m(IconButton, {
+								click: () => retryFailedTransfers(),
+								icon: Icons.Refresh,
+								label: "retryFailedTransfers_action",
+								size: ButtonSize.Normal,
+							})
+						: null,
 
 					m(IconButton, {
 						click: async () => cancelAllTransfers(),
 						icon: Icons.X,
-						title: "close_alt",
+						label: "close_alt",
 						size: ButtonSize.Normal,
 					}),
 				]),

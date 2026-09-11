@@ -18,7 +18,7 @@ import m, { Children } from "mithril"
 import { LazyLoaded, neverNull, noOp, ofClass, promiseMap } from "../../../platform-kit/utils"
 import { InfoLink, lang } from "../../../ui/utils/LanguageViewModel"
 import { getSpamRuleFieldToName, getSpamRuleTypeNameMapping, showAddSpamRuleDialog } from "./AddSpamRuleDialog"
-import { assertMainOrNode, DAY_IN_MILLIS, UpgradePromptType } from "../../../platform-kit/app-env"
+import { EnvProvider, TimeConstants, UpgradePromptType } from "../../../platform-kit/app-env"
 import {
 	EntityIdEncoding,
 	GENERATED_MAX_ID,
@@ -55,9 +55,9 @@ import { ExpandableTable } from "../../common/settings/ExpandableTable.js"
 import { getSpamRuleField } from "../mail/MailUtils"
 import { EntityUpdateData, isUpdateForTypeRef } from "../../../platform-kit/instance-pipeline/utils/EntityUpdateUtils"
 
-assertMainOrNode()
+EnvProvider.assertMainOrNode()
 // Number of days for that we load rejected senders
-const REJECTED_SENDERS_TO_LOAD_MS = 5 * DAY_IN_MILLIS
+const REJECTED_SENDERS_TO_LOAD_MS = 5 * TimeConstants.DAY_IN_MILLIS
 // Max number of rejected sender entries that we display in the ui
 const REJECTED_SENDERS_MAX_NUMBER = 100
 
@@ -96,7 +96,7 @@ export class GlobalSettingsViewer implements UpdatableSettingsViewer {
 			columnWidths: [ColumnWidth.Largest, ColumnWidth.Small],
 			showActionButtonColumn: true,
 			addButtonAttrs: {
-				title: "addSpamRule_action",
+				label: "addSpamRule_action",
 				click: () => showAddSpamRuleDialog(null),
 				icon: Icons.Plus,
 				size: ButtonSize.Compact,
@@ -108,7 +108,7 @@ export class GlobalSettingsViewer implements UpdatableSettingsViewer {
 			columnWidths: [ColumnWidth.Largest],
 			showActionButtonColumn: true,
 			addButtonAttrs: {
-				title: "refresh_action",
+				label: "refresh_action",
 				click: () => {
 					this.updateRejectedSenderTable()
 				},
@@ -122,7 +122,7 @@ export class GlobalSettingsViewer implements UpdatableSettingsViewer {
 			columnWidths: [ColumnWidth.Largest, ColumnWidth.Small],
 			showActionButtonColumn: true,
 			addButtonAttrs: {
-				title: "addCustomDomain_action",
+				label: "addCustomDomain_action",
 				click: async () => {
 					const customerInfo = await this.customerInfo.getAsync()
 					if (locator.logins.getUserController().isFreeAccount()) {
@@ -245,7 +245,7 @@ export class GlobalSettingsViewer implements UpdatableSettingsViewer {
 							},
 							actionButtonAttrs: attachDropdown({
 								mainButtonAttrs: {
-									title: "showMore_action",
+									label: "showMore_action",
 									icon: Icons.More,
 									size: ButtonSize.Compact,
 								},
@@ -321,7 +321,7 @@ export class GlobalSettingsViewer implements UpdatableSettingsViewer {
 						},
 					],
 					actionButtonAttrs: {
-						title: "action_label" as const,
+						label: "action_label" as const,
 						icon: Icons.More,
 						size: ButtonSize.Compact,
 						click: createDropdown({
@@ -438,7 +438,7 @@ export class GlobalSettingsViewer implements UpdatableSettingsViewer {
 			}
 		})
 	}
-	entityEventsReceived(updates: ReadonlyArray<EntityUpdateData>): Promise<void> {
+	onEntityUpdatesReceived(updates: ReadonlyArray<EntityUpdateData>): Promise<void> {
 		this.accountMaintenanceUpdateNotifier?.(updates)
 
 		return promiseMap(updates, (update) => {

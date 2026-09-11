@@ -7,6 +7,7 @@ import {
 	isEmpty,
 	isNotEmpty,
 	isNotNull,
+	lazyAsync,
 	lazyMemoized,
 	mapWith,
 	mapWithout,
@@ -16,7 +17,7 @@ import {
 import { ListLoadingState, ListState } from "../../../../ui/base/List.js"
 import { ConversationPrefProvider, ConversationViewModel, ConversationViewModelFactory } from "./ConversationViewModel.js"
 import { CreateMailViewerOptions } from "./MailViewer.js"
-import { ConnectionStateListener, WebsocketConnectivityModel } from "../../../common/misc/WebsocketConnectivityModel.js"
+import { WebsocketConnectivityModel } from "../../../common/misc/WebsocketConnectivityModel.js"
 import { isOfflineError, NotAuthorizedError, NotFoundError, PreconditionFailedError } from "../../../../platform-kit/rest-client/error"
 import { UserError } from "../../../common/api/main/UserError.js"
 import Stream from "mithril/stream"
@@ -30,13 +31,13 @@ import { MailListModel } from "../model/MailListModel"
 import { MailSetListModel } from "../model/MailSetListModel"
 import { ConversationListModel } from "../model/ConversationListModel"
 import { MailListDisplayMode } from "../../../common/misc/DeviceConfig"
-import { client } from "../../../../platform-kit/app-env/boot/ClientDetector"
+import { ClientDetector } from "../../../../platform-kit/app-env/boot/ClientDetector"
 import { ProcessInboxHandler } from "../model/ProcessInboxHandler"
 import { mailLocator } from "../../mailLocator"
 import { getLabelsWithParentLabelNamesPrepended, moveMails } from "./MailGuiUtils"
 import { locator } from "../../../common/api/main/CommonLocator"
 import { UndoModel } from "../../UndoModel"
-import { SyncTracker } from "../../../common/api/main/SyncTracker"
+import { SyncListener, SyncTracker } from "../../../common/api/main/SyncTracker"
 import { ExposedCacheStorage } from "../../../../app-kit/local-store/CacheStorage"
 import { WsConnectionState } from "../../../../platform-kit/network/Constants"
 import {
@@ -53,6 +54,7 @@ import {
 import { ImapAccountSyncStatus, MailSetKind, SystemFolderType } from "../../../../entities/tutanota/Utils"
 import { elementIdPart, getElementId, isSameId, isSameSingleId, OperationType } from "../../../../platform-kit/meta"
 import {
+	CacheSyncStatus,
 	EntityUpdateData,
 	EntityUpdatesListener,
 	isUpdateForTypeRef,
@@ -62,6 +64,11 @@ import { getMailSetKind, isPermanentDeleteAllowedForFolder } from "../MailUtils"
 import { ProgrammingError } from "../../../../platform-kit/app-env"
 import { $Promisable } from "../../workerUtils/index/IndexerPromiseUtils"
 import { CacheMode, DEFAULT_ENTITY_RESTCLIENT_LOAD_OPTIONS } from "../../../../platform-kit/instance-pipeline/RestClientOptions"
+import { SearchRouter } from "../../../common/search/view/SearchRouter"
+import { MailSearchModel } from "../../search/model/MailSearchModel"
+
+import { LiveSearchResult, QuickSearchQuery, SearchQuery } from "../../../common/search/SearchUtils"
+import { LoginController } from "../../../common/api/main/LoginController"
 
 export interface MailOpenedListener {
 	onEmailOpened(mail: Mail): unknown
@@ -112,23 +119,22 @@ export class MailViewModel {
 
 	private readonly entityUpdatesListener: EntityUpdatesListener = {
 		id: "MailViewModel",
-		onEntityUpdatesReceived: (updates, _, isInitialSyncDone) => this.onEntityUpdatesReceived(updates, isInitialSyncDone),
+		onEntityUpdatesReceived: (updates, _) => this.onEntityUpdatesReceived(updates),
 		priority: ListenerPriority.HIGH,
 	}
 
-	private readonly connectionStateListener: ConnectionStateListener = {
+	private readonly syncListener: SyncListener = {
 		id: "MailViewModel",
 		priority: ListenerPriority.NORMAL,
-		onConnectionStateChanged: async (connectionState: WsConnectionState) => {
-			if (connectionState === WsConnectionState.connected) {
-				await this.listModel?.reload()
-			}
+		targetStatus: CacheSyncStatus.OnlineSyncOngoing,
+		onSyncStatusChange: async () => {
+			await this.listModel?.reload()
 		},
 	}
 
 	constructor(
 		private readonly mailboxModel: MailboxModel,
-		private readonly mailModel: MailModel,
+		readonly mailModel: MailModel,
 		private readonly entityClient: EntityClient,
 		private readonly eventController: EventController,
 		private readonly connectivityModel: WebsocketConnectivityModel,
@@ -140,6 +146,9 @@ export class MailViewModel {
 		private readonly router: Router,
 		private readonly updateUi: () => unknown,
 		private readonly syncTracker: SyncTracker,
+		private readonly searchRouter: SearchRouter,
+		private readonly searchModel: lazyAsync<MailSearchModel>,
+		private readonly logins: LoginController,
 	) {}
 
 	getSelectedMailSetKind(): MailSetKind | null {
@@ -308,7 +317,10 @@ export class MailViewModel {
 
 		let mail: Mail | null
 		try {
-			mail = await this.entityClient.load(MailTypeRef, [listId, mailId], { ...DEFAULT_ENTITY_RESTCLIENT_LOAD_OPTIONS, cacheMode: CacheMode.WriteOnly })
+			mail = await this.entityClient.load(MailTypeRef, [listId, mailId], {
+				...DEFAULT_ENTITY_RESTCLIENT_LOAD_OPTIONS,
+				cacheMode: CacheMode.WriteOnly,
+			})
 		} catch (e) {
 			if (isOfflineError(e)) {
 				return
@@ -443,7 +455,7 @@ export class MailViewModel {
 	}
 
 	isExportingMailsAllowed(): boolean {
-		return this.mailModel.isExportingMailsAllowed() && !client.isMobileDevice()
+		return this.mailModel.isExportingMailsAllowed() && !ClientDetector.get().isMobileDevice()
 	}
 
 	private async getFolderForUserInbox(): Promise<MailSet> {
@@ -456,7 +468,7 @@ export class MailViewModel {
 	init() {
 		this.onceInit()
 
-		this.connectivityModel.addConnectionStateListener(this.connectionStateListener)
+		this.syncTracker.addSyncListener(this.syncListener)
 
 		const conversationDisabled = this.conversationPrefProvider.getConversationViewShowOnlySelectedMail()
 		const mailListModePref = !conversationDisabled && this.conversationPrefProvider.getMailListDisplayMode() === MailListDisplayMode.CONVERSATIONS
@@ -570,9 +582,9 @@ export class MailViewModel {
 		this.shouldAttemptCounterFixup = true
 	}
 
-	private fixCounterIfNeeded: (folder: MailSet, loadedMailsWhenCalled: ReadonlyArray<Mail>) => void = debounce(
+	private fixCounterIfNeeded: (mailSet: MailSet, loadedMailsWhenCalled: ReadonlyArray<Mail>) => void = debounce(
 		2000,
-		async (folder: MailSet, loadedMailsWhenCalled: ReadonlyArray<Mail>) => {
+		async (mailSet: MailSet, loadedMailsWhenCalled: ReadonlyArray<Mail>) => {
 			// We cannot be sure that we will fix counters correctly if sync is not yet done
 			if (!this.syncTracker.isSyncDone) {
 				return
@@ -585,7 +597,7 @@ export class MailViewModel {
 			const listHasAllUnreadMails = this.filterType.size === 0 || (this.filterType.size === 1 && this.filterType.has(MailFilterType.Unread))
 			if (
 				ourFolder == null ||
-				!isSameSingleId(getElementId(ourFolder), getElementId(folder)) ||
+				!isSameSingleId(getElementId(ourFolder), getElementId(mailSet)) ||
 				this.connectivityModel.wsConnection()() !== WsConnectionState.connected ||
 				!listHasAllUnreadMails
 			) {
@@ -595,28 +607,28 @@ export class MailViewModel {
 			// If the list was modified in the meantime, we cannot be sure that we will fix counters correctly (e.g., because of the inbox rules)
 			if (this.listModel?.mails !== loadedMailsWhenCalled) {
 				console.log("list changed, trying again later")
-				return this.fixCounterIfNeeded(folder, this.listModel?.mails ?? [])
+				return this.fixCounterIfNeeded(mailSet, this.listModel?.mails ?? [])
 			}
 
 			const unreadMailsCount = count(this.listModel.mails, (e) => e.unread)
 
-			const counterValue = await this.mailModel.getCounterValue(folder)
+			const folderOrLabel = mailSet.folderType === MailSetKind.LABEL ? "label" : "folder"
+			const counterValue = await this.mailModel.getCounterValue(mailSet)
 			if (counterValue != null && counterValue !== unreadMailsCount) {
-				console.log(`fixing up counter for folder ${folder._id}`)
-				await this.mailModel.fixupCounterForFolder(folder, unreadMailsCount)
+				console.log(`fixing up counter for ${folderOrLabel} ${mailSet._id}`)
+				await this.mailModel.fixupCounterForFolder(mailSet, unreadMailsCount)
 			} else {
-				console.log(`same counter, no fixup on folder ${folder._id}`)
+				console.log(`same counter, no fixup on ${folderOrLabel} ${mailSet._id}`)
 			}
 		},
 	)
 
 	private onListStateChange(listModel: MailSetListModel, newState: ListState<Mail>) {
-		// Fixup isn't needed for labels since only mailSets have counters.
 		// A counter fixup with a partially loaded list will set the counter to an incorrect value.
-		const folder = this.getMailSet()
-		if (this.shouldAttemptCounterFixup && folder != null && folder.folderType !== MailSetKind.LABEL && newState.loadingStatus === ListLoadingState.Done) {
+		const mailSet = this.getMailSet()
+		if (this.shouldAttemptCounterFixup && mailSet != null && newState.loadingStatus === ListLoadingState.Done) {
 			// We use listModel.mails to get a correct count as it has all mails, even when conversation grouping is enabled
-			this.fixCounterIfNeeded(folder, listModel.mails)
+			this.fixCounterIfNeeded(mailSet, listModel.mails)
 			this.shouldAttemptCounterFixup = false
 		}
 
@@ -737,7 +749,7 @@ export class MailViewModel {
 		return movedMailIds.flat()
 	}
 
-	private async onEntityUpdatesReceived(updates: ReadonlyArray<EntityUpdateData>, isInitialSyncDone: boolean) {
+	private async onEntityUpdatesReceived(updates: ReadonlyArray<EntityUpdateData>) {
 		// capturing the state so that if we switch mailSets, we won't run into race conditions
 		const folder = this._folder
 		const listModel = this.listModel
@@ -970,8 +982,23 @@ export class MailViewModel {
 		return this.groupMailsByConversation(folder) ? MoveMode.Conversation : MoveMode.Mails
 	}
 
+	selectSearchResult(searchQuery: SearchQuery, mail: Mail | null) {
+		this.searchRouter.routeTo(searchQuery.query, searchQuery.restriction, mail ? getElementId(mail) : null)
+	}
+
+	async getSearchResult({ query, maxResults }: QuickSearchQuery): Promise<LiveSearchResult<Mail>> {
+		const { createMailRestriction, getFreeSearchStartDate } = await import("../../search/model/MailSearchUtils.js")
+		const restriction = createMailRestriction({
+			start: null,
+			end: this.logins.getUserController().isFreeAccount() ? getFreeSearchStartDate().getTime() : null,
+			field: null,
+			folderIds: [],
+		})
+		return (await this.searchModel()).searchMails({ query, maxResults, restriction })
+	}
+
 	deinit() {
-		this.connectivityModel.removeConnectionStateListener(this.connectionStateListener)
+		this.syncTracker.removeSyncListener(this.syncListener)
 	}
 }
 

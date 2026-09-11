@@ -12,7 +12,6 @@ import {
 	getKeyLengthInBytes,
 	keyToUint8Array,
 	sha256Hash,
-	uint8ArrayToKey,
 } from "../../../src/platform-kit/crypto"
 import { AsyncLoginStateOptions, LoginFacade, LoginFailReason, LoginListener, ResumeSessionState } from "../../../src/platform-kit/base/facades/LoginFacade"
 import { IServiceExecutor } from "../../../src/platform-kit/network/ServiceRequest"
@@ -36,14 +35,14 @@ import { Argon2idFacade } from "../../../src/platform-kit/base/base-crypto/WasmA
 import { Credentials, CredentialType } from "../../../src/platform-kit/network/types"
 import { TutanotaPropertiesTypeRef } from "@tutao/entities/tutanota"
 import {
-	ChangeKdfService,
+	ChangeKdfService_POST,
 	createSaltReturn,
 	CreateSessionReturnTypeRef,
 	GroupInfoTypeRef,
 	GroupMembershipTypeRef,
 	SaltReturnTypeRef,
-	SaltService,
-	SessionService,
+	SaltService_GET,
+	SessionService_POST,
 	SessionTypeRef,
 	User,
 	UserExternalAuthInfoTypeRef,
@@ -57,10 +56,11 @@ import { encryptKey } from "../../../src/platform-kit/crypto/instance-pipeline-c
 import { _encryptString } from "../../../src/platform-kit/crypto/instance-pipeline-crypto/CryptoWrapper"
 import { CacheMode, DEFAULT_ENTITY_RESTCLIENT_LOAD_OPTIONS } from "../../../src/platform-kit/instance-pipeline/RestClientOptions"
 import { idToElementId } from "../../../src/platform-kit/meta"
+import { uint8ArrayTo256Key } from "@tutao/crypto/symmetric-cipher-utils"
 
 const { anything, argThat } = matchers
 
-const PASSWORD_KEY = uint8ArrayToKey(new Uint8Array(Array(getKeyLengthInBytes(AesKeyLength.Aes256)).keys()), AesKeyLength.Aes256)
+const PASSWORD_KEY = uint8ArrayTo256Key(new Uint8Array(Array(getKeyLengthInBytes(AesKeyLength.Aes256)).keys()))
 
 /** Verify using testdouble, but register as an ospec assertion */
 export function verify(demonstration: any, config?: td.VerificationConfig) {
@@ -135,7 +135,7 @@ o.spec("LoginFacadeTest", function () {
 
 	o.beforeEach(function () {
 		serviceExecutor = object()
-		when(serviceExecutor.get(SaltService, anything(), null), { ignoreExtraArgs: true }).thenResolve(
+		when(serviceExecutor.execute(SaltService_GET, anything(), null), { ignoreExtraArgs: true }).thenResolve(
 			createTestEntity(SaltReturnTypeRef, { salt: SALT, kdfVersion: DEFAULT_KDF_TYPE }),
 		)
 
@@ -204,7 +204,7 @@ o.spec("LoginFacadeTest", function () {
 			const accessToken = "accessToken"
 
 			o.beforeEach(async function () {
-				when(serviceExecutor.post(SessionService, anything(), null), { ignoreExtraArgs: true }).thenResolve(
+				when(serviceExecutor.execute(SessionService_POST, anything(), null), { ignoreExtraArgs: true }).thenResolve(
 					createTestEntity(CreateSessionReturnTypeRef, {
 						user: userId,
 						accessToken: accessToken,
@@ -349,7 +349,7 @@ o.spec("LoginFacadeTest", function () {
 
 				await facade.resumeSession(credentials, null, dbKey)
 
-				o(facade.asyncLoginState).deepEquals({ state: AsyncLoginStateOptions.Idle })(
+				o(facade.asyncLoginState).deepEquals({ state: AsyncLoginStateOptions.Idle, failure: null })(
 					"Synchronous login occured, so once resume returns we have already logged in",
 				)
 				verify(eventBusClientMock.connect(ConnectMode.Initial))
@@ -366,7 +366,7 @@ o.spec("LoginFacadeTest", function () {
 
 				await facade.resumeSession(credentials, null, dbKey)
 
-				o(facade.asyncLoginState).deepEquals({ state: AsyncLoginStateOptions.Running })("Async login occurred so it is still running")
+				o(facade.asyncLoginState).deepEquals({ state: AsyncLoginStateOptions.Running, failure: null })("Async login occurred so it is still running")
 			})
 
 			o.test("when resuming a session and a notAuthenticatedError is thrown, the error is propagated to the main thread", async function () {
@@ -743,7 +743,7 @@ o.spec("LoginFacadeTest", function () {
 					entityClientMock.load(UserTypeRef, idToElementId(userId), { ...DEFAULT_ENTITY_RESTCLIENT_LOAD_OPTIONS, cacheMode: CacheMode.WriteOnly }),
 				).thenResolve(user)
 
-				when(serviceExecutor.get(SaltService, anything(), null), { ignoreExtraArgs: true }).thenResolve(
+				when(serviceExecutor.execute(SaltService_GET, anything(), null), { ignoreExtraArgs: true }).thenResolve(
 					createSaltReturn({ salt: SALT, kdfVersion: KdfType.Bcrypt }),
 				)
 
@@ -935,8 +935,8 @@ o.spec("LoginFacadeTest", function () {
 				),
 			)
 			verify(
-				serviceExecutor.post(
-					ChangeKdfService,
+				serviceExecutor.execute(
+					ChangeKdfService_POST,
 					argThat(({ kdfVersion, oldVerifier, pwEncUserGroupKey, salt, verifier }) => {
 						return kdfVersion === KdfType.Argon2id
 					}),

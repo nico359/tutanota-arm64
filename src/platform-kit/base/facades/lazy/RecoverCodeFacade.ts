@@ -1,15 +1,14 @@
 import { assertNotNull, KeyVersion, uint8ArrayToHex } from "@tutao/utils"
 import { LoginFacade } from "../LoginFacade.js"
-import { assertWorkerOrNode } from "@tutao/app-env"
+import { EnvProvider } from "@tutao/app-env"
 import {
 	Aes256Key,
 	aes256RandomKey,
 	AesKey,
-	AesKeyLength,
 	createAuthVerifier,
 	createAuthVerifierAsBase64Url,
 	cryptoUtils,
-	decryptKey,
+	decrypt256Key,
 	encryptKey,
 	keyToUint8Array,
 	VersionedKey,
@@ -22,7 +21,7 @@ import { asKdfType } from "../../base-crypto/Constants"
 import { DEFAULT_ENTITY_RESTCLIENT_LOAD_OPTIONS } from "../../../instance-pipeline/RestClientOptions"
 import { idToElementId } from "@tutao/meta"
 
-assertWorkerOrNode()
+EnvProvider.assertWorkerOrNode()
 
 export type RecoverData = {
 	userEncRecoverCode: Uint8Array<ArrayBuffer>
@@ -84,10 +83,10 @@ export class RecoverCodeFacade {
 			extraHeaders,
 		})
 		const userGroupKey = await this.keyLoaderFacade.loadSymUserGroupKey(cryptoUtils.parseKeyVersion(recoveryCodeEntity.userKeyVersion))
-		return decryptKey(userGroupKey, recoveryCodeEntity.userEncRecoverCode, AesKeyLength.Aes256)
+		return decrypt256Key(userGroupKey, recoveryCodeEntity.userEncRecoverCode)
 	}
 
-	private async getPassphraseKey(user: User, passphrase: string) {
+	private async getPassphraseKey(user: User, passphrase: string): Promise<AesKey> {
 		const passphraseKeyData = {
 			kdfType: asKdfType(user.kdfVersion),
 			passphrase,

@@ -1,10 +1,10 @@
 import type { TranslationKey } from "../../../../ui/utils/LanguageViewModel"
 import { downcast, isEmpty, LazyLoaded } from "@tutao/utils"
 import { locator } from "../../api/main/CommonLocator"
-import { ApprovalStatus, CertificateType, getClientType, isIOSApp, ProgrammingError, UpgradePromptType } from "@tutao/app-env"
+import { ApprovalStatus, CertificateType, EnvProvider, getClientType, ProgrammingError, UpgradePromptType } from "@tutao/app-env"
 import { IServiceExecutor } from "../../../../platform-kit/network/ServiceRequest.js"
 import { MobilePaymentSubscriptionOwnership } from "@tutao/native-bridge/generatedIpc/enums"
-import { client } from "../../../../platform-kit/app-env/boot/ClientDetector"
+import { ClientDetector } from "../../../../platform-kit/app-env/boot/ClientDetector"
 import { formatMonthlyPrice, PaymentInterval, PriceAndConfigProvider } from "./PriceUtils.js"
 import { ReplacementKey, UpgradePriceType } from "../FeatureListProvider.js"
 import {
@@ -17,7 +17,7 @@ import {
 	CustomerInfo,
 	CustomerInfoTypeRef,
 	CustomerTypeRef,
-	PaymentDataService,
+	PaymentDataService_GET,
 	PlanConfiguration,
 } from "@tutao/entities/sys"
 import {
@@ -34,7 +34,7 @@ import {
 	PlanName,
 	PlanType,
 } from "../../../../entities/sys/Utils"
-import { EntityUpdatesListener, EntityUpdateData, isUpdateFor, ListenerPriority } from "../../../../platform-kit/instance-pipeline/utils/EntityUpdateUtils"
+import { EntityUpdateData, EntityUpdatesListener, isUpdateFor, ListenerPriority } from "../../../../platform-kit/instance-pipeline/utils/EntityUpdateUtils"
 import { CacheMode, DEFAULT_ENTITY_RESTCLIENT_LOAD_OPTIONS } from "../../../../platform-kit/instance-pipeline/RestClientOptions"
 import { reverse } from "../../misc/EnumUtils"
 import { idToElementId } from "@tutao/meta"
@@ -181,9 +181,9 @@ export enum SubscriptionApp {
 export function getLazyLoadedPayPalUrl(): LazyLoaded<string> {
 	return new LazyLoaded(async () => {
 		const clientType = getClientType()
-		const subscriptionApp = client.isCalendarApp() ? SubscriptionApp.Calendar : SubscriptionApp.Mail
-		const result = await locator.serviceExecutor.get(
-			PaymentDataService,
+		const subscriptionApp = ClientDetector.get().isCalendarApp() ? SubscriptionApp.Calendar : SubscriptionApp.Mail
+		const result = await locator.serviceExecutor.execute(
+			PaymentDataService_GET,
 			createPaymentDataServiceGetData({
 				clientType,
 				subscriptionApp,
@@ -491,7 +491,7 @@ export function isAppStorePayment(accountingInfo: AccountingInfo | null): boolea
  */
 export function shouldShowApplePrices(accountingInfo: AccountingInfo | null): boolean {
 	const paymentMethod = downcast<PaymentMethodType | undefined>(accountingInfo?.paymentMethod)
-	return isIOSApp() && (!paymentMethod || paymentMethod === PaymentMethodType.AppStore)
+	return EnvProvider.get().isIOSApp() && (!paymentMethod || paymentMethod === PaymentMethodType.AppStore)
 }
 
 /**
@@ -549,7 +549,7 @@ export function isBusinessPlan(plan: AvailablePlanType): boolean {
  */
 export function shouldHideBusinessPlans(): boolean {
 	// we cannot currently subscribe iOS users to business plans
-	return isIOSApp()
+	return EnvProvider.get().isIOSApp()
 }
 
 /**
@@ -570,7 +570,7 @@ export function getCurrentPaymentInterval(accountingInfo: AccountingInfo | null)
 export const BookingItemFeatureByCode = reverse(BookingItemFeatureType)
 
 export function getDefaultPaymentMethod(): PaymentMethodType {
-	if (isIOSApp()) {
+	if (EnvProvider.get().isIOSApp()) {
 		return PaymentMethodType.AppStore
 	}
 

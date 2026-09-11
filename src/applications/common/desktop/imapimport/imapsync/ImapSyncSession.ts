@@ -6,7 +6,7 @@ import { ProgrammingError } from "@tutao/app-env"
 import { ImapMailbox, imapMailboxFromImapFlowListTreeResponse, ImapMailboxSpecialUse } from "../../../api/common/utils/imapImportUtils/ImapMailbox.js"
 import { ImapSyncConfig } from "./ImapSync.js"
 import { fromImapFlowError, ImapError, ImapErrorCause } from "../../../api/common/error/ImapError"
-import type { ImapFlow, ListTreeResponse } from "imapflow"
+import type { ImapFlow, ImapFlowOptions, ListTreeResponse } from "imapflow"
 import { IMAP_ERROR_POSTPONE_TIME, ImapSyncEventType } from "../../../../../entities/tutanota/Utils"
 import { assertNotNull, first, isEmpty, isNotEmpty, noOp, utf8Uint8ArrayToString } from "@tutao/utils"
 import { CertificateProvider } from "../../CertificateProvider"
@@ -62,7 +62,7 @@ export class ImapSyncSession implements SyncSessionEventListener {
 			const systemCertificates = await this.certificateProvider.getCertificates()
 			const customCertificateData = imapCredentials.customCertificateData
 			const customCertificate = customCertificateData !== null ? [utf8Uint8ArrayToString(customCertificateData)] : []
-			return new ImapFlow({
+			const options: ImapFlowOptions = {
 				host: imapCredentials.host,
 				port: imapCredentials.port,
 				auth: {
@@ -84,7 +84,11 @@ export class ImapSyncSession implements SyncSessionEventListener {
 					info: noOp,
 				},
 				verifyOnly: verifyOnly ?? false,
-			})
+			}
+			if (imapCredentials.useSSL) {
+				options.secure = imapCredentials.useSSL
+			}
+			return new ImapFlow(options)
 		},
 	) {
 		this.state = SyncSessionState.NOT_STARTED
@@ -202,19 +206,35 @@ export class ImapSyncSession implements SyncSessionEventListener {
 		}
 	}
 
-	public async getImapMailboxesFromServer(imapCredentials: ImapCredentials): Promise<ReadonlyArray<ImapMailbox>> {
-		await this.verifyImapConnection(imapCredentials)
+	public async getImapMailboxesFromServer(imapCredentials: ImapCredentials): Promise<ImapMailbox[]> {
+		try {
+			await this.verifyImapConnection(imapCredentials)
 
-		const imapClient = await this.imapFlowFactory(imapCredentials, this.imapSyncConfig)
-		imapClient.on("error", (entry) => {
-			console.log(`[${entry.name}] ${entry.message}, ${entry.cause}`)
-		})
-		const imapMailboxes = await this.getImapMailboxes(imapClient)
-		const isGmail = imapCredentials.provider === ImapProvider.Gmail
-		if (isGmail && !imapMailboxes.some((mailbox) => mailbox.specialUse === ImapMailboxSpecialUse.ALL)) {
-			throw new ImapError("All mails Gmail mailbox is not enabled for IMAP", ImapErrorCause.GMAIL_ALL_MAILS_IMAP_DISABLED)
+			const imapClient = await this.imapFlowFactory(imapCredentials, this.imapSyncConfig)
+			imapClient.on("error", (entry) => {
+				console.log(`[${entry.name}] ${entry.message}, ${entry.cause}`)
+			})
+
+			const imapMailboxes = await this.getImapMailboxes(imapClient)
+
+			const isGmail = imapCredentials.provider === ImapProvider.Gmail
+			if (isGmail && !imapMailboxes.some((mailbox) => mailbox.specialUse === ImapMailboxSpecialUse.ALL)) {
+				throw new ImapError("All mails Gmail mailbox is not enabled for IMAP", ImapErrorCause.GMAIL_ALL_MAILS_IMAP_DISABLED)
+			}
+			return imapMailboxes
+		} catch (e) {
+			if (e instanceof ImapError) {
+				throw e
+			}
+			console.log(e)
+			const errorList = e.errors ?? [e]
+			const firstError = first(errorList)
+			if (firstError) {
+				throw fromImapFlowError(firstError)
+			} else {
+				throw new ImapError("initial connection failed", ImapErrorCause.INITIAL_CONNECT_FAILED)
+			}
 		}
-		return imapMailboxes
 	}
 
 	private async verifyImapConnection(imapCredentials: ImapCredentials) {

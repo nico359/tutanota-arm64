@@ -7,7 +7,7 @@ import { focusNext, focusPrevious, Shortcut } from "../utils/KeyManager"
 import type { ButtonAttrs } from "./Button.js"
 import { MultilineRowButton, MultilineRowButtonAttrs } from "./buttons/MultilineRowButton"
 import { lang, MaybeTranslation, Translation } from "../utils/LanguageViewModel"
-import { assertMainOrNode, Keys, TabIndex } from "@tutao/app-env"
+import { EnvProvider, TabIndex } from "@tutao/app-env"
 import { getSafeAreaInsetBottom, getSafeAreaInsetTop } from "../HtmlUtils"
 import { assertNotNull, delay, downcast, filterNull, lazy, lazyAsync, makeSingleUse, noOp, Thunk } from "@tutao/utils"
 import { pureComponent } from "./PureComponent"
@@ -17,14 +17,14 @@ import { AllIcons } from "./Icon.js"
 import { RowButton, RowButtonAttrs } from "./buttons/RowButton.js"
 import { AriaRole } from "../AriaUtils.js"
 import { BaseButton } from "./buttons/BaseButton"
-import { client } from "../../platform-kit/app-env/boot/ClientDetector"
+import { ClientDetector } from "../../platform-kit/app-env/boot/ClientDetector"
 import { InputAttrs, SingleLineTextField } from "./SingleLineTextField"
 import { LegacyTextFieldType } from "./LegacyTextField"
-
 import { PosRect } from "../utils/PosRect"
 import { Icons } from "./icons/Icons"
+import { Keys } from "../utils/KeyboardKeys"
 
-assertMainOrNode()
+EnvProvider.assertMainOrNode()
 export type DropdownInfoAttrs = {
 	info: string
 	center: boolean
@@ -58,7 +58,7 @@ export interface DropdownMultilineButtonAttrs {
  * Renders small info message inside the dropdown.
  */
 const DropdownInfo = pureComponent<DropdownInfoAttrs>(({ center, bold, info }) => {
-	return m(".text-break.selectable.flex.button-height" + (center ? ".center.flex-center.items-center" : "") + (bold ? ".b" : ""), info)
+	return m(".pt-8.pb-8.plr-24.text-break.selectable.flex.max-width-s" + (center ? ".center.flex-center.items-center" : "") + (bold ? ".b" : ""), info)
 })
 export type DropdownChildAttrs = DropdownInfoAttrs | DropdownButtonAttrs | DropdownMultilineButtonAttrs
 
@@ -229,7 +229,7 @@ export class Dropdown implements ModalComponent {
 									this._renderDirection = renderDirection
 									const buttons = (vnode.dom as HTMLElement).getElementsByTagName("button")
 									const firstButton = buttons.item(0)
-									if (this.domInput && !client.isMobileDevice()) {
+									if (this.domInput && !ClientDetector.get().isMobileDevice()) {
 										this.domInput.focus()
 									} else if (firstButton !== null) {
 										firstButton.focus()

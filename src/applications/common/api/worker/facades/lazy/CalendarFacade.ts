@@ -1,5 +1,5 @@
-import { assertWorkerOrNode, DAY_IN_MILLIS, ProgrammingError } from "@tutao/app-env"
-import { ElementId, elementIdToId, getLetId, getListId, idToElementId, isSameId, isSameSingleId, listIdPart, RANGE_ITEM_LIMIT } from "@tutao/meta"
+import { EnvProvider, ProgrammingError, TimeConstants } from "@tutao/app-env"
+import { getLetId, getListId, idToElementId, isSameId, isSameSingleId, listIdPart, RANGE_ITEM_LIMIT } from "@tutao/meta"
 import {
 	assertNotNull,
 	getFromMap,
@@ -43,13 +43,13 @@ import {
 	CalendarEventUidIndex,
 	CalendarEventUidIndexTypeRef,
 	CalendarGroupRootTypeRef,
-	CalendarService,
+	CalendarService_DELETE,
 	createCalendarDeleteIn,
 } from "@tutao/entities/tutanota"
 import { AlarmFacade } from "./AlarmFacade"
 import { EventAlarmInfoTemplatesTuple } from "../../../../calendar/import/ImportExportUtils"
 
-assertWorkerOrNode()
+EnvProvider.assertWorkerOrNode()
 
 /** event that is a part of an event series and references another event via its recurrenceId and uid */
 export type CalendarEventAlteredInstance = Require<"recurrenceId" | "uid", CalendarEvent> & { repeatRule: null }
@@ -136,8 +136,8 @@ export class CalendarFacade {
 		// Because of the timezones and all day events, we might not load an event which we need to display.
 		// So we add a margin on 24 hours to be sure we load everything we need. We will filter matching
 		// events anyway.
-		const startId = getEventElementMinId(month.start - DAY_IN_MILLIS)
-		const endId = geEventElementMaxId(month.end + DAY_IN_MILLIS)
+		const startId = getEventElementMinId(month.start - TimeConstants.DAY_IN_MILLIS)
+		const endId = geEventElementMaxId(month.end + TimeConstants.DAY_IN_MILLIS)
 
 		// We collect events from all calendars together and then replace map synchronously.
 		// This is important to replace the map synchronously to not get race conditions because we load different months in parallel.
@@ -432,7 +432,7 @@ export class CalendarFacade {
 	}
 
 	async deleteCalendar(groupRootId: Id): Promise<void> {
-		await this.serviceExecutor.delete(CalendarService, createCalendarDeleteIn({ groupRootId }), null)
+		await this.serviceExecutor.execute(CalendarService_DELETE, createCalendarDeleteIn({ groupRootId }), null)
 	}
 
 	/**

@@ -1,4 +1,4 @@
-import { CancelledError, daysToMillis, ENTITY_EVENT_BATCH_TTL_DAYS, NOTHING_INDEXED_TIMESTAMP } from "@tutao/app-env"
+import { CancelledError, ENTITY_EVENT_BATCH_TTL_DAYS, NOTHING_INDEXED_TIMESTAMP, TimeConstants } from "@tutao/app-env"
 import { ConnectionError, NotAuthorizedError, NotFoundError } from "../../../../platform-kit/rest-client/error"
 import { elementIdToId, idToElementId, isSameId, isSameTypeRef, OperationType, timestampToGeneratedId } from "../../../../platform-kit/meta"
 import type { DatabaseEntry, DbKey, DbTransaction } from "../../../common/api/worker/search/DbFacade.js"
@@ -19,7 +19,7 @@ import {
 	_encryptKeyWithVersionedKey,
 	aes256RandomKey,
 	AesKey,
-	AesKeyLength,
+	decrypt256Key,
 	generateInitializationVector,
 	validateInitializationVectorLength,
 	VersionedKey,
@@ -48,7 +48,6 @@ import { getMembershipGroupType, GroupType } from "../../../../entities/sys/Util
 import { ClientTypeModelResolver } from "../../../../platform-kit/instance-pipeline"
 import { EntityUpdateData, isUpdateForTypeRef } from "../../../../platform-kit/instance-pipeline/utils/EntityUpdateUtils"
 import { aes256EncryptSearchIndexEntry, aesDecryptUnauthenticated } from "../../../../platform-kit/crypto/instance-pipeline-crypto/Aes"
-import { decryptKey } from "../../../../platform-kit/crypto/instance-pipeline-crypto/KeyEncryption"
 import { WebMailIndexer } from "./WebMailIndexer.js"
 
 export type InitParams = {
@@ -121,7 +120,7 @@ export class IndexedDbIndexer implements Indexer {
 	 * putting events from websocket before initial events.
 	 * @private visibleForTesting
 	 */
-	eventQueue: EventQueue = new EventQueue("indexer_realtime", (batch: QueuedBatch) => this._processEntityEvents(batch))
+	eventQueue: EventQueue = new EventQueue("indexer_realtime", (batch: QueuedBatch) => this._processEntityUpdates(batch))
 	constructor(
 		private readonly serverDateProvider: DateProvider,
 		/** @private visibleForTesting */
@@ -288,7 +287,7 @@ export class IndexedDbIndexer implements Indexer {
 		this.eventQueue.resume()
 	}
 
-	async processEntityEvents(updates: readonly EntityUpdateData[], batchId: Id, groupId: Id, isInitialSyncDone: boolean): Promise<void> {
+	async onEntityUpdatesReceived(updates: readonly EntityUpdateData[], batchId: Id, groupId: Id, isInitialSyncDone: boolean): Promise<void> {
 		try {
 			await this.throwIfOutOfDate()
 			await this.writeServerTimestamp()
@@ -297,7 +296,7 @@ export class IndexedDbIndexer implements Indexer {
 				await this.disableMailIndexing()
 			}
 		}
-		this.eventQueue.addBatches([{ events: updates, batchId, groupId, isInitialSyncDone }])
+		this.eventQueue.addBatches([{ updates: updates, batchId, groupId, isInitialSyncDone }])
 		// Trigger event queue processing in case it was stopped due to an error
 		// Realtime queue won't be automatically paused and doesn't need a trigger here. It will be resumed when
 		// we loaded all events.
@@ -340,7 +339,7 @@ export class IndexedDbIndexer implements Indexer {
 	}
 
 	private async loadIndexTables(user: User, userGroupKey: AesKey, metaData: EncryptedIndexerMetaData): Promise<void> {
-		const key = decryptKey(userGroupKey, metaData.userEncDbKey, AesKeyLength.Aes256)
+		const key = decrypt256Key(userGroupKey, metaData.userEncDbKey)
 		const initializationVector = validateInitializationVectorLength(aesDecryptUnauthenticated(key, neverNull(metaData.encDbIv)))
 		this.db.init({ key, initializationVector })
 		const groupDiff = await this._loadGroupDiff(user)
@@ -469,15 +468,15 @@ export class IndexedDbIndexer implements Indexer {
 	}
 
 	/** @private visibleForTesting */
-	async _processEntityEvents(batch: QueuedBatch): Promise<any> {
-		const { groupId, batchId, events } = batch
+	async _processEntityUpdates(batch: QueuedBatch): Promise<any> {
+		const { groupId, batchId, updates } = batch
 		try {
 			await this.initDeferred.promise
 
-			await this._processUserEntityEvents(events)
-			await this.processMailEntityEvents(events)
-			await this.mailIndexer.processEntityEvents(events)
-			await this.processContactEntityEvents(events)
+			await this._processUserEntityUpdates(updates)
+			await this.processMailEntityUpdates(updates)
+			await this.mailIndexer.onEntityUpdatesReceived(updates)
+			await this.processContactEntityUpdates(updates)
 			await this.core.putLastBatchIdForGroup(groupId, batchId)
 		} catch (e) {
 			if (e instanceof CancelledError) {
@@ -485,7 +484,7 @@ export class IndexedDbIndexer implements Indexer {
 			} else if (e instanceof DbError && this.core.isStoppedProcessing()) {
 				console.log("Ignoring DBerror when indexing is disabled", e)
 			} else if (e instanceof InvalidDatabaseStateError) {
-				console.log("InvalidDatabaseStateError during _processEntityEvents")
+				console.log("InvalidDatabaseStateError during _processEntityUpdates")
 
 				this._stopProcessing()
 
@@ -503,7 +502,7 @@ export class IndexedDbIndexer implements Indexer {
 	 *
 	 * ATTENTION: Must be called before the group batch ID is written.
 	 */
-	private async processMailEntityEvents(events: Iterable<EntityUpdateData>) {
+	private async processMailEntityUpdates(events: Iterable<EntityUpdateData>) {
 		for (const event of events) {
 			if (isUpdateForTypeRef(MailTypeRef, event)) {
 				const mailId: IdTuple = [neverNull(event.instanceListId), event.instanceId]
@@ -537,7 +536,7 @@ export class IndexedDbIndexer implements Indexer {
 	 *
 	 * ATTENTION: Must be called before the group batch ID is written.
 	 */
-	private async processContactEntityEvents(events: Iterable<EntityUpdateData>) {
+	private async processContactEntityUpdates(events: Iterable<EntityUpdateData>) {
 		for (const event of events) {
 			if (isUpdateForTypeRef(ContactTypeRef, event)) {
 				const contactId: IdTuple = [assertNotNull(event.instanceListId), event.instanceId]
@@ -567,7 +566,7 @@ export class IndexedDbIndexer implements Indexer {
 	/**
 	 * @private visibleForTesting
 	 */
-	async _processUserEntityEvents(events: readonly EntityUpdateData[]): Promise<void> {
+	async _processUserEntityUpdates(events: readonly EntityUpdateData[]): Promise<void> {
 		for (const event of events) {
 			if (
 				!(
@@ -591,7 +590,7 @@ export class IndexedDbIndexer implements Indexer {
 
 			const timeSinceLastIndex = now - lastIndexTimeMs
 
-			if (timeSinceLastIndex >= daysToMillis(ENTITY_EVENT_BATCH_TTL_DAYS)) {
+			if (timeSinceLastIndex >= TimeConstants.daysToMillis(ENTITY_EVENT_BATCH_TTL_DAYS)) {
 				throw new OutOfSyncError(
 					`we haven't updated the index in ${millisToDays(timeSinceLastIndex)} days. last update was ${new Date(
 						neverNull(lastIndexTimeMs),

@@ -4,18 +4,7 @@ import { assertNotNull, DateProvider, isEmpty, LazyLoaded, neverNull, newPromise
 import { windowFacade } from "../misc/WindowFacade.js"
 import { checkApprovalStatus } from "../misc/LoginUtils.js"
 import { locator } from "../api/main/CommonLocator"
-import {
-	Const,
-	CredentialEncryptionMode,
-	FeatureType,
-	isAdminClient,
-	isApp,
-	isDesktop,
-	LOGIN_TITLE,
-	SecondFactorType,
-	SessionType,
-	UpgradePromptType,
-} from "@tutao/app-env"
+import { Const, CredentialEncryptionMode, EnvProvider, FeatureType, LOGIN_TITLE, SecondFactorType, SessionType, UpgradePromptType } from "@tutao/app-env"
 import { showMoreStorageNeededOrderDialog } from "../misc/SubscriptionDialogs.js"
 import { notifications } from "../../../ui/Notifications"
 import { LockedError, NotAuthorizedError } from "@tutao/rest-client/error"
@@ -34,7 +23,7 @@ import { SyncTracker } from "../api/main/SyncTracker"
 import { showRequestPasswordDialog } from "../misc/passwords/PasswordRequestDialog"
 import { LoginFacade } from "../../../platform-kit/base/facades/LoginFacade"
 import { LoggedInEvent, PostLoginAction } from "../../../app-kit/native-bridge/common/PostLoginAction.js"
-import { createReceiveInfoServiceData, OutOfOfficeNotification, ReceiveInfoService } from "@tutao/entities/tutanota"
+import { createReceiveInfoServiceData, OutOfOfficeNotification, ReceiveInfoService_POST } from "@tutao/entities/tutanota"
 import { getHourCycle } from "../../../entities/tutanota/Utils"
 import { createCustomerProperties, SecondFactorTypeRef } from "@tutao/entities/sys"
 import { CloseEventBusOption } from "../../../platform-kit/network/Constants"
@@ -81,13 +70,13 @@ export class PostLoginActions implements PostLoginAction {
 			this.connectivityModel.close(CloseEventBusOption.Pause)
 		})
 
-		// only show "Tuta Mail" after login if there is no custom title set
+		// only show "Tuta" after login if there is no custom title set
 		if (!this.logins.getUserController().isInternalUser()) {
 			if (document.title === LOGIN_TITLE) {
-				document.title = "Tuta Mail"
+				document.title = "Tuta"
 			}
 		} else {
-			let postLoginTitle = document.title === LOGIN_TITLE ? "Tuta Mail" : document.title
+			let postLoginTitle = document.title === LOGIN_TITLE ? "Tuta" : document.title
 			document.title = neverNull(this.logins.getUserController().userGroupInfo.mailAddress) + " - " + postLoginTitle
 		}
 		notifications.requestPermission()
@@ -108,7 +97,7 @@ export class PostLoginActions implements PostLoginAction {
 		})
 
 		// We already have user data to load themes
-		if (isApp() || isDesktop()) {
+		if (EnvProvider.get().isApp() || EnvProvider.get().isDesktop()) {
 			await this.storeNewCustomThemes()
 		}
 	}
@@ -136,16 +125,16 @@ export class PostLoginActions implements PostLoginAction {
 
 		this.secondFactorHandler.setupAcceptOtherClientLoginListener()
 
-		if (!isAdminClient()) {
+		if (!EnvProvider.get().isAdminClient()) {
 			// If it failed during the partial login due to missing cache entries we will give it another spin here. If it didn't fail then it's just a noop
 			await locator.mailboxModel.init()
 		}
 
-		if (this.logins.isGlobalAdminUserLoggedIn() && !isAdminClient()) {
+		if (this.logins.isGlobalAdminUserLoggedIn() && !EnvProvider.get().isAdminClient()) {
 			const receiveInfoData = createReceiveInfoServiceData({
 				language: lang.code,
 			})
-			const receiveInfoServicePostOut = await locator.serviceExecutor.post(ReceiveInfoService, receiveInfoData, null)
+			const receiveInfoServicePostOut = await locator.serviceExecutor.execute(ReceiveInfoService_POST, receiveInfoData, null)
 			if (receiveInfoServicePostOut && receiveInfoServicePostOut.outdatedVersion) {
 				return Dialog.updateReminder(true, () => {
 					this.updateClient()
@@ -363,7 +352,7 @@ export class PostLoginActions implements PostLoginAction {
 	// Show the onboarding wizard if this is the first time the app has been opened since install
 	private async showSetupWizardIfNeeded(): Promise<void> {
 		const isSetupComplete = deviceConfig.getIsSetupComplete()
-		if (isApp() && !isSetupComplete) {
+		if (EnvProvider.get().isApp() && !isSetupComplete) {
 			await this.showSetupWizard()
 		}
 	}

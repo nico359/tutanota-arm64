@@ -19,7 +19,8 @@ import { ParsedValue } from "./ParsedValue"
 import { assert, assertNotNull, deepEqual, DeepEquals, isNotNull, Nullable, uint8ArrayToBase64 } from "@tutao/utils"
 import { EncryptedParsedInstance, EncryptedParsedValue } from "./CryptoMapper"
 import { assertNotNaN } from "../utils/Utils"
-import { isTest } from "@tutao/app-env"
+import { EnvProvider } from "@tutao/app-env"
+import { TypeChecks } from "../app-env/TsTypeChecks"
 
 export class TypeMapper {
 	constructor(private readonly typeModelResolver: TypeModelResolver) {}
@@ -107,18 +108,28 @@ export class IncomingServerJson implements DeepEquals {
 	}
 
 	public static expectSingleInstance(data: any, typeModel: ServerTypeModel): IncomingServerJson {
-		const parsedJson = JSON.parse(data, (k, v) => (k === "__proto__" ? undefined : v))
+		const parsedJson = JSON.parse(data, (k, v) => {
+			if (k === "__proto__") {
+				delete parsedJson[k]
+			}
+			return v
+		})
 		assert(!Array.isArray(parsedJson), "Expected single instance. But response is an array")
 		return new IncomingServerJson(parsedJson, typeModel)
 	}
 
 	public static expectSingleMailDetailsBlob(data: any, typeModel: ServerTypeModel): IncomingServerJson {
-		assert(typeof data === "object" && !Array.isArray(data), "Expected single instance. But response is an array")
+		assert(TypeChecks.isObject(data) && !Array.isArray(data), "Expected single instance. But response is an array")
 		return new IncomingServerJson(data, typeModel)
 	}
 
 	public static expectMultipleInstance(data: any, typeModel: ServerTypeModel): Array<IncomingServerJson> {
-		const parsedJson = JSON.parse(data, (k, v) => (k === "__proto__" ? undefined : v))
+		const parsedJson = JSON.parse(data, (k, v) => {
+			if (k === "__proto__") {
+				delete parsedJson[k]
+			}
+			return v
+		})
 		assert(Array.isArray(parsedJson), "Expected multiple instances. But response is not an array")
 
 		return (parsedJson as Array<any>).map((item) => {
@@ -126,6 +137,7 @@ export class IncomingServerJson implements DeepEquals {
 			return new IncomingServerJson(item as Record<string, any>, typeModel)
 		})
 	}
+
 	public static expectMultipleDesktopAlarms(data: any, typeModel: ServerTypeModel): Array<IncomingServerJson> {
 		assert(Array.isArray(data), "Expected multiple instances. But response is not an array")
 		return (data as Array<any>).map((item) => {
@@ -139,7 +151,7 @@ export class IncomingServerJson implements DeepEquals {
 		const valueModel = this.typeModel.values[attrId] ?? null
 
 		if (isNotNull(valueModel) && valueModel.name === "_id") {
-			switch (getIdType(this.typeModel)) {
+			switch (getIdType(this.typeModel.type)) {
 				case IdType.SingleId:
 					return ParsedValue.fromString(rawValue)
 				case IdType.IdTuple:
@@ -226,16 +238,16 @@ export class OutgoingServerJson implements DeepEquals {
 	}
 
 	public static networkDebuggedKey(attrId: AttributeId, typeModel: TypeModel): string {
-		if (env.networkDebugging) {
+		if (EnvProvider.get().networkDebuggingEnabled()) {
 			return attrId.toString() + ":" + AttributeModel.getAttributeName(typeModel, attrId)
 		}
 		return attrId.toString()
 	}
 
-	addValue<EncryptedOrDecrypted extends DeepEquals>(attrId: AttributeId, attrName: string, value: ParsedValue<EncryptedOrDecrypted>) {
+	addValue<EncryptedOrDecrypted extends DeepEquals>(attrId: AttributeId, attrName: string, value: ParsedValue<EncryptedOrDecrypted>): void {
 		const key = OutgoingServerJson.networkDebuggedKey(attrId, this.typeModel)
 		if (attrName === "_id" && !value.isNull()) {
-			switch (getIdType(this.typeModel)) {
+			switch (getIdType(this.typeModel.type)) {
 				case IdType.SingleId:
 					this.json[key] = value.asId()
 					break
@@ -247,28 +259,28 @@ export class OutgoingServerJson implements DeepEquals {
 		}
 	}
 
-	addAggregationList(attrId: AttributeId, value: Array<OutgoingServerJson>) {
+	addAggregationList(attrId: AttributeId, value: Array<OutgoingServerJson>): void {
 		const attributeKey = OutgoingServerJson.networkDebuggedKey(attrId, this.typeModel)
 		this.json[attributeKey] = value.map((v) => v.json)
 	}
 
-	addIdTupleList(attrId: AttributeId, value: Array<IdTuple>) {
+	addIdTupleList(attrId: AttributeId, value: Array<IdTuple>): void {
 		const attributeKey = OutgoingServerJson.networkDebuggedKey(attrId, this.typeModel)
 		this.json[attributeKey] = value
 	}
 
-	addIdList(attrId: AttributeId, value: Array<Id>) {
+	addIdList(attrId: AttributeId, value: Array<Id>): void {
 		const attributeKey = OutgoingServerJson.networkDebuggedKey(attrId, this.typeModel)
 		this.json[attributeKey] = value
 	}
 
-	public static newFromRecord(json: Record<AttributeName, unknown>, clientModel: Nullable<ClientTypeModel> = null) {
-		assert(isTest(), "Do not construct with raw record in non-test environment")
+	public static newFromRecord(json: Record<AttributeName, unknown>, clientModel: Nullable<ClientTypeModel> = null): OutgoingServerJson {
+		assert(EnvProvider.isTest(), "Do not construct with raw record in non-test environment")
 		return new OutgoingServerJson(clientModel as any, json)
 	}
 
-	getTypeRef(): TypeRef<unknown> {
-		return new TypeRef<unknown>(this.typeModel.app, this.typeModel.id)
+	getTypeRef(): TypeRef<Entity> {
+		return new TypeRef<Entity>(this.typeModel.app, this.typeModel.id)
 	}
 
 	deepEquals(other: this): boolean {

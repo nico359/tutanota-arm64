@@ -1,4 +1,4 @@
-import { assertWorkerOrNode, ProgrammingError } from "@tutao/app-env"
+import { EnvProvider, ProgrammingError } from "@tutao/app-env"
 import { IServiceExecutor } from "../../../../../../platform-kit/network/ServiceRequest.js"
 import { UserFacade } from "../../../../../../platform-kit/base/facades/UserFacade.js"
 import { EntityClient } from "../../../../../../platform-kit/network/EntityClient.js"
@@ -8,7 +8,7 @@ import { PreconditionFailedError } from "@tutao/rest-client/error"
 import { AdminKeyLoaderFacade } from "../../../../../../platform-kit/base/base-crypto/AdminKeyLoaderFacade"
 import { VersionedKey } from "@tutao/crypto"
 import {
-	ChangePrimaryAddressService,
+	ChangePrimaryAddressService_PUT,
 	createChangePrimaryAddressServicePutIn,
 	createMailAddressProperties,
 	createMailboxProperties,
@@ -24,20 +24,22 @@ import {
 	createMailAddressAliasServiceDataDelete,
 	createMultipleMailAddressAvailabilityData,
 	createStringWrapper,
-	DomainMailAddressAvailabilityService,
+	DomainMailAddressAvailabilityService_GET,
 	GroupInfo,
 	GroupInfoTypeRef,
 	GroupTypeRef,
-	MailAddressAliasService,
+	MailAddressAliasService_DELETE,
+	MailAddressAliasService_GET,
+	MailAddressAliasService_POST,
 	MailAddressAliasServiceReturn,
-	MultipleMailAddressAvailabilityService,
+	MultipleMailAddressAvailabilityService_GET,
 	UserTypeRef,
 } from "@tutao/entities/sys"
 import { DEFAULT_ENTITY_RESTCLIENT_LOAD_OPTIONS } from "../../../../../../platform-kit/instance-pipeline/RestClientOptions"
 import { idToElementId } from "@tutao/meta"
 import { ReportMovedMailsType } from "../../../../../../entities/tutanota/Utils"
 
-assertWorkerOrNode()
+EnvProvider.assertWorkerOrNode()
 
 /**
  * utility to rate limit requests while keeping them as responsive as possible in normal usage.
@@ -148,7 +150,7 @@ export class MailAddressFacade {
 	 */
 	getAliasCounters(userGroupId: Id): Promise<MailAddressAliasServiceReturn> {
 		const data = createMailAddressAliasGetIn({ targetGroup: userGroupId })
-		return this.serviceExecutor.get(MailAddressAliasService, data, null)
+		return this.serviceExecutor.execute(MailAddressAliasService_GET, data, null)
 	}
 
 	/**
@@ -162,7 +164,7 @@ export class MailAddressFacade {
 				// another check came in while we were waiting
 				return false
 			}
-			const availability = await this.serviceExecutor.get(DomainMailAddressAvailabilityService, data, null)
+			const availability = await this.serviceExecutor.execute(DomainMailAddressAvailabilityService_GET, data, null)
 			return availability.available
 		} else if (signupToken != null) {
 			const data = createMultipleMailAddressAvailabilityData({
@@ -172,7 +174,7 @@ export class MailAddressFacade {
 			if (!(await this.availabilityBucket.nextToken())) {
 				return false
 			}
-			const result = await this.serviceExecutor.get(MultipleMailAddressAvailabilityService, data, null)
+			const result = await this.serviceExecutor.execute(MultipleMailAddressAvailabilityService_GET, data, null)
 			return getFirstOrThrow(result.availabilities).available
 		} else {
 			throw new ProgrammingError("tried to get mail address availability while not fully logged in without a signup token")
@@ -181,7 +183,7 @@ export class MailAddressFacade {
 
 	/**
 	 * Add an {@param alias} to {@param targetGroupId}.
-	 * {@param targetGroupId} is *not* a Mail group, it is currently only a user group.
+	 * {@param targetGroupId} can be a user group or a shared mail grou.
 	 *
 	 * Can only be done by an admin.
 	 */
@@ -190,12 +192,12 @@ export class MailAddressFacade {
 			group: targetGroupId,
 			mailAddress: alias,
 		})
-		await this.serviceExecutor.post(MailAddressAliasService, data, null)
+		await this.serviceExecutor.execute(MailAddressAliasService_POST, data, null)
 	}
 
 	/**
 	 * Enable/disable an {@param alias} on {@param targetGroupId}.
-	 * {@param targetGroupId} is *not* a Mail group, it is currently only a user group.
+	 * {@param targetGroupId} can be a user group or a shared mail group.
 	 *
 	 * {@param restore} means whether the alias will be enabled or disabled.
 	 *
@@ -207,7 +209,7 @@ export class MailAddressFacade {
 			restore,
 			group: targetGroupId,
 		})
-		await this.serviceExecutor.delete(MailAddressAliasService, deleteData, null)
+		await this.serviceExecutor.execute(MailAddressAliasService_DELETE, deleteData, null)
 	}
 
 	async setPrimaryMailAddress(userId: Id, address: string): Promise<void> {
@@ -215,7 +217,7 @@ export class MailAddressFacade {
 			address,
 			user: userId,
 		})
-		await this.serviceExecutor.put(ChangePrimaryAddressService, data, null)
+		await this.serviceExecutor.execute(ChangePrimaryAddressService_PUT, data, null)
 	}
 
 	/**
@@ -250,7 +252,7 @@ export class MailAddressFacade {
 	 * remove the sender name of the given mail address.
 	 * If no user is given, the operation will be attempted as an admin of the group.
 	 */
-	async removeSenderName(mailGroupId: Id, mailAddress: string, viaUser: Id): Promise<Map<string, string>> {
+	async removeSenderName(mailGroupId: Id, mailAddress: string, viaUser?: Id): Promise<Map<string, string>> {
 		const mailboxProperties = await this.getOrCreateMailboxProperties(mailGroupId, viaUser)
 		findAndRemove(mailboxProperties.mailAddressProperties, (p) => p.mailAddress === mailAddress)
 		const updatedProperties = await this.updateMailboxProperties(mailboxProperties, viaUser)

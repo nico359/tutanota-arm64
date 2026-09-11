@@ -1,5 +1,5 @@
 import { Dialog } from "../../../ui/base/Dialog.js"
-import { assertMainOrNode, isApp } from "@tutao/app-env"
+import { EnvProvider } from "@tutao/app-env"
 import { assertNotNull, filterInt, isNotNull, neverNull, newPromise, promiseMap } from "@tutao/utils"
 import { lang, TranslationKey } from "../../../ui/utils/LanguageViewModel.js"
 import { deduplicateFilenames, sanitizeFilename } from "../../../ui/utils/FileUtils"
@@ -13,13 +13,13 @@ import { ArchiveDataType } from "../../../entities/sys/Utils"
 import { FileReference, WebFile } from "../../../entities/tutanota/Utils"
 import { TransferId } from "../../../entities/drive/Utils"
 import { convertToDataFile, createDataFile } from "../api/worker/utils/DataFile.js"
-import { client } from "../../../platform-kit/app-env/boot/ClientDetector"
+import { ClientDetector } from "../../../platform-kit/app-env/boot/ClientDetector"
 import { BrowserType } from "../../../platform-kit/app-env/boot/ClientConstants"
 import { DataFile } from "../../../entities/tutanota/MailBundle"
 import { createReferencingInstance, DownloadableFileEntity } from "../../../entities/storage/BlobUtils"
 import { DiskFolder } from "../../drive-app/drive/view/DriveUtils"
 
-assertMainOrNode()
+EnvProvider.assertMainOrNode()
 
 export const enum DownloadPostProcessing {
 	Open,
@@ -323,7 +323,8 @@ export async function openDataFileInBrowser(dataFile: DataFile): Promise<void> {
 		// Maybe it will gain enough traction that it will be reverted
 		// It's unclear to me why target=_blank is being ignored. If there is a way to ensure that it always opens a new tab,
 		// Then we should do that instead of this, because it's preferable to keep the mime type.
-		const needsPdfWorkaround = dataFile.mimeType === "application/pdf" && client.browser === BrowserType.FIREFOX && client.browserVersion >= 98
+		const needsPdfWorkaround =
+			dataFile.mimeType === "application/pdf" && ClientDetector.get().browser === BrowserType.FIREFOX && ClientDetector.get().browserVersion >= 98
 
 		const mimeType = needsPdfWorkaround ? "application/octet-stream" : dataFile.mimeType
 
@@ -344,7 +345,7 @@ export async function openDataFileInBrowser(dataFile: DataFile): Promise<void> {
 				window.URL.revokeObjectURL(url)
 			}, 2000)
 		} else {
-			if (client.isIos() && client.browser === BrowserType.CHROME && typeof FileReader === "function") {
+			if (ClientDetector.get().isIos() && ClientDetector.get().browser === BrowserType.CHROME && typeof FileReader === "function") {
 				const reader = new FileReader()
 				const downloadPromise = newPromise((resolve) => {
 					reader.onloadend = async function () {
@@ -376,7 +377,7 @@ export async function downloadAndDecryptFromArchive(
 }
 
 export async function showNativeFilePicker(fileTypes?: Array<string>, isFileOnly: boolean = false): Promise<ReadonlyArray<DataFile>> {
-	if (isApp()) {
+	if (EnvProvider.get().isApp()) {
 		const rect = { width: 0, height: 0, left: 0, top: 0 } as DOMRect
 		try {
 			const fileApp = locator.fileApp

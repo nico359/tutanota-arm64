@@ -1,4 +1,4 @@
-import type { lazyAsync } from "./Utils.js"
+import { lazyAsync, neverNull } from "./Utils.js"
 
 enum LoadState {
 	NotLoaded,
@@ -55,7 +55,7 @@ export class LazyLoaded<T> {
 		switch (this.state) {
 			case LoadState.NotLoaded: {
 				const loadingPromise = this.loadFunction().then(
-					(value) => {
+					(value): T => {
 						this.state = LoadState.Loaded
 						this.value = value
 						return value
@@ -70,9 +70,9 @@ export class LazyLoaded<T> {
 				return loadingPromise
 			}
 			case LoadState.Loading:
-				return this.promise!
+				return neverNull(this.promise)
 			case LoadState.Loaded:
-				return Promise.resolve(this.value!)
+				return Promise.resolve(neverNull(this.value))
 		}
 	}
 
@@ -88,7 +88,7 @@ export class LazyLoaded<T> {
 	 */
 	getLoaded(): T {
 		if (this.state === LoadState.Loaded) {
-			return this.value!
+			return neverNull(this.value)
 		} else {
 			throw new Error("Not loaded!")
 		}
@@ -97,7 +97,7 @@ export class LazyLoaded<T> {
 	/**
 	 * Removes the currently loaded object, so it will be loaded again with the next getAsync() call. Does not set any default value.
 	 */
-	reset() {
+	reset(): void {
 		this.state = LoadState.NotLoaded
 		this.defaultValue = null
 	}

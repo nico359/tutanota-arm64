@@ -1,51 +1,53 @@
-import { elementIdPart, getElementId, isSameId, isSameSingleId, listIdPart, OperationType } from "@tutao/meta"
-import { EntityUpdateData, isUpdateForTypeRef, ListenerPriority } from "../../../../platform-kit/instance-pipeline/utils/EntityUpdateUtils"
-import { EntityClient, loadMultipleFromLists } from "../../../../platform-kit/network/EntityClient"
+import { elementIdPart, getElementId, isSameIdTuple, isSameSingleId, listIdPart, OperationType } from "@tutao/meta"
+import { CacheSyncStatus, EntityUpdateData, isUpdateForTypeRef, ListenerPriority } from "../../../../platform-kit/instance-pipeline/utils/EntityUpdateUtils"
+import { EntityClient } from "../../../../platform-kit/network/EntityClient"
 import { BreadcrumbEntry, DriveFacade, DriveFolderType, DriveRootFolders } from "../../../common/api/worker/facades/lazy/DriveFacade"
 import { Router } from "../../../../ui/ScopedThrottledRouter"
-import m from "mithril"
-import { assertNotNull, debounceStart, filterInt, last, memoizedWithHiddenArgument, noOp, partition, promiseMap } from "@tutao/utils"
-import { DriveTransferController, DriveTransfers } from "./DriveTransferController"
+import { assertNotNull, debounceStart, last, lazyAsync, memoizedWithHiddenArgument, promiseMap } from "@tutao/utils"
+import { DriveTransfers, DriveTransferState } from "./DriveTransferController"
 import { getDefaultSenderFromUser } from "../../../common/mailFunctionality/SharedMailUtils"
 import { EventController } from "../../../common/api/main/EventController"
-import { Const, isDesktop, OperationStatus, SECOND_IN_MILLIS } from "@tutao/app-env"
+import { Const, EnvProvider, TimeConstants } from "@tutao/app-env"
 import { ListModel } from "../../../common/misc/ListModel"
 import { ListAutoSelectBehavior } from "../../../common/misc/DeviceConfig"
-import { ListFetchResult } from "../../../../ui/base/ListUtils"
+import { ListFetchResult, ListItemSelectionCallbacks } from "../../../../ui/base/ListUtils"
 import { ListState } from "../../../../ui/base/List"
 import Stream from "mithril/stream"
-import stream from "mithril/stream"
 import { UserManagementFacade } from "../../../common/api/worker/facades/lazy/UserManagementFacade"
 import { LoginController } from "../../../common/api/main/LoginController"
 import { isDriveEnabled } from "../../../common/misc/DriveUtils"
-import { TransferProgressDispatcher } from "../../../common/api/main/TransferProgressDispatcher"
 import {
 	childFileFromEntry,
-	deduplicateItemNames,
+	comparisonFunction,
+	ComparisonFunction,
 	DiskFolder,
 	FileFolderItem,
 	FolderItem,
 	folderItemEntity,
+	folderItemId,
 	FolderItemId,
 	folderItemToId,
 	loadFolderContents,
-	moveItems,
-	pickNewFileName,
+	OperationUpdate,
+	SortColumn,
+	SortingPreference,
+	toggleSort,
 	traverse,
-	walkTree,
 } from "./DriveUtils"
 import { UserError } from "../../../common/api/main/UserError"
-import { MoveCycleError } from "../../../common/api/common/error/MoveCycleError"
-import { MoveToTrashError } from "../../../common/api/common/error/MoveToTrashError"
-import { MoveDestinationIsSourceError } from "../../../common/api/common/error/MoveDestinationIsSourceError"
 import { FileReference, WebFile } from "../../../../entities/tutanota/Utils"
-import { DownloadProgressInfo, TransferId, UploadProgressInfo } from "../../../../entities/drive/Utils"
+import { TransferId } from "../../../../entities/drive/Utils"
 import { DriveFile, DriveFileRefTypeRef, DriveFileTypeRef, DriveFolder, DriveFolderTypeRef } from "@tutao/entities/drive"
-import { isWebFile } from "../../../../ui/utils/FileUtils"
-import { handleRestError, isOfflineError, NotAuthorizedError, NotFoundError } from "@tutao/rest-client/error"
+import { isOfflineError, NotAuthorizedError, NotFoundError } from "@tutao/rest-client/error"
 import { WebFileResolver } from "./WebFileResolver"
-import { WebsocketConnectivityModel } from "../../../common/misc/WebsocketConnectivityModel"
-import { WsConnectionState } from "../../../../platform-kit/network/Constants"
+import { SearchRouter } from "../../../common/search/view/SearchRouter"
+import { DriveSearchModel } from "../../search/model/DriveSearchModel"
+import { DriveClipboard, DriveModel } from "../model/DriveModel"
+import { listItemSelectionCallbacksFor } from "../../../common/misc/ListModelUtils"
+import { isDriveFile } from "../../../common/api/common/drive/DriveUtils"
+import { LiveSearchResult, QuickSearchQuery, SearchQuery } from "../../../common/search/SearchUtils"
+import { DuplicateFilesDialogDecision, showDuplicateFilesChoiceDialog } from "./DriveGuiUtils"
+import { SyncListener, SyncTracker } from "../../../common/api/main/SyncTracker"
 
 export interface RegularFolder {
 	type: DriveFolderType.Regular
@@ -61,50 +63,6 @@ export interface SpecialFolder {
 }
 
 export type DisplayFolder = RegularFolder | SpecialFolder
-
-const compareString = (s1: string, s2: string) => {
-	s1 = s1.toLowerCase()
-	s2 = s2.toLowerCase()
-
-	if (s1 > s2) {
-		return 1
-	} else if (s2 > s1) {
-		return -1
-	}
-	return 0
-}
-
-const compareNumber = (n1: number | bigint, n2: number | bigint) => {
-	if (n1 > n2) {
-		return 1
-	} else if (n1 < n2) {
-		return -1
-	} else {
-		return 0
-	}
-}
-
-export const enum SortColumn {
-	name = "name",
-	mimeType = "mimeType",
-	size = "size",
-	date = "date",
-}
-
-export interface SortingPreference {
-	column: SortColumn
-	order: SortOrder
-}
-
-export const enum ClipboardAction {
-	Cut,
-	Copy,
-}
-
-export interface DriveClipboard {
-	items: readonly FolderItemId[]
-	action: ClipboardAction
-}
 
 function emptyListModel<Item, Id>(): ListModel<Item, Id> {
 	return new ListModel({
@@ -124,31 +82,9 @@ function emptyListModel<Item, Id>(): ListModel<Item, Id> {
 	})
 }
 
-export enum DriveOperationType {
-	Copy,
-	Delete,
-	Move,
-	Trash,
-	Restore,
-}
-
 export interface DriveStorage {
 	usedBytes: number
 	totalBytes: number
-}
-
-type ComparisonFunction = (f1: FolderItem, f2: FolderItem) => number
-
-interface RunningOperation {
-	type: DriveOperationType
-	count: number
-}
-
-export interface OperationUpdate {
-	type: DriveOperationType
-	count: number
-	status: OperationStatus
-	error: Error | null
 }
 
 export class DriveViewModel {
@@ -161,29 +97,19 @@ export class DriveViewModel {
 	parents: readonly DriveFolder[] = []
 	roots: DriveRootFolders | null = null
 
-	private _clipboard: DriveClipboard | null = null
-
-	get clipboard(): DriveClipboard | null {
-		return this._clipboard
-	}
-
 	private listModel: ListModel<FolderItem, Id> = emptyListModel()
 	private listStateSubscription: Stream<unknown> | null = null
 	private storage: DriveStorage | null = null
-	private readonly runningOperations: Map<Id, RunningOperation> = new Map()
-
-	public operationUpdates: Stream<OperationUpdate | null> = stream(null)
 
 	public readonly initialized: Promise<void>
 	public resolveInitialized: (value: PromiseLike<void> | void) => void = (value: void) => {}
 
-	private readonly connectionStateListener = {
+	private readonly syncListener: SyncListener = {
 		id: "DriveViewModel",
 		priority: ListenerPriority.NORMAL,
-		onConnectionStateChanged: async (connectionState: WsConnectionState) => {
-			if (connectionState === WsConnectionState.connected) {
-				await this.listModel.reload()
-			}
+		targetStatus: CacheSyncStatus.OnlineSyncOngoing,
+		onSyncStatusChange: async () => {
+			await this.listModel.reload()
 		},
 	}
 
@@ -191,14 +117,15 @@ export class DriveViewModel {
 		private readonly entityClient: EntityClient,
 		private readonly driveFacade: DriveFacade,
 		private readonly router: Router,
-		public readonly uploadProgressListener: TransferProgressDispatcher,
 		private readonly eventController: EventController,
 		public readonly loginController: LoginController,
 		private readonly userManagementFacade: UserManagementFacade,
-		private readonly transferController: DriveTransferController,
 		private readonly webFileResolver: WebFileResolver | null,
 		public readonly updateUi: () => unknown,
-		private readonly connectivityModel: WebsocketConnectivityModel,
+		private readonly syncTracker: SyncTracker,
+		private readonly searchModel: lazyAsync<DriveSearchModel>,
+		private readonly searchRouter: SearchRouter,
+		private readonly driveModel: DriveModel,
 	) {
 		this.userMailAddress = getDefaultSenderFromUser(this.loginController.getUserController())
 		this.initialized = new Promise((resolve, reject) => {
@@ -206,7 +133,12 @@ export class DriveViewModel {
 		})
 	}
 
+	get clipboard(): DriveClipboard | null {
+		return this.driveModel.clipboard
+	}
 	readonly init = async () => {
+		this.syncTracker.addSyncListener(this.syncListener)
+
 		// if the roots have already been loaded the init must have been finished
 		if (this.roots) {
 			return
@@ -237,41 +169,8 @@ export class DriveViewModel {
 			priority: ListenerPriority.NORMAL,
 		})
 
-		this.connectivityModel.addConnectionStateListener(this.connectionStateListener)
-
-		this.uploadProgressListener.addUploadListener((info: UploadProgressInfo) => {
-			this.transferController.onChunkUploaded(info.transferId, info.uploadedBytes)
-			this.updateUi()
-		})
-
-		this.uploadProgressListener.addDownloadListener((info: DownloadProgressInfo) => {
-			this.transferController.onChunkDownloaded(info.transferId, info.downloadedBytes)
-			this.updateUi()
-		})
-
-		this.eventController.addOperationStatusUpdateListener(async (update) => {
-			const op = this.runningOperations.get(update.operationId)
-			if (op != null) {
-				let error: Error | null
-				if (update.status === OperationStatus.FAILURE) {
-					error = handleRestError(filterInt(assertNotNull(update.statusCode)), undefined, undefined, update.reason)
-				} else {
-					error = null
-				}
-
-				this.operationUpdates({
-					type: op.type,
-					count: op.count,
-					status: update.status as OperationStatus,
-					error,
-				})
-				if (update.status === OperationStatus.SUCCESS || update.status === OperationStatus.FAILURE) {
-					this.runningOperations.delete(update.operationId)
-				}
-			}
-		})
-
 		this.loginController.waitForFullLogin().then(() => this.refreshStorage())
+		await this.driveModel.init()
 		this.resolveInitialized()
 	}
 
@@ -282,7 +181,9 @@ export class DriveViewModel {
 	public async currentPlanSupportsDrive(): Promise<boolean> {
 		return (await this.loginController.getUserController().getPlanConfig()).drive
 	}
-
+	operationUpdates(): Stream<OperationUpdate | null> {
+		return this.driveModel.operationUpdates
+	}
 	isDriveEnabledForCustomer(): boolean {
 		return isDriveEnabled(this.loginController)
 	}
@@ -312,35 +213,15 @@ export class DriveViewModel {
 
 	private readonly comparisonFunction: () => ComparisonFunction = memoizedWithHiddenArgument(
 		() => this.sortingPreference,
-		() => {
-			const column = this.sortingPreference.column
-			const itemName = (item: FolderItem) => (item.type === "folder" ? item.folder.name : item.file.name)
-			const itemDate = (item: FolderItem) => (item.type === "folder" ? item.folder.updatedDate : item.file.updatedDate)
-			const itemSize = (item: FolderItem) => (item.type === "folder" ? 0n : BigInt(item.file.size))
-
-			const itemMimeType = (item: FolderItem) => (item.type === "folder" ? "" : item.file.mimeType)
-
-			const attrToComparisonFunction: Record<SortColumn, ComparisonFunction> = {
-				name: (f1: FolderItem, f2: FolderItem) => compareString(itemName(f1), itemName(f2)),
-				mimeType: (f1: FolderItem, f2: FolderItem) => compareString(itemMimeType(f1), itemMimeType(f2)),
-				size: (f1: FolderItem, f2: FolderItem) => compareNumber(itemSize(f1), itemSize(f2)),
-				date: (f1: FolderItem, f2: FolderItem) => compareNumber(itemDate(f1).getTime(), itemDate(f2).getTime()),
-			}
-
-			const comparisonFn = attrToComparisonFunction[column]
-
-			// invert comparison function when the order is descending
-			const sortFunction: typeof comparisonFn = this.sortingPreference.order === "asc" ? comparisonFn : (l, r) => -comparisonFn(l, r)
-			return sortFunction
-		},
+		() => comparisonFunction(this.sortingPreference.column, this.sortingPreference.order),
 	)
 
 	deinit() {
-		this.connectivityModel.removeConnectionStateListener(this.connectionStateListener)
+		this.syncTracker.removeSyncListener(this.syncListener)
 	}
 
-	private async onEntityUpdatesReceived(events: ReadonlyArray<EntityUpdateData>) {
-		for (const update of events) {
+	private async onEntityUpdatesReceived(updates: ReadonlyArray<EntityUpdateData>) {
+		for (const update of updates) {
 			if (isUpdateForTypeRef(DriveFileRefTypeRef, update) && update.instanceListId === this.currentFolder?.folder.files) {
 				if (update.operation === OperationType.DELETE) {
 					await this.listModel.deleteLoadedItem(update.instanceId)
@@ -373,21 +254,21 @@ export class DriveViewModel {
 	private async loadItem(type: "file" | "folder", id: IdTuple): Promise<FolderItem> {
 		if (type === "file") {
 			const file = await this.entityClient.load(DriveFileTypeRef, id)
-			return { type, file }
+			return { type, file, parentFolder: null }
 		} else {
 			const folder = await this.entityClient.load(DriveFolderTypeRef, id)
-			return { type, folder }
+			return { type, folder, parentFolder: null }
 		}
 	}
 
 	cut(items: readonly FolderItem[]) {
-		this._clipboard = { items: items.map(folderItemToId), action: ClipboardAction.Cut }
-		this.selectNone()
+		this.driveModel.cut(items)
+		this.listModel.selectNone()
 	}
 
 	copy(items: readonly FolderItem[]) {
-		this._clipboard = { items: items.map(folderItemToId), action: ClipboardAction.Copy }
-		this.selectNone()
+		this.driveModel.copy(items)
+		this.listModel.selectNone()
 	}
 
 	copySelectedItems() {
@@ -407,132 +288,38 @@ export class DriveViewModel {
 	 */
 	async paste() {
 		if (this.currentFolder == null) return
-
-		if (this._clipboard?.action === ClipboardAction.Cut) {
-			const clipboardItems = this._clipboard.items
-			await this.moveItems(clipboardItems, this.currentFolder.folder._id)
-			this._clipboard = null
-			this.updateUi()
-		} else if (this._clipboard?.action === ClipboardAction.Copy) {
-			const clipboardItems = this._clipboard.items
-			await this.copyItems(clipboardItems, this.currentFolder.folder)
-			this.updateUi()
-		}
+		this.driveModel.paste(this.currentFolder.folder)
+		this.updateUi()
 	}
 
 	/**
 	 * @throws UserError
 	 */
-	async copyItems(items: readonly FolderItemId[], destination: DriveFolder) {
-		const [fileItems, folderItems] = partition(items, (item) => item.type === "file")
-		const files = await loadMultipleFromLists(
-			DriveFileTypeRef,
-			this.entityClient,
-			fileItems.map((item) => item.id),
-		)
-		const folders = await loadMultipleFromLists(
-			DriveFolderTypeRef,
-			this.entityClient,
-			folderItems.map((item) => item.id),
-		)
-
-		const renamedFiles = await deduplicateItemNames(await loadFolderContents(this.driveFacade, destination._id), files, folders)
-
-		try {
-			const operationId = await this.driveFacade.copyItems(files, folders, destination, renamedFiles)
-			this.runningOperations.set(operationId, { type: DriveOperationType.Copy, count: items.length })
-		} catch (e) {
-			if (e instanceof MoveToTrashError) {
-				throw new UserError("cannotCopyToTrash_msg")
-			} else throw e
-		}
-	}
 
 	/**
 	 * @throws UserError
 	 */
 	async moveItems(items: readonly FolderItemId[], destinationId: IdTuple) {
-		try {
-			await moveItems(this.entityClient, this.driveFacade, items, destinationId)
-			this.operationUpdates({
-				type: DriveOperationType.Move,
-				count: items.length,
-				status: OperationStatus.SUCCESS,
-				error: null,
-			})
-		} catch (e) {
-			if (e instanceof MoveCycleError) {
-				throw new UserError("cannotMoveFolderIntoItself_msg")
-			} else if (e instanceof MoveToTrashError) {
-				throw new UserError("cannotMoveToTrash_msg")
-			} else if (e instanceof MoveDestinationIsSourceError) {
-				noOp()
-			} else {
-				this.operationUpdates({
-					type: DriveOperationType.Move,
-					count: items.length,
-					status: OperationStatus.FAILURE,
-					error: e,
-				})
-			}
-		}
-		this.selectNone()
-	}
-
-	private itemsIntoIds(items: readonly FolderItemId[]): { fileIds: IdTuple[]; folderIds: IdTuple[] } {
-		const [fileFolderItems, folderFolderItems] = partition(items, (item) => item.type === "file")
-		return {
-			fileIds: fileFolderItems.map((item) => item.id),
-			folderIds: folderFolderItems.map((item) => item.id),
-		}
+		await this.driveModel.moveItems(items, destinationId)
+		this.listModel.selectNone()
 	}
 
 	async moveToTrash(items: readonly FolderItemId[]) {
-		const { fileIds, folderIds } = this.itemsIntoIds(items)
-		try {
-			await this.driveFacade.moveToTrash(fileIds, folderIds)
-			this.operationUpdates({
-				type: DriveOperationType.Trash,
-				count: items.length,
-				status: OperationStatus.SUCCESS,
-				error: null,
-			})
-		} catch (e) {
-			this.operationUpdates({
-				type: DriveOperationType.Trash,
-				count: items.length,
-				status: OperationStatus.FAILURE,
-				error: e,
-			})
+		if (this.roots == null) {
+			return
 		}
-		this.selectNone()
+		await this.driveModel.moveToTrash(items)
+		this.listModel.selectNone()
 	}
 
 	async restoreFromTrash(items: readonly FolderItem[]) {
-		const { fileIds, folderIds } = this.itemsIntoIds(items.map(folderItemToId))
-		try {
-			await this.driveFacade.restoreFromTrash(fileIds, folderIds)
-			this.operationUpdates({
-				type: DriveOperationType.Restore,
-				count: items.length,
-				status: OperationStatus.SUCCESS,
-				error: null,
-			})
-		} catch (e) {
-			this.operationUpdates({
-				type: DriveOperationType.Restore,
-				count: items.length,
-				status: OperationStatus.FAILURE,
-				error: e,
-			})
-		}
-		this.selectNone()
+		await this.driveModel.restoreFromTrash(items)
+		this.listModel.selectNone()
 	}
 
 	async deleteFromTrash(items: readonly FolderItem[]) {
-		const operationId = await this.driveFacade.deleteFromTrash(items.map(folderItemEntity))
-		this.runningOperations.set(operationId, { type: DriveOperationType.Delete, count: items.length })
-		this.selectNone()
+		await this.driveModel.deleteFromTrash(items)
+		this.listModel.selectNone()
 	}
 
 	private async loadParents(folder: DriveFolder) {
@@ -600,7 +387,12 @@ export class DriveViewModel {
 		}
 	}
 
-	async uploadFiles(files: (WebFile | FileReference)[], folders?: DiskFolder<WebFile | FileReference>[], customTargetFolderId?: IdTuple): Promise<void> {
+	async uploadFiles(
+		files: (WebFile | FileReference)[],
+		showDuplicateFilesChoiceDialog: (fileName: string, fileCount: number) => Promise<DuplicateFilesDialogDecision>,
+		folders?: DiskFolder<WebFile | FileReference>[],
+		customTargetFolderId?: IdTuple,
+	): Promise<void> {
 		if (this.roots == null) {
 			console.log("drive is not initialized")
 			return
@@ -612,26 +404,7 @@ export class DriveViewModel {
 				: this.currentFolder.folder._id
 
 		await this.listModel.waitLoad()
-		const folderItems = this.listModel.getUnfilteredAsArray()
-		const takenFileNames: Set<string> = new Set(folderItems.map((item) => folderItemEntity(item).name))
-
-		for (const file of files) {
-			const newName = pickNewFileName(isWebFile(file) ? file.file.name : file.name, takenFileNames)
-			takenFileNames.add(newName)
-			await this.transferController.upload(file, newName, targetFolderId)
-		}
-
-		for (const folder of folders ?? []) {
-			folder.name = pickNewFileName(folder.name, takenFileNames)
-			await walkTree({ folder, parent: targetFolderId }, async ({ folder: currentFolder, parent }) => {
-				const createdFolder = await this.driveFacade.createFolder(currentFolder.name, parent)
-				for (const childFile of currentFolder.files) {
-					const fileName = isWebFile(childFile) ? childFile.file.name : childFile.name
-					await this.transferController.upload(childFile, fileName, createdFolder._id)
-				}
-				return currentFolder.folders.map((f) => ({ folder: f, parent: createdFolder._id }))
-			})
-		}
+		await this.driveModel.uploadFiles(files, targetFolderId, showDuplicateFilesChoiceDialog, folders)
 	}
 
 	async createNewFolder(folderName: string, parentFolderId?: IdTuple): Promise<DriveFolder> {
@@ -647,13 +420,7 @@ export class DriveViewModel {
 	}
 
 	navigateToFolder(folderId: IdTuple) {
-		// Ideally we'd like to use Tuta's router, but navigating back from a folder then entering it again doesn't seem to work.
-		// Using Mithril's router directly seems to avoid this problem.
-		// this.router.routeTo("/drive/:folderListId/:folderElementId", { folderListId: listIdPart(folderId), folderElementId: elementIdPart(folderId) })
-		m.route.set("/drive/:folderListId/:folderElementId", {
-			folderListId: listIdPart(folderId),
-			folderElementId: elementIdPart(folderId),
-		})
+		this.router.routeTo("/drive/:folderListId/:folderElementId", { folderListId: listIdPart(folderId), folderElementId: elementIdPart(folderId) })
 	}
 
 	navigateToRootFolder() {
@@ -663,16 +430,16 @@ export class DriveViewModel {
 	}
 
 	async openFile(file: DriveFile): Promise<void> {
-		this.transferController.download(file, "open")
+		await this.driveModel.openFile(file)
 	}
 
 	async downloadFile(file: DriveFile): Promise<void> {
-		this.transferController.download(file, "download")
+		await this.driveModel.downloadFile(file)
 	}
 
 	// Multi-select downloading is only permitted if the selection does not contain any folders.
-	isDownloadPermitted(items: FolderItem[]): items is FileFolderItem[] {
-		return !items.some((item) => item.type === "folder")
+	isDownloadPermitted(items: readonly FolderItem[]): items is FileFolderItem[] {
+		return this.driveModel.isDownloadPermitted(items)
 	}
 
 	getCurrentColumnSortOrder() {
@@ -680,39 +447,13 @@ export class DriveViewModel {
 	}
 
 	sort(column: SortColumn) {
-		if (this.sortingPreference.column === column) {
-			// flip order
-			this.sortingPreference = { column: column, order: this.sortingPreference.order === "asc" ? "desc" : "asc" }
-		} else {
-			this.sortingPreference = { column: column, order: "asc" }
-		}
-
+		this.sortingPreference = toggleSort(this.sortingPreference, column)
 		if (this.currentFolder == null) return
 		this.listModel.sort()
 	}
 
 	rename(item: FolderItem, newName: string) {
-		this.driveFacade.rename(folderItemEntity(item), newName)
-	}
-
-	onSingleSelection(item: FolderItem) {
-		this.listModel.onSingleSelection(item)
-	}
-
-	onSingleInclusiveSelection(item: FolderItem) {
-		this.listModel.onSingleInclusiveSelection(item)
-	}
-
-	onSingleExclusiveSelection(item: FolderItem) {
-		this.listModel.onSingleExclusiveSelection(item)
-	}
-
-	onRangeSelectionTowards(item: FolderItem) {
-		this.listModel.selectRangeTowards(item)
-	}
-
-	areAllSelected(): boolean {
-		return this.listModel.areAllSelected()
+		this.driveModel.rename(item, newName)
 	}
 
 	toggleSelectAll() {
@@ -721,22 +462,6 @@ export class DriveViewModel {
 		} else {
 			this.listModel.selectNone()
 		}
-	}
-
-	selectAll() {
-		this.listModel.selectAll()
-	}
-
-	selectNone() {
-		this.listModel.selectNone()
-	}
-
-	selectPrevious(multiselect: boolean) {
-		this.listModel.selectPrevious(multiselect)
-	}
-
-	selectNext(multiselect: boolean) {
-		this.listModel.selectNext(multiselect)
 	}
 
 	listState(): ListState<FolderItem> {
@@ -762,21 +487,29 @@ export class DriveViewModel {
 	}
 
 	transfers(): DriveTransfers {
-		return this.transferController.state
+		return this.driveModel.transfers()
 	}
 
 	cancelTransfer(transferId: TransferId) {
-		this.transferController.cancelTransfer(transferId)
+		this.driveModel.cancelTransfer(transferId)
+	}
+
+	retryTransfer(transferId: TransferId) {
+		this.driveModel.retryTransfer(transferId)
+	}
+
+	retryFailedTransfers() {
+		this.driveModel.retryFailedTransfers()
 	}
 
 	flushTransfers() {
-		this.transferController.flush()
+		this.driveModel.flushTransfers()
 	}
 
 	/**
 	 * Update the used storage. Debounce it so that we don't request it too frequently.
 	 */
-	private readonly refreshStorage = debounceStart(60 * SECOND_IN_MILLIS, async () => {
+	private readonly refreshStorage = debounceStart(60 * TimeConstants.SECOND_IN_MILLIS, async () => {
 		const customerInfo = await this.loginController.getUserController().loadCustomerInfo()
 		this.storage = {
 			usedBytes: await this.userManagementFacade.readUsedUserStorage(this.loginController.getUserController().user),
@@ -790,7 +523,7 @@ export class DriveViewModel {
 	}
 
 	async filesDropped(files: File[], folderTransferItems: FileSystemDirectoryEntry[]) {
-		if (isDesktop()) {
+		if (EnvProvider.get().isDesktop()) {
 			const webFileResolver = assertNotNull(this.webFileResolver)
 			const fileRefs = await promiseMap(files, (file) => webFileResolver.resolveWebFile(file))
 
@@ -800,17 +533,76 @@ export class DriveViewModel {
 			}
 
 			const tree = await traverse<FileReference>(folderTransferItems, fileEntryToFileRef)
-			await this.uploadFiles(fileRefs, tree)
+			await this.uploadFiles(fileRefs, showDuplicateFilesChoiceDialog, tree)
 		} else {
 			const tree = await traverse(folderTransferItems, childFileFromEntry)
 			await this.uploadFiles(
 				files.map((f) => {
 					return { _type: "WebFile", file: f } satisfies WebFile
 				}),
+				showDuplicateFilesChoiceDialog,
 				tree,
 			)
 		}
 	}
-}
 
-export type SortOrder = "asc" | "desc"
+	selectSearchResult(searchQuery: SearchQuery, driveSearchResult: FolderItem | null) {
+		this.searchRouter.routeTo(searchQuery.query, searchQuery.restriction, driveSearchResult ? elementIdPart(folderItemId(driveSearchResult)) : null)
+	}
+	async getSearchResult({ query, maxResults }: QuickSearchQuery): Promise<LiveSearchResult<FolderItem>> {
+		const fileGroupId = await this.driveFacade.getFileGroupId()
+		const { createDriveRestriction } = await import("../../search/model/DriveSearchUtils.js")
+		const restriction = createDriveRestriction({ start: null, end: null })
+		return await (
+			await this.searchModel()
+		).searchDrive({ query, maxResults, restriction }, fileGroupId, (a: DriveFile | DriveFolder, b: DriveFile | DriveFolder) =>
+			this.compareDriveItemsForSearch(a, b),
+		)
+	}
+
+	compareDriveItemsForSearch(a: DriveFile | DriveFolder, b: DriveFile | DriveFolder): number {
+		const parentA = isDriveFile(a) ? a.folder : a.parent
+		const parentB = isDriveFile(b) ? b.folder : b.parent
+
+		const currentFolderId = assertNotNull(this.currentFolder?.folder)._id
+		const rootFolderId = assertNotNull(this.roots?.root)
+		const trashFolderId = assertNotNull(this.roots?.trash)
+
+		// First, prioritize results in the currently shown folder.
+		if (isSameIdTuple(currentFolderId, parentA) && !isSameIdTuple(currentFolderId, parentB)) {
+			return -1
+		}
+		if (!isSameIdTuple(currentFolderId, parentA) && isSameIdTuple(currentFolderId, parentB)) {
+			return 1
+		}
+
+		// Then, list files in "home" folder.
+		if (isSameIdTuple(rootFolderId, parentA) && !isSameIdTuple(currentFolderId, parentB)) {
+			return -1
+		}
+		if (!isSameIdTuple(currentFolderId, parentA) && isSameIdTuple(currentFolderId, parentB)) {
+			return 1
+		}
+
+		// Finally, prioritize items that are not in "trash" folder.
+		if (!isSameIdTuple(trashFolderId, parentA) && isSameIdTuple(trashFolderId, parentB)) {
+			return -1
+		}
+		if (isSameIdTuple(trashFolderId, parentA) && !isSameIdTuple(trashFolderId, parentB)) {
+			return 1
+		}
+
+		return 0
+	}
+
+	get selectionEvents(): ListItemSelectionCallbacks<FolderItem> {
+		return listItemSelectionCallbacksFor(this.listModel)
+	}
+
+	async cancelAllTransfers(confirmationDialog: (activeTransfers: DriveTransferState[]) => Promise<boolean>) {
+		await this.driveModel.cancelAllTransfers(confirmationDialog)
+	}
+	goToSearchMobile() {
+		this.router.routeTo("/search/drive/", {})
+	}
+}

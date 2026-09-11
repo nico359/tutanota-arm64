@@ -1,5 +1,5 @@
 import { defer } from "@tutao/utils"
-import { assertMainOrNode, InvoiceData, isIOSApp, UpgradePromptType } from "@tutao/app-env"
+import { EnvProvider, UpgradePromptType } from "@tutao/app-env"
 import stream from "mithril/stream"
 import { Translation, TranslationKey } from "../../../ui/utils/LanguageViewModel"
 import { createWizardDialog, wizardPageWrapper } from "../../../ui/base/WizardDialog.js"
@@ -13,7 +13,7 @@ import { formatNameAndAddress } from "../api/common/utils/CommonFormatter.js"
 import { LoginController } from "../api/main/LoginController.js"
 import { Dialog, DialogType } from "../../../ui/base/Dialog.js"
 import { SubscriptionPage, SubscriptionPageAttrs } from "./SubscriptionPage.js"
-import { styles } from "../../../ui/styles.js"
+import { Styles } from "../../../ui/styles.js"
 import { SignupFlowUsageTestController } from "./usagetest/UpgradeSubscriptionWizardUsageTestUtils.js"
 import { isPersonalPlanAvailable } from "./utils/PlanSelectorUtils"
 import { PowSolution } from "../api/common/pow-worker"
@@ -22,10 +22,10 @@ import type { UsageTest } from "@tutao/usagetests"
 import { AccountingInfo, Customer } from "@tutao/entities/sys"
 import { AvailablePlanType, NewPaidPlans, PlanType } from "../../../entities/sys/Utils"
 import { getByAbbreviation } from "../gui/CountryList"
-
 import { isFreeSignupOnly } from "../misc/LoginUtils"
+import { InvoiceData } from "./utils/PaymentUtils"
 
-assertMainOrNode()
+EnvProvider.assertMainOrNode()
 export type SubscriptionParameters = {
 	subscription: string | null
 	type: string | null
@@ -155,7 +155,7 @@ export async function showUpgradeWizard({
 		wizardPageWrapper(InvoiceAndPaymentDataPage, new InvoiceAndPaymentDataPageAttrs(upgradeData)),
 		wizardPageWrapper(UpgradeConfirmSubscriptionPage, new UpgradeConfirmSubscriptionPageAttrs(upgradeData)),
 	]
-	if (isIOSApp()) {
+	if (EnvProvider.get().isIOSApp()) {
 		wizardPages.splice(1, 1) // do not show this page on AppStore payment since we are only able to show this single payment method on iOS
 	}
 
@@ -174,7 +174,7 @@ export async function showUpgradeWizard({
 }
 
 export function getPlanSelectorTest() {
-	const test = locator.usageTestController.getTest(`signup.paywall.${styles.isMobileLayout() ? "mobile" : "desktop"}`)
+	const test = locator.usageTestController.getTest(`signup.paywall.${Styles.get().isMobileLayout() ? "mobile" : "desktop"}`)
 	test.recordTime = true
 	return test
 }

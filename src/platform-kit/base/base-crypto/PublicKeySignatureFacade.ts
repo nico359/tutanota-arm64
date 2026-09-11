@@ -20,11 +20,11 @@ import {
 	rsaPublicKeyToBytes,
 	RsaX25519PublicKey,
 } from "@tutao/crypto"
-import { assertWorkerOrNode } from "@tutao/app-env"
+import { EnvProvider } from "@tutao/app-env"
 import { asPublicKeySignatureType, PublicKeySignatureType } from "./Constants"
 import { createPublicKeySignature, PublicKeySignature } from "@tutao/entities/sys"
 
-assertWorkerOrNode()
+EnvProvider.assertWorkerOrNode()
 
 export type DeserializedPublicKeyForSigning = {
 	encryptionKeyPairVersion: KeyVersion
@@ -49,10 +49,7 @@ export class PublicKeySignatureFacade {
 	 * Throws for invalid key pair types or key pair version that do not fit into a byte or are not integers
 	 * @VisibleForTesting
 	 */
-	serializePublicKeyForSigning(versionedPublicKey: Versioned<PublicKey>): {
-		encodedKeyPairForSigning: Uint8Array<ArrayBuffer>
-		signatureType: PublicKeySignatureType
-	} {
+	serializePublicKeyForSigning(versionedPublicKey: Versioned<PublicKey>): EncodedKeyPairAndSignatureType {
 		const publicKey = versionedPublicKey.object
 		let firstPubKeyComponent: Uint8Array<ArrayBuffer>
 		let secondPubKeyComponent: Uint8Array<ArrayBuffer>
@@ -191,4 +188,9 @@ export class PublicKeySignatureFacade {
 			throw new Error("invalid key pair type")
 		}
 	}
+}
+
+type EncodedKeyPairAndSignatureType = {
+	encodedKeyPairForSigning: Uint8Array<ArrayBuffer>
+	signatureType: PublicKeySignatureType
 }

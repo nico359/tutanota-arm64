@@ -1,4 +1,4 @@
-import { assertMainOrNode } from "@tutao/app-env"
+import { EnvProvider } from "@tutao/app-env"
 import m, { Children, Vnode } from "mithril"
 import { emitWizardEvent, WizardEventType, WizardPageAttrs, WizardPageN } from "../../../../ui/base/WizardDialog"
 import { ImapMailImportController } from "./ImapMailImportController"
@@ -38,7 +38,7 @@ import { ImapMailboxSpecialUse } from "../../../common/api/common/utils/imapImpo
 import { getTranslationForImapProvider, ImapProvider } from "../../../common/api/common/utils/imapImportUtils/ImapKnownConfigs"
 import { FolderSystem } from "../../../common/api/common/mail/FolderSystem"
 
-assertMainOrNode()
+EnvProvider.assertMainOrNode()
 
 class ImapImportSummaryPage implements WizardPageN<ImapImportData> {
 	private enableParentFolderEdit: boolean = false
@@ -112,7 +112,7 @@ class ImapImportSummaryPage implements WizardPageN<ImapImportData> {
 							}),
 						)
 					: m(IconButton, {
-							title: "migrationFolderMapping_title",
+							label: "migrationFolderMapping_title",
 							icon: Icons.PenFilled,
 							click: () => {
 								this.enableFolderMappingEdit = !this.enableFolderMappingEdit
@@ -141,7 +141,7 @@ class ImapImportSummaryPage implements WizardPageN<ImapImportData> {
 					mailboxToRow.shouldSync
 						? m(IconButton, {
 								icon: Icons.CheckboxChecked,
-								title: "disableMigrationSyncForFolder_action",
+								label: "disableMigrationSyncForFolder_action",
 								click: async () => {
 									const mappedMailSet = data.imapMailboxesToTutaMailSets?.get(mailboxToRow.imapMailbox.path)
 									if (mappedMailSet) {
@@ -157,7 +157,7 @@ class ImapImportSummaryPage implements WizardPageN<ImapImportData> {
 							})
 						: m(IconButton, {
 								icon: Icons.CheckboxEmpty,
-								title: "enableMigrationSyncForFolder_action",
+								label: "enableMigrationSyncForFolder_action",
 								click: async () => {
 									const mappedMailSet = assertNotNull(data.imapMailboxesToTutaMailSets?.get(mailboxToRow.imapMailbox.path))
 									mappedMailSet.shouldSync = true
@@ -213,7 +213,7 @@ class ImapImportSummaryPage implements WizardPageN<ImapImportData> {
 					} satisfies DropDownSelectorNewAttrs<MailSet>),
 					m(IconButton, {
 						icon: Icons.Plus,
-						title: "migrationCreateFolder_action",
+						label: "migrationCreateFolder_action",
 						click: async () => {
 							let newFolderElementId: Id | null = null
 							await showEditFolderDialog(
@@ -354,7 +354,7 @@ class ImapImportSummaryPage implements WizardPageN<ImapImportData> {
 					leadingIcon: { icon: Icons.FolderFilled, color: theme.on_surface_variant },
 					injectionsRight: () => {
 						return m(IconButton, {
-							title: "editFolder_action",
+							label: "editFolder_action",
 							icon: Icons.PenFilled,
 							click: () => {
 								this.enableParentFolderEdit = !this.enableParentFolderEdit
@@ -383,7 +383,7 @@ class ImapImportSummaryPage implements WizardPageN<ImapImportData> {
 								: null,
 							data.imapSyncLabelData
 								? m(IconButton, {
-										title: "delete_action",
+										label: "delete_action",
 										icon: Icons.TrashFilled,
 										click: () => {
 											data.imapSyncLabelData = null
@@ -392,7 +392,7 @@ class ImapImportSummaryPage implements WizardPageN<ImapImportData> {
 									})
 								: null,
 							m(IconButton, {
-								title: "editLabel_action",
+								label: "editLabel_action",
 								icon: Icons.PenFilled,
 								click: () => {
 									if (!data.imapSyncLabelData) {
@@ -457,6 +457,7 @@ export class ImapImportSummaryPageAttrs implements WizardPageAttrs<ImapImportDat
 				this.data.imapAccountOAuthToken !== undefined ? tokenEndpointResponseToOAuthTokenEndpointResponse(this.data.imapAccountOAuthToken) : null,
 			customCertificateData: this.data.customCertificateData,
 			ignoreCertificateErrors: this.data.ignoreCertificateErrors,
+			useSSL: this.data.useSSL,
 		})
 		const commonImapImportParams = {
 			maxQuota: DEFAULT_IMAP_IMPORT_MAX_QUOTA,
@@ -494,7 +495,7 @@ export class ImapImportSummaryPageAttrs implements WizardPageAttrs<ImapImportDat
 				return showErrorDialog ? Dialog.message(postponedErrorMessageReplaced).then(() => true) : Promise.resolve(true)
 			}
 		} catch (e) {
-			if (e.data === ImapErrorCause.AUTH_FAILED) {
+			if (e.data.cause === ImapErrorCause.AUTH_FAILED) {
 				Dialog.message("migrationAuthFailed_msg" as TranslationKey).then(() => false)
 				return Promise.resolve(false)
 			}
