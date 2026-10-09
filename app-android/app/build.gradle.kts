@@ -19,8 +19,8 @@ android {
 		applicationId = "de.tutao.tutanota"
 		minSdk = 26
 		targetSdk = 36
-		versionCode = 396709
-		versionName = "359.260904.0"
+		versionCode = 396721
+		versionName = "361.261006.0"
 
 		testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -43,12 +43,14 @@ android {
 			enableV2Signing = true
 		}
 	}
-	flavorDimensions("releaseType")
+	flavorDimensions.add("releaseType")
 	productFlavors {
 		create("tutao") {
+			dimension = "releaseType"
 			signingConfig = signingConfigs.getByName("release")
 		}
 		create("fdroid") {
+			dimension = "releaseType"
 		}
 	}
 	buildTypes {
@@ -159,7 +161,6 @@ dependencies {
 
 
 	implementation(files("../libs/sqlcipher-android.aar"))
-
 
 	implementation(libs.androidx.lifecycle.runtime.ktx)
 

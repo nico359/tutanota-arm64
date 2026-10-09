@@ -5,17 +5,26 @@ import { TypeChecks } from "./TsTypeChecks"
 // keep in sync with LaunchHtml.js meta tag title
 export const LOGIN_TITLE = "Mail. Done. Right. Tuta Mail Login & Sign up for an Ad-free Mailbox"
 
+export const IntegrationPlatform: Record<IntegrationPlatformName, IntegrationPlatformName> = Object.freeze({
+	Nextcloud: "Nextcloud",
+})
+
+export const NEXTCLOUD_PREFIX: string = "/index.php/apps/tutamail"
+
 export type DomainConfigMap = Record<string, DomainConfig>
 export type EnvType = {
 	staticUrl: string | null // if null the url from the browser is used
 	mode: Mode
 	platformId: PlatformId | null
+	paymentSetup: PaymentSetup
 	dist: boolean
 	versionNumber: string
 	timeout: number
 	domainConfigs: DomainConfigMap
 	networkDebugging: boolean
 	clientName: string | null
+	integrationPlatform: Record<IntegrationPlatformName, IntegrationPlatformName> | null
+	shadowDomAppRoot: string | null
 }
 
 export const enum PlatformId {
@@ -24,6 +33,15 @@ export const enum PlatformId {
 	Darwin = "darwin",
 	Linux = "linux",
 	Win32 = "win32",
+}
+
+export const enum PaymentSetup {
+	// customers can only pay via app store
+	Appstore = "appstore",
+	// customers can only pay via google play store
+	Playstore = "playstore",
+	/// credit cards, paypal, invoice etc. this includes fdroid
+	Default = "default",
 }
 
 /**
@@ -39,6 +57,7 @@ export type DomainConfig = {
 	 * Important! You probably do not want to use it directly but rather through the accessor function
 	 */
 	apiUrl: string
+	websocketUrl: string
 	/**
 	 * Which URL should be opened for Webauthn flow on desktop for keys associated with our current domain (tuta.com).
 	 */
@@ -114,7 +133,7 @@ export class EnvProvider {
 		return this.env.timeout
 	}
 
-	constructor(public readonly env: EnvType) {}
+	private constructor(public readonly env: EnvType) {}
 
 	public getPlatformId(): PlatformId | null {
 		return this.env.platformId
@@ -135,6 +154,14 @@ export class EnvProvider {
 		return this.isApp() && this.env.platformId === PlatformId.Ios
 	}
 
+	public isNextCloudPlugin(): boolean {
+		return env.integrationPlatform === IntegrationPlatform.Nextcloud
+	}
+
+	public getPathPrefix(): string {
+		return this.env.shadowDomAppRoot != null ? this.env.shadowDomAppRoot : ""
+	}
+
 	/**
 	 * Return true if an Apple device; used for checking if CTRL or CMD/Meta should be used as the primary modifier
 	 */
@@ -148,6 +175,10 @@ export class EnvProvider {
 		}
 
 		return this.isApp() && this.env.platformId === PlatformId.Android
+	}
+
+	public getPaymentSetup(): PaymentSetup {
+		return this.env.paymentSetup
 	}
 
 	public isApp(): boolean {
@@ -219,14 +250,17 @@ export class EnvProvider {
 		return domainConfig.apiUrl.replace(/^http/, "ws")
 	}
 
-	/** Returns the origin which should be used for API requests. */
-	public getApiBaseUrl(domainConfig: DomainConfig): string {
+	/**
+	 * Rewrites the scheme to api://|apis:// which is intercepted by the ApiSchemeHandler on iOS
+	 * This is done in order to avoid preflight requests with Origin asset://app
+	 * @param url
+	 */
+	public rewriteSchemeForIos(url: string): string {
 		if (this.isIOSApp()) {
 			// http:// -> api:// and https:// -> apis://
-			return domainConfig.apiUrl.replace(/^http/, "api")
-		} else {
-			return domainConfig.apiUrl
+			return url.replace(/^http/, "api")
 		}
+		return url
 	}
 
 	static assertMainOrNode(): void {

@@ -3,7 +3,7 @@ import Stream from "mithril/stream"
 import { AppType, EnvProvider } from "../platform-kit/app-env"
 import { downcast, findAndRemove, LazyLoaded, mapAndFilterNull, typedValues } from "../platform-kit/utils"
 import m from "mithril"
-import { BaseThemeId, BaseThemeProvider, theme, Theme, ThemeId, ThemePreference } from "./theme"
+import { BaseThemeId, BaseThemeProvider, Theme, ThemeId, ThemePreference } from "./theme"
 import { themes } from "./builtinThemes"
 import { getWhitelabelCustomizations } from "./utils/WhitelabelUtils"
 import { getCalendarLogoSvg, getMailLogoSvg } from "./base/Logo"
@@ -189,6 +189,17 @@ export class ThemeController implements BaseThemeProvider {
 
 	private async resolveThemePreference(newThemePreference: ThemePreference): Promise<ThemeId> {
 		if (newThemePreference === "auto:light|dark") {
+			if (EnvProvider.get().isNextCloudPlugin()) {
+				const nextcloudTheme = document.body.dataset.themes
+				if (nextcloudTheme?.includes("default")) {
+					return (await this.themeFacade.prefersDark()) ? "dark" : "light"
+				} else if (nextcloudTheme?.includes("dark")) {
+					return "dark"
+				} else {
+					return "light"
+				}
+			}
+
 			return (await this.themeFacade.prefersDark()) ? "dark" : "light"
 		} else {
 			return newThemePreference
@@ -277,7 +288,7 @@ export class ThemeController implements BaseThemeProvider {
 	}
 
 	shouldAllowChangingTheme(): boolean {
-		return window.whitelabelCustomizations == null
+		return window.whitelabelCustomizations == null && !EnvProvider.get().isNextCloudPlugin()
 	}
 
 	/**

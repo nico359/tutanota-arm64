@@ -3,7 +3,7 @@ import { AppHeaderAttrs, Header } from "../../../../ui/Header.js"
 import { ColumnType, ViewColumn } from "../../../../ui/base/ViewColumn"
 import { lang } from "../../../../ui/utils/LanguageViewModel"
 import { ViewSlider } from "../../../../ui/nav/ViewSlider.js"
-import { isKeyPressed, Key, keyboardEventToKeyPress, keyManager, Shortcut } from "../../../../ui/utils/KeyManager"
+import { isKeyPressed, Key, keyboardEventToKeyPress, KeyManager, Shortcut } from "../../../../ui/utils/KeyManager"
 import { Icons } from "../../../../ui/base/icons/Icons"
 import {
 	base64ToBase64Url,
@@ -168,6 +168,7 @@ export class CalendarView extends BaseTopLevelView implements TopLevelView<Calen
 								? {
 										label: "newEvent_action",
 										click: () => this.createNewEventDialog(),
+										icon: Icons.Plus,
 									}
 								: null,
 						content: [
@@ -503,7 +504,7 @@ export class CalendarView extends BaseTopLevelView implements TopLevelView<Calen
 		const streamListeners: Stream<void>[] = []
 
 		this.oncreate = () => {
-			keyManager.registerShortcuts(shortcuts)
+			KeyManager.get().registerShortcuts(shortcuts)
 			// do both a timeout and interval to ensure the time indicator is done on the minute rather than some delay afterwards
 			if (!this.redrawIntervalId && !this.redrawTimeoutId) {
 				const timeToNextMinute = (60 - new Date().getSeconds()) * 1000
@@ -524,7 +525,7 @@ export class CalendarView extends BaseTopLevelView implements TopLevelView<Calen
 		}
 
 		this.onremove = () => {
-			keyManager.unregisterShortcuts(shortcuts)
+			KeyManager.get().unregisterShortcuts(shortcuts)
 			if (this.redrawTimeoutId) {
 				window.clearTimeout(this.redrawTimeoutId)
 				this.redrawTimeoutId = null
@@ -1118,9 +1119,6 @@ export class CalendarView extends BaseTopLevelView implements TopLevelView<Calen
 		}
 		const handleUpdateBirthdayCalendar = (dialog: Dialog, newColor: string) => {
 			this.viewModel.handleBirthdayCalendarUpdate(newColor)
-			if (ClientDetector.get().isCalendarApp()) {
-				calendarLocator.systemFacade.requestWidgetRefresh()
-			}
 			dialog.close()
 		}
 		showEditBirthdayCalendarDialog({
@@ -1130,7 +1128,7 @@ export class CalendarView extends BaseTopLevelView implements TopLevelView<Calen
 	}
 
 	private handleModifiedCalendar(dialog: Dialog, properties: CalendarProperties, calendarInfo: CalendarInfo, existingGroupSettings?: GroupSettings) {
-		const { groupInfo, hasMultipleMembers, userIsOwner } = calendarInfo
+		const { groupInfo, userIsOwner } = calendarInfo
 		if (userIsOwner) {
 			// if it is a shared calendar and the shared name has been changed the entity needs to be updated
 			// the name on the entity is what is shared with everyone
@@ -1160,10 +1158,6 @@ export class CalendarView extends BaseTopLevelView implements TopLevelView<Calen
 					})
 			})
 			.catch(ofClass(LockedError, noOp))
-
-		if (ClientDetector.get().isCalendarApp()) {
-			calendarLocator.systemFacade.requestWidgetRefresh()
-		}
 
 		dialog.close()
 	}

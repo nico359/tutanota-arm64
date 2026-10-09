@@ -1,4 +1,4 @@
-import { downcast, lazy, typedEntries } from "../../platform-kit/utils"
+import { downcast, DurationFormatStub, lazy, typedEntries } from "../../platform-kit/utils"
 import type { TranslationKeyType } from "./TranslationKey"
 import { getWhitelabelCustomizations } from "./WhitelabelUtils"
 import { EnvProvider } from "../../platform-kit/app-env"
@@ -248,9 +248,7 @@ export const enum InfoLink {
 	Download = "https://tuta.com/#download",
 	SharedMailboxes = "https://tuta.com/support/#shared-mailboxes",
 	InactiveAccounts = "https://tuta.com/faq/#inactive-accounts",
-	AppStorePaymentChange = "https://tuta.com/support/#appstore-payment-change",
-	AppStorePayment = "https://tuta.com/support/#appstore-payments",
-	AppStoreDowngrade = "https://tuta.com/support/#appstore-subscription-downgrade",
+	AppStorePayment = "https://tuta.com/support/#external-payments",
 	PasswordGenerator = "https://tuta.com/faq#passphrase-generator",
 	HomePageFreeSignup = "https://tuta.com/free-email",
 	CalendarHomePageFreeSignup = "https://tuta.com/calendar",
@@ -513,9 +511,12 @@ export class LanguageViewModel {
 				month: "2-digit",
 				year: "2-digit",
 			}),
-			durationNarrow: new Intl.DurationFormat(tag, {
-				style: "narrow",
-			}),
+			durationNarrow:
+				typeof Intl.DurationFormat === "undefined"
+					? new DurationFormatStub()
+					: new Intl.DurationFormat(tag, {
+							style: "narrow",
+						}),
 		}
 	}
 
@@ -584,13 +585,17 @@ export class LanguageViewModel {
 		return typeof value === "object" ? (value as Translation).testId : (value as TranslationKey)
 	}
 
+	makeTranslation(testId: string, unresolved: string | lazy<string>): Translation {
+		return LanguageViewModel.makeTranslation(testId, unresolved)
+	}
+
 	/**
 	 * Creates a Translation. Only to be used in rare cases where we can't use a
 	 * TranslationKey (e.g. rendering the name of a folder).
 	 * @param testId
 	 * @param unresolved
 	 */
-	makeTranslation(testId: string, unresolved: string | lazy<string>): Translation {
+	static makeTranslation(testId: string, unresolved: string | lazy<string>): Translation {
 		let text = typeof unresolved === "function" ? unresolved() : unresolved
 		return { testId: testId, text }
 	}

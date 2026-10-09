@@ -6,7 +6,7 @@ import { getSafeAreaInsetLeft } from "../../../../ui/HtmlUtils"
 import { Icons } from "../../../../ui/base/icons/Icons"
 import { AriaLandmarks, landmarkAttrs } from "../../../../ui/AriaUtils"
 import { createDropdown } from "../../../../ui/base/Dropdown.js"
-import { keyManager } from "../../../../ui/utils/KeyManager"
+import { KeyManager } from "../../../../ui/utils/KeyManager"
 import { CounterBadge } from "../../../../ui/base/CounterBadge.js"
 import { px, size } from "../../../../ui/size.js"
 import { theme } from "../../../../ui/theme.js"
@@ -17,6 +17,10 @@ import { DesktopSystemFacade } from "@tutao/native-bridge/generatedIpc/types"
 import { Styles } from "../../../../ui/styles.js"
 import { IconButton } from "../../../../ui/base/IconButton.js"
 import { EnvProvider, FeatureType, UpgradePromptType } from "@tutao/app-env"
+import { locator } from "../../api/main/CommonLocator"
+import { AccountingInfo, AccountingInfoTypeRef } from "@tutao/entities/sys"
+import { idToElementId } from "@tutao/meta"
+import { PaymentMethodType } from "../../../../entities/sys/Utils"
 
 export interface DrawerMenuAttrs {
 	logins: LoginController
@@ -73,8 +77,9 @@ export class DrawerMenu implements Component<DrawerMenuAttrs> {
 							label: "buyGiftCard_label",
 							click: () => {
 								m.route.set("/settings/invoice")
-								import("../../subscription/giftcards/PurchaseGiftCardDialog").then(({ showPurchaseGiftCardDialog }) => {
-									return showPurchaseGiftCardDialog()
+								import("../../subscription/giftcards/PurchaseGiftCardDialog").then(async ({ showPurchaseGiftCardDialog }) => {
+									const accountingInfo = await this.loadData()
+									return showPurchaseGiftCardDialog(accountingInfo.paymentMethod as PaymentMethodType)
 								})
 							},
 							colors: ButtonColor.DrawerNav,
@@ -113,7 +118,7 @@ export class DrawerMenu implements Component<DrawerMenuAttrs> {
 								{
 									icon: Icons.KeyboardFilled,
 									label: "keyboardShortcuts_title",
-									click: () => keyManager.openF1Help(true),
+									click: () => KeyManager.get().openF1Help(true),
 								},
 							],
 						})(e, dom),
@@ -143,6 +148,11 @@ export class DrawerMenu implements Component<DrawerMenuAttrs> {
 				}),
 			],
 		)
+	}
+
+	private async loadData(): Promise<AccountingInfo> {
+		const customerInfo = await locator.logins.getUserController().loadCustomerInfo()
+		return await locator.entityClient.load(AccountingInfoTypeRef, idToElementId(customerInfo.accountingInfo))
 	}
 }
 

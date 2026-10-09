@@ -88,7 +88,7 @@ import {
 } from "@tutao/native-bridge/generatedIpc/types"
 import { notifications } from "../../ui/Notifications"
 import { EntityClient } from "../../platform-kit/network/EntityClient"
-import { CommonLocator } from "../common/api/main/CommonLocator"
+import { CommonLocator, DialogProvider } from "../common/api/main/CommonLocator"
 import { LoginFacade } from "../../platform-kit/base/facades/LoginFacade"
 import { AppHeaderAttrs, Header } from "../../ui/Header"
 import { GroupManagementFacade } from "../../platform-kit/base/facades/lazy/GroupManagementFacade"
@@ -128,9 +128,10 @@ import { SearchRouter } from "../common/search/view/SearchRouter"
 import { DriveModel } from "./drive/model/DriveModel"
 import { DriveTransferController } from "./drive/view/DriveTransferController"
 import { DriveSearchViewModel } from "./search/view/DriveSearchViewModel"
+import { PluginManager } from "../../plugin-kit/plugin-manager/PluginManager"
+import { PluginConfigurationProvider } from "../common/plugin/PluginConfigurationProvider"
 
 EnvProvider.assertMainOrNode()
-
 class DriveLocator implements CommonLocator {
 	clientModelInfo!: ClientModelInfo
 	eventController!: EventController
@@ -194,6 +195,7 @@ class DriveLocator implements CommonLocator {
 	private nativeInterfaces: NativeInterfaces | null = null
 	private entropyFacade!: EntropyFacade
 	private sqlCipherFacade!: SqlCipherFacade
+	private pluginManager!: PluginManager
 
 	readonly recipientsModel: lazyAsync<RecipientsModel> = lazyMemoized(async () => {
 		const { RecipientsModel } = await import("../common/api/main/RecipientsModel.js")
@@ -662,6 +664,12 @@ class DriveLocator implements CommonLocator {
 
 			this.transferProgressDispatcher = new TransferProgressDispatcher()
 
+			const pluginConfigurationProvider = new PluginConfigurationProvider(this.entityClient, this.logins)
+			this.logins.addPostLoginAction(async () => pluginConfigurationProvider)
+			this.pluginManager = new PluginManager(pluginConfigurationProvider, new DialogProvider())
+			this.eventController.addEntityUpdatesListener(this.pluginManager.entityUpdatesListener)
+			pluginConfigurationProvider.setPluginManager(this.pluginManager)
+
 			// TODO: it would be nice to move this facade out of the ApplicationWindow
 			this.imapImporter = {} as ImapSyncFacade
 			this.webMobileFacade = new WebMobileFacade(this.connectivityModel, CALENDAR_PREFIX)
@@ -874,9 +882,6 @@ class DriveLocator implements CommonLocator {
 			deviceConfig,
 			!EnvProvider.get().isBrowser() ? this.pushService : null,
 			this.syncTracker,
-			() => {
-				this.systemFacade.requestWidgetRefresh()
-			},
 			lang,
 		)
 	})
@@ -994,9 +999,11 @@ class DriveLocator implements CommonLocator {
 			this.customerFacade,
 			this.themeController,
 			this.syncTracker,
+			this.configFacade,
 			() => this.showSetupWizard(),
 			() => this.updateClients(),
 			this.loginFacade,
+			this.pluginManager,
 		)
 	})
 

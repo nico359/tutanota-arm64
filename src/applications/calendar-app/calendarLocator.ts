@@ -72,7 +72,7 @@ import { showProgressDialog } from "../../ui/dialogs/ProgressDialog.js"
 import { ContactSuggestionProvider, RecipientsSearchModel } from "../common/misc/RecipientsSearchModel.js"
 import { NativeInterfaceMain } from "../common/native/NativeInterfaceMain.js"
 import { NativePushServiceApp } from "../common/native/NativePushServiceApp.js"
-import { MailAddressNameChanger, MailAddressTableModel, MailAddressTableInfo } from "../common/settings/mailaddress/MailAddressTableModel.js"
+import { MailAddressNameChanger, MailAddressTableInfo, MailAddressTableModel } from "../common/settings/mailaddress/MailAddressTableModel.js"
 import type { GroupInfo } from "@tutao/entities/sys"
 import { DrawerMenuAttrs, isPartnerEnabled } from "../common/gui/nav/DrawerMenu.js"
 import { DomainConfigProvider } from "../common/api/common/DomainConfigProvider.js"
@@ -103,7 +103,7 @@ import { SyncTracker } from "../common/api/main/SyncTracker.js"
 import { KeyVerificationFacade } from "../../platform-kit/base/facades/lazy/KeyVerificationFacade"
 import { getEventWithDefaultTimes, setNextHalfHour } from "../common/api/common/utils/CommonCalendarUtils.js"
 import PublicEncryptionKeyProvider from "../../platform-kit/base/base-crypto/PublicEncryptionKeyProvider"
-import { CommonLocator } from "../common/api/main/CommonLocator"
+import { CommonLocator, DialogProvider } from "../common/api/main/CommonLocator"
 import { SearchToken } from "../../ui/utils/QueryTokenUtils"
 import { GroupSettingsModel } from "../common/sharing/model/GroupSettingsModel"
 import { IdentityKeyCreator } from "../../platform-kit/base/base-crypto/IdentityKeyCreator"
@@ -126,6 +126,9 @@ import type { ParsedEventAlarmTuple } from "./calendar/export/CalendarParser"
 import type { AlarmInterval } from "../common/calendar/date/CalendarUtils"
 import { CalendarSearchViewModel } from "./calendar/search/view/CalendarSearchViewModel"
 import { CalendarSearchModel } from "./search/model/CalendarSearchModel"
+import { PluginManager } from "../../plugin-kit/plugin-manager/PluginManager"
+import { PluginConfigurationProvider } from "../common/plugin/PluginConfigurationProvider"
+import { HttpClientJavascript } from "@tutao/http-client"
 
 EnvProvider.assertMainOrNode()
 
@@ -191,6 +194,7 @@ class CalendarLocator implements CommonLocator {
 	private nativeInterfaces: NativeInterfaces | null = null
 	private entropyFacade!: EntropyFacade
 	private sqlCipherFacade!: SqlCipherFacade
+	pluginManager!: PluginManager
 
 	readonly recipientsModel: lazyAsync<RecipientsModel> = lazyMemoized(async () => {
 		const { RecipientsModel } = await import("../common/api/main/RecipientsModel.js")
@@ -360,6 +364,7 @@ class CalendarLocator implements CommonLocator {
 			this.entityClient,
 			responseTo,
 			await this.calendarInviteHandler(),
+			this.pluginManager,
 			getTimeZone(),
 		)
 	}
@@ -672,6 +677,12 @@ class CalendarLocator implements CommonLocator {
 		)
 		this.usageTestController = new UsageTestController(this.usageTestModel)
 
+		const pluginConfigurationProvider = new PluginConfigurationProvider(this.entityClient, this.logins)
+		this.logins.addPostLoginAction(async () => pluginConfigurationProvider)
+		this.pluginManager = new PluginManager(pluginConfigurationProvider, new DialogProvider())
+		this.eventController.addEntityUpdatesListener(this.pluginManager.entityUpdatesListener)
+		pluginConfigurationProvider.setPluginManager(this.pluginManager)
+
 		this.Const = Const
 		if (!EnvProvider.get().isBrowser()) {
 			const { WebDesktopFacade } = await import("../common/native/WebDesktopFacade")
@@ -690,6 +701,7 @@ class CalendarLocator implements CommonLocator {
 			const openSettingsHandler = new OpenSettingsHandler(this.logins)
 
 			this.transferProgressDispatcher = new TransferProgressDispatcher()
+
 			// TODO: it would be nice to move this facade out of the ApplicationWindow
 			this.imapImporter = {} as ImapSyncFacade
 			this.webMobileFacade = new WebMobileFacade(this.connectivityModel, CALENDAR_PREFIX)
@@ -900,9 +912,6 @@ class CalendarLocator implements CommonLocator {
 			deviceConfig,
 			!EnvProvider.get().isBrowser() ? this.pushService : null,
 			this.syncTracker,
-			() => {
-				this.systemFacade.requestWidgetRefresh()
-			},
 			lang,
 		)
 	})
@@ -1020,9 +1029,11 @@ class CalendarLocator implements CommonLocator {
 			this.customerFacade,
 			this.themeController,
 			this.syncTracker,
+			this.configFacade,
 			() => this.showSetupWizard(),
 			() => this.updateClients(),
 			this.loginFacade,
+			this.pluginManager,
 		)
 	})
 

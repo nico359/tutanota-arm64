@@ -139,7 +139,16 @@ async function buildDesktopClient(version, { stage, host, platform, architecture
 			notarize: false,
 			networkDebugging: true,
 		})
-		await createHtml(env.create({ staticUrl: `http://${addr}:9000`, version, mode: "Desktop", dist: true, domainConfigs, networkDebugging: true }))
+		await createHtml(
+			env.create({
+				staticUrl: `http://${addr}:9000`,
+				version,
+				mode: "Desktop",
+				dist: true,
+				domainConfigs,
+				networkDebugging: true,
+			}),
+		)
 		await buildDesktop(desktopLocalOpts)
 	} else if (stage === "test") {
 		const updateUrl = new URL(tutaTestUrl)

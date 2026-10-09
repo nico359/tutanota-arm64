@@ -1,5 +1,5 @@
 import { addParamsToUrl, DEFAULT_REST_CLIENT_OPTIONS, MAX_BLOB_SIZE_BYTES, RestClient, restSuspension } from "@tutao/rest-client"
-import { handleRestError } from "@tutao/rest-client/error"
+import { handleRestError, NotFoundError } from "@tutao/rest-client/error"
 import { Blob, BlobReferenceTokenWrapper, createBlobReferenceTokenWrapper } from "@tutao/entities/sys"
 import { ArchiveDataType } from "../../../../../../entities/sys/Utils"
 import { HttpMethod, MediaType, RestBinaryBody, RestTextBody, SuspensionBehavior } from "@tutao/rest-client/types"
@@ -35,11 +35,13 @@ import { TransferProgressDispatcher } from "../../../main/TransferProgressDispat
 import { doBlobRequestWithRetry, tryServers } from "../../../../../../platform-kit/network/EntityRestClient"
 import { TransferId, UploadProgressInfo } from "../../../../../../entities/drive/Utils"
 import {
+	ArchiveEnumerationService_GET,
 	BlobGetInTypeRef,
 	BlobPostOut,
 	BlobPostOutTypeRef,
 	BlobServerAccessInfo,
 	BlobService_GET,
+	createArchiveEnumerationGetIn,
 	createBlobGetIn,
 	createBlobId,
 	storageTypeModels,
@@ -48,6 +50,7 @@ import { FileReference } from "../../../../../../entities/tutanota/Utils"
 import { BlobReferencingInstance } from "../../../../../../entities/storage/BlobUtils"
 import { IncomingServerJson } from "../../../../../../platform-kit/instance-pipeline/TypeMapper"
 import { EntityUtils } from "../../../../../../platform-kit/instance-pipeline/EntityUtils"
+import { IServiceExecutor } from "../../../../../../platform-kit/network/ServiceRequest"
 
 EnvProvider.assertWorkerOrNode()
 
@@ -218,6 +221,7 @@ export class BlobFacade {
 		private readonly blobAccessTokenFacade: BlobAccessTokenFacade,
 		private readonly progressDispatcher: TransferProgressDispatcher,
 		private readonly typeModelResolver: TypeModelResolver,
+		private readonly serviceExecutor: IServiceExecutor,
 	) {}
 
 	/**
@@ -260,6 +264,34 @@ export class BlobFacade {
 			return doBlobRequestWithRetry(doBlobRequest, doEvictToken)
 		} finally {
 			this.abortControllers.delete(transferId)
+		}
+	}
+
+	/**
+	 * Get all archives for the given group {@link group} of {@link archiveType}
+	 * @param group ID of the group (e.g. mail group)
+	 * @param archiveType archive type to enumerate
+	 * @return all archive IDs of the group of a type
+	 *
+	 * @throws NotAuthorizedError if the user does not have a membership to that group (regardless of if it exists)
+	 * @throws BadRequestError if the archive type can't be enumerated by the service
+	 */
+	async enumerateArchivesForGroup(group: Id, archiveType: ArchiveDataType): Promise<Id[]> {
+		try {
+			const result = await this.serviceExecutor.execute(
+				ArchiveEnumerationService_GET,
+				createArchiveEnumerationGetIn({
+					group,
+					archiveType,
+				}),
+				null,
+			)
+			return result.archives
+		} catch (e) {
+			if (e instanceof NotFoundError) {
+				return []
+			}
+			throw e
 		}
 	}
 
@@ -618,7 +650,8 @@ export class BlobFacade {
 						noCORS: true,
 						suspensionBehavior: SuspensionBehavior.Suspend,
 						body: null,
-						progressListener: null,
+						uploadProgressListener: null,
+						downloadProgressListener: null,
 						abortSignal: null,
 					}),
 				`can't load instances from server `,
@@ -817,12 +850,12 @@ export class BlobFacade {
 					responseType: MediaType.Json,
 					baseUrl: serverUrl,
 					abortSignal,
-					progressListener: {
-						download() {},
-						upload(_, bytes) {
+					uploadProgressListener: {
+						update(_, bytes) {
 							onProgress?.(bytes)
 						},
 					},
+					downloadProgressListener: null,
 				})
 				return await this.parseBlobPostOutResponse(response)
 			},
@@ -1009,9 +1042,9 @@ export class BlobFacade {
 						noCORS: true,
 						headers: blobLoadOptions.extraHeaders,
 						suspensionBehavior: blobLoadOptions.suspensionBehavior,
-						progressListener: {
-							upload(_: number) {},
-							download(_: number, bytes: number) {
+						uploadProgressListener: null,
+						downloadProgressListener: {
+							update(_: number, bytes: number) {
 								onProgress(bytes)
 							},
 						},

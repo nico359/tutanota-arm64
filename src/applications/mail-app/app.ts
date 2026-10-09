@@ -1,4 +1,4 @@
-import { AppType, DomainConfig, EnvProvider, FeatureType, ProgrammingError, SessionType } from "../../platform-kit/app-env"
+import { AppType, DomainConfig, EnvProvider, FeatureType, NEXTCLOUD_PREFIX, PaymentSetup, ProgrammingError, SessionType } from "../../platform-kit/app-env"
 import m from "mithril"
 import Mithril, { Children, ClassComponent, Component, RouteDefs, RouteResolver, Vnode, VnodeDOM } from "mithril"
 import { lang, languageCodeToTag, languages } from "../../ui/utils/LanguageViewModel.js"
@@ -63,6 +63,7 @@ import { DriveSearchView, DriveSearchViewAttrs } from "../drive-app/search/view/
 import { DriveSearchViewModel } from "../drive-app/search/view/DriveSearchViewModel"
 import { FolderItem } from "../drive-app/drive/view/DriveUtils"
 import { MoveItems } from "../drive-app/drive/view/DriveMoveItemDialog"
+import { KeyManager } from "../../ui/utils/KeyManager"
 
 EnvProvider.assertMainOrNodeBoot()
 EnvProvider.bootFinished()
@@ -92,6 +93,7 @@ if (isSessionStorageAvailable()) {
 }
 
 assignEnvPlatformId(urlQueryParams)
+assignEnvPaymentSetup(urlQueryParams)
 replaceNativeLogger(window, new Logger())
 
 let currentView: Component<unknown> | null = null
@@ -122,7 +124,8 @@ if (!ClientDetector.get().isSupported()) {
 setupExceptionHandling()
 
 const startRoute = getStartUrl(urlQueryParams)
-history.replaceState(null, "", startRoute)
+const nextCloudPrefix = EnvProvider.get().isNextCloudPlugin() ? NEXTCLOUD_PREFIX : ""
+history.replaceState(null, "", nextCloudPrefix + startRoute)
 
 registerForMailto()
 
@@ -143,6 +146,15 @@ import("../../ui/translations/en.js")
 			{ app: "usage", clientModel: usageTypeModels, modelInfo: usageModelInfo },
 			{ app: "accounting", clientModel: accountingTypeModels, modelInfo: accountingModelInfo },
 		]
+		let shadowRoot: ShadowRoot | null = null
+		if (EnvProvider.get().isNextCloudPlugin()) {
+			const htmlContainer = assertNotNull(document.getElementById("nextcloud-tutamail"))
+			const appRoot = assertNotNull(htmlContainer.getAttribute("app-root"))
+			const prefix = new URL(appRoot).pathname.split("/")[1]
+			EnvProvider.get().env.shadowDomAppRoot = `/${prefix}/tutamail/js`
+			shadowRoot = htmlContainer.attachShadow({ mode: "open" })
+		}
+
 		await mailLocator.init(initClientModels(apps))
 		initCommonLocator(mailLocator)
 		await initUiSingletons(windowFacade, mailLocator.themeController)
@@ -356,7 +368,8 @@ import("../../ui/translations/en.js")
 			})
 		}
 
-		Styles.get().init(mailLocator.themeController)
+		Styles.get().init(mailLocator.themeController, shadowRoot)
+		KeyManager.get().initializeKeydownEventListener(shadowRoot)
 
 		const contactViewResolver = makeViewResolver<
 			ContactViewAttrs,
@@ -889,7 +902,7 @@ import("../../ui/translations/en.js")
 			),
 		})
 		// We set the prefix to empty string intentionally here. See (https://mithril.js.org/route.html?utm_source=chatgpt.com#routing-strategies)
-		m.route.prefix = ""
+		m.route.prefix = EnvProvider.get().isNextCloudPlugin() ? NEXTCLOUD_PREFIX : ""
 
 		// keep in sync with RewriteAppResourceUrlHandler.java
 		const resolvers: RouteDefs = {
@@ -912,8 +925,14 @@ import("../../ui/translations/en.js")
 			},
 		}
 
-		// keep in sync with RewriteAppResourceUrlHandler.java
-		m.route(document.body, startRoute, resolvers)
+		if (EnvProvider.get().isNextCloudPlugin()) {
+			const mountPoint = document.createElement("div")
+			assertNotNull(shadowRoot).appendChild(mountPoint)
+			m.route(mountPoint, startRoute, resolvers)
+		} else {
+			// keep in sync with RewriteAppResourceUrlHandler.java
+			m.route(document.body, startRoute, resolvers)
+		}
 
 		// We need to initialize native once we start the mithril routing, specifically for the case of mailto handling in android
 		// If native starts telling the web side to navigate too early, mithril won't be ready and the requests will be lost
@@ -1111,6 +1130,24 @@ function assignEnvPlatformId(urlQueryParams: Mithril.Params) {
 		} else {
 			throw new ProgrammingError(`Invalid platform id: ${String(platformId)}`)
 		}
+	}
+}
+
+// PaymentSetup is passed by the native part in the URL
+function assignEnvPaymentSetup(urlQueryParams: Mithril.Params) {
+	const paymentSetup = urlQueryParams["paymentSetup"]
+
+	switch (paymentSetup) {
+		case PaymentSetup.Appstore:
+			env.paymentSetup = PaymentSetup.Appstore
+			break
+		case PaymentSetup.Playstore:
+			env.paymentSetup = PaymentSetup.Playstore
+			break
+		case undefined:
+			break
+		default:
+			throw new ProgrammingError(`Invalid payment setup: ${String(paymentSetup)}`)
 	}
 }
 

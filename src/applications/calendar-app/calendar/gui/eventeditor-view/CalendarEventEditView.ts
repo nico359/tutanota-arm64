@@ -16,7 +16,11 @@ import { SingleLineTextField } from "../../../../../ui/base/SingleLineTextField.
 import { font_size, px, size } from "../../../../../ui/size.js"
 import { Card } from "../../../../../ui/base/Card.js"
 import { Select, SelectAttributes, SelectOption } from "../../../../../ui/base/Select.js"
-import { Icon, IconSize } from "../../../../../ui/base/Icon.js"
+import { Icon, IconSize, progressIcon } from "../../../../../ui/base/Icon.js"
+import { IconButton } from "../../../../../ui/base/IconButton.js"
+import { Dialog } from "../../../../../ui/base/Dialog.js"
+import { ButtonExtension } from "../../../../../plugin-kit/plugin-manager/hostApi/PluginHost.js"
+import { ExtensionPoint, PluginLanguageCode } from "../../../../../plugin-kit/sdk/hostApi/PluginHostApi.js"
 import { theme } from "../../../../../ui/theme.js"
 import { deepEqual } from "@tutao/utils"
 import { ButtonColor, getColors } from "../../../../../ui/base/Button.js"
@@ -31,6 +35,7 @@ import { CalendarRepeatRule } from "@tutao/entities/tutanota"
 import { elementIdToId } from "@tutao/meta"
 import { TimeZoneSelectionPage, TimeZoneSelectionPageAttrs } from "./TimeZoneSelectionPage"
 import { isFreeSignupOnly } from "../../../../common/misc/LoginUtils"
+import { isNull } from "../../../../../platform-kit/utils/Utils"
 
 export type CalendarEventEditViewAttrs = {
 	model: CalendarEventModel
@@ -82,6 +87,7 @@ export class CalendarEventEditView implements Component<CalendarEventEditViewAtt
 	private pageWidth: number = -1
 	private translate = 0
 	private separateStartAndEndTimeZone: boolean
+	private inProgressLocationButtons = new Set<string>()
 
 	constructor(vnode: Vnode<CalendarEventEditViewAttrs>) {
 		this.timeFormat = vnode.attrs.timeFormat
@@ -423,30 +429,72 @@ export class CalendarEventEditView implements Component<CalendarEventEditViewAtt
 
 	private renderLocationField(vnode: Vnode<CalendarEventEditViewAttrs>): Children {
 		const { model } = vnode.attrs
+		const locationButtons = model.pluginManager.getRegisteredButtonsByExtensionPoint(ExtensionPoint.EventLocationButton) ?? []
 		return m(
 			Card,
 			{
 				style: { padding: "0" },
 			},
-			m(SingleLineTextField, {
-				value: model.editModels.location.content,
-				oninput: (newValue: string) => {
-					model.editModels.location.content = newValue
-				},
-				classes: ["event-editor-section"],
-				style: {
-					padding: px(size.spacing_12),
-				},
-				ariaLabel: lang.getTranslation("location_label"),
-				placeholder: lang.get("location_label"),
-				disabled: !model.isFullyWritable(),
-				leadingIcon: {
-					icon: Icons.PlaceFilled,
-					color: getColors(ButtonColor.Content).button,
-				},
-				type: LegacyTextFieldType.Text,
-			}),
+			m(".flex.items-center", [
+				m(SingleLineTextField, {
+					value: model.editModels.location.content,
+					oninput: (newValue: string) => {
+						model.editModels.location.content = newValue
+					},
+					classes: ["event-editor-section", "flex-grow"],
+					style: {
+						padding: px(size.spacing_12),
+					},
+					ariaLabel: lang.getTranslation("location_label"),
+					placeholder: lang.get("location_label"),
+					disabled: !model.isFullyWritable(),
+					leadingIcon: {
+						icon: Icons.PlaceFilled,
+						color: getColors(ButtonColor.Content).button,
+					},
+					type: LegacyTextFieldType.Text,
+				}),
+				locationButtons.map((buttonExtension) => this.renderLocationButtonExtension(vnode, buttonExtension)),
+			]),
 		)
+	}
+
+	private renderLocationButtonExtension(vnode: Vnode<CalendarEventEditViewAttrs>, buttonExtension: ButtonExtension): Children {
+		const { model } = vnode.attrs
+		const pluginName = buttonExtension.pluginId
+
+		if (this.inProgressLocationButtons.has(pluginName)) {
+			return m(".flex-center.items-center.button-height", { key: pluginName }, progressIcon())
+		}
+
+		const preferredCode = lang.code.startsWith("de") ? PluginLanguageCode.de : PluginLanguageCode.en
+		const buttonText =
+			buttonExtension.config.text[preferredCode] ??
+			buttonExtension.config.text[PluginLanguageCode.en] ??
+			buttonExtension.config.text[PluginLanguageCode.de] ??
+			pluginName
+
+		return m(IconButton, {
+			key: pluginName,
+			icon: Icons.VideoFilled,
+			label: lang.makeTranslation(`${pluginName}_eventLocationButton`, buttonText),
+			disabled: !model.isFullyWritable(),
+			click: async () => {
+				this.inProgressLocationButtons.add(pluginName)
+				m.redraw()
+				try {
+					const roomName =
+						model.editModels.summary.content === "" || isNull(model.editModels.summary.content) ? "TutaRoom" : model.editModels.summary.content
+					model.editModels.location.content = await model.pluginManager.eventLocationButtonClicked(pluginName, roomName)
+				} catch (e) {
+					console.error(e)
+					await Dialog.message("eventLocationLinkFailed_msg")
+				} finally {
+					this.inProgressLocationButtons.delete(pluginName)
+					m.redraw()
+				}
+			},
+		})
 	}
 
 	private renderDescriptionEditor(vnode: Vnode<CalendarEventEditViewAttrs>): Children {

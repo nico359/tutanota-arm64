@@ -14,7 +14,7 @@ import {
 	SelectedSubscriptionOptions,
 	UpgradePriceType,
 } from "./FeatureListProvider"
-import { EnvProvider, ProgrammingError } from "@tutao/app-env"
+import { EnvProvider, PaymentSetup, ProgrammingError } from "@tutao/app-env"
 import { Button, ButtonType } from "../../../ui/base/Button.js"
 import { assertNotNull, downcast, lazy, NBSP } from "@tutao/utils"
 import { px, size } from "../../../ui/size.js"
@@ -26,7 +26,7 @@ import {
 	hasAppleIntroOffer,
 	PlanTypeToName,
 	shouldHideBusinessPlans,
-	shouldShowApplePrices,
+	shouldShowExternalStorePrices,
 	UpgradeType,
 } from "./utils/SubscriptionUtils.js"
 import { AccountingInfo } from "@tutao/entities/sys"
@@ -151,7 +151,7 @@ export class SubscriptionSelector implements Component<SubscriptionSelectorAttr>
 		// Show the business segmentControl for signup, if both personal & business plans are allowed
 		const showBusinessSelector = !onlyBusinessPlansAccepted && !onlyPersonalPlansAccepted && !shouldHideBusinessPlans()
 
-		const isApplePrice = shouldShowApplePrices(accountingInfo)
+		const isApplePrice = shouldShowExternalStorePrices(accountingInfo)
 		const hasCampaign = isApplePrice
 			? priceAndConfigProvider.getIosIntroOfferEligibility() && hasAppleIntroOffer(priceAndConfigProvider)
 			: priceAndConfigProvider.getRawPricingData().hasGlobalFirstYearDiscount
@@ -224,7 +224,7 @@ export class SubscriptionSelector implements Component<SubscriptionSelectorAttr>
 				const isPersonalPaidPlan = personalPlan === PlanType.Legend || personalPlan === PlanType.Revolutionary
 
 				const hasFirstYearDiscount = (() => {
-					if (shouldShowApplePrices(accountingInfo)) {
+					if (shouldShowExternalStorePrices(accountingInfo)) {
 						const prices = priceAndConfigProvider.getMobilePrices().get(PlanTypeToName[personalPlan].toLowerCase())
 						return isYearly && !!prices?.isEligibleForIntroOffer && !!prices?.displayOfferYearlyPerYear
 					} else {
@@ -298,7 +298,7 @@ export class SubscriptionSelector implements Component<SubscriptionSelectorAttr>
 		priceAndConfigProvider: PriceAndConfigProvider
 		accountingInfo: AccountingInfo | null
 	}): { revoPrice: string; legendPrice: string } {
-		if (shouldShowApplePrices(accountingInfo)) {
+		if (shouldShowExternalStorePrices(accountingInfo)) {
 			const prices = priceAndConfigProvider.getMobilePrices()
 
 			return {
@@ -371,7 +371,7 @@ export class SubscriptionSelector implements Component<SubscriptionSelectorAttr>
 		let priceStr: string
 		let referencePriceStr: string | undefined = undefined
 		let priceType: PriceType
-		if (EnvProvider.get().isIOSApp() && (!paymentMethod || paymentMethod === PaymentMethodType.AppStore)) {
+		if (EnvProvider.get().getPaymentSetup() !== PaymentSetup.Default && (!paymentMethod || paymentMethod === PaymentMethodType.AppStore)) {
 			const prices = priceAndConfigProvider.getMobilePrices().get(PlanTypeToName[targetSubscription].toLowerCase())
 			if (prices != null) {
 				switch (interval) {
@@ -441,12 +441,12 @@ export class SubscriptionSelector implements Component<SubscriptionSelectorAttr>
 			mobile,
 			bonusMonths:
 				targetSubscription !== PlanType.Free && isYearly
-					? Number(selectorAttrs.priceAndConfigProvider.getRawPricingData().bonusMonthsForYearlyPlan)
+					? Number(selectorAttrs.priceAndConfigProvider.getPlanPricesForPlan(targetSubscription).bonusMonthsForYearlyPlan)
 					: 0,
 			targetSubscription,
 			hasFirstYearDiscount: hasFirstYearDiscount,
 			isFirstMonthForFree: appliesFirstMonthForFree,
-			isApplePrice: shouldShowApplePrices(selectorAttrs.accountingInfo),
+			isApplePrice: shouldShowExternalStorePrices(selectorAttrs.accountingInfo),
 		}
 	}
 

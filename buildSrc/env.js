@@ -1,4 +1,5 @@
-/** @param {{staticUrl: string | null, version: string, mode: EnvMode | null, dist: boolean, domainConfigs: DomainConfigMap, networkDebugging:boolean, clientName?: string}} params
+/**
+ * @param {{staticUrl: string | null, version: string, mode: EnvMode | null, dist: boolean, domainConfigs: DomainConfigMap, networkDebugging:boolean, clientName?: string, }} params
  *  @return {env}
  */
 export function create(params) {
@@ -12,11 +13,14 @@ export function create(params) {
 		versionNumber: version,
 		dist,
 		mode: mode ?? "Browser",
+		paymentSetup: "default",
 		timeout: 20000,
 		domainConfigs,
 		platformId: null,
 		networkDebugging,
 		clientName,
+		integrationPlatform: null,
+		shadowDomAppRoot: null,
 	}
 }
 

@@ -48,6 +48,12 @@
 			"path": "../app-kit/tsconfig.local-store.json"
 		},
 		{
+			"path": "../plugin-kit/tsconfig.plugin-manager.json"
+		},
+		{
+			"path": "../plugin-kit/tsconfig.plugins.json"
+		},
+		{
 			"path": "../ui/tsconfig.ui.json"
 		},
 		{

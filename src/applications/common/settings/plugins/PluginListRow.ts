@@ -1,0 +1,97 @@
+import m, { Children, Component, Vnode } from "mithril"
+import { Switch } from "../../../../ui/base/Switch.js"
+import { ExpanderPanel } from "../../../../ui/base/Expander.js"
+import { Dialog } from "../../../../ui/base/Dialog.js"
+import { showInfoSnackbar } from "../../../../ui/base/SnackBar.js"
+import { lang } from "../../../../ui/utils/LanguageViewModel.js"
+import { ConfigFieldConfiguration, PluginLanguageCode } from "../../../../plugin-kit/sdk/hostApi/PluginHostApi.js"
+import { PluginSettingsModel } from "./PluginSettingsModel.js"
+import { Nullable } from "@tutao/utils"
+import { PluginId, PluginRegistryEntry } from "../../../../plugin-kit/sdk/PluginId"
+import { isNull } from "../../../../platform-kit/utils/Utils"
+import { TextField, TextFieldAttrs } from "../../../../ui/base/TextField"
+import { PrimaryButton, PrimaryButtonAttrs } from "../../../../ui/base/buttons/VariantButtons"
+
+function configFieldLabelText(field: ConfigFieldConfiguration): string {
+	const preferredCode = lang.code.startsWith("de") ? PluginLanguageCode.de : PluginLanguageCode.en
+	return field.text[preferredCode] ?? field.text[PluginLanguageCode.en] ?? field.text[PluginLanguageCode.de] ?? field.configFieldId
+}
+
+export type PluginListRowAttrs = {
+	pluginId: PluginId
+	model: PluginSettingsModel
+}
+
+/** Single-line row: logo, name, description, enable Switch. The config panel is always shown while the plugin is enabled. */
+export class PluginListRow implements Component<PluginListRowAttrs> {
+	view({ attrs }: Vnode<PluginListRowAttrs>): Nullable<Children> {
+		const { pluginId, model } = attrs
+
+		const pluginIsLoaded = model.pluginIsLoaded(pluginId)
+		const pluginManifest = model.getPluginManifest(pluginId)
+
+		if (isNull(pluginManifest)) {
+			return null
+		}
+
+		return m(".plugin-row", [
+			m(".flex.items-center.gap-8.pt-8.pb-8", [
+				m("img.icon-32", { src: `data:image/svg+xml;utf8,${encodeURIComponent(pluginManifest.logoSvgUrl)}` }),
+				m(".flex.flex-column.flex-grow.min-width-0", [
+					m(".b.text-ellipsis", pluginManifest.name),
+					m(".smaller.text-ellipsis.on-surface-variant", pluginManifest.description),
+				]),
+				m(Switch, {
+					checked: pluginIsLoaded,
+					ariaLabel: lang.get("pluginEnableToggle_label", { "{name}": pluginManifest.name }),
+					onclick: (isEnabled: boolean) => this.handleToggle(pluginId, model, isEnabled),
+					variant: "normal",
+				}),
+			]),
+			m(ExpanderPanel, { expanded: pluginIsLoaded }, pluginIsLoaded ? this.renderConfigPanel(pluginManifest, model) : null),
+		])
+	}
+
+	private async handleToggle(pluginId: PluginId, model: PluginSettingsModel, newChecked: boolean): Promise<void> {
+		const confirmed = await Dialog.confirm(newChecked ? "confirmEnablePlugin_msg" : "confirmDisablePlugin_msg")
+		if (confirmed) {
+			await model.setEnabled(pluginId, newChecked)
+		}
+		m.redraw()
+	}
+
+	private renderConfigPanel(entry: PluginRegistryEntry, model: PluginSettingsModel): Nullable<Children> {
+		const configFields = model.getConfigFields(entry.id)
+
+		const configFieldInputs = configFields.map((field) =>
+			m(TextField, {
+				label: lang.makeTranslation(field.configFieldId, configFieldLabelText(field)),
+				value: model.getConfigFieldValue(entry.id, field.configFieldId),
+				oninput: (value: string) => {
+					model.setConfigField(entry.id, field.configFieldId, value)
+				},
+			} satisfies TextFieldAttrs),
+		)
+
+		return m(".pb-16.pl-32.flex.flex-column.gap-8", [
+			...configFieldInputs,
+			m(
+				".flex-start.mt-8",
+				m(
+					".flex",
+					m(PrimaryButton, {
+						label: "update_action",
+						onclick: () => this.saveConfig(entry.id, model),
+					} satisfies PrimaryButtonAttrs),
+				),
+			),
+		])
+	}
+
+	private async saveConfig(pluginId: PluginId, model: PluginSettingsModel): Promise<void> {
+		if (await model.updateConfig(pluginId)) {
+			showInfoSnackbar("pluginConfigUpdated_msg")
+		}
+		m.redraw()
+	}
+}

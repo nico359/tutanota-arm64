@@ -1,5 +1,5 @@
 import m, { Children, Vnode } from "mithril"
-import { EnvProvider } from "@tutao/app-env"
+import { EnvProvider, PaymentSetup } from "@tutao/app-env"
 import { InfoLink, lang, MaybeTranslation, Translation, TranslationKey } from "../../../ui/utils/LanguageViewModel.js"
 import { BaseTopLevelView } from "../../../ui/BaseTopLevelView.js"
 import { TopLevelAttrs, TopLevelView } from "../../../ui/base/TopLevelView.js"
@@ -12,7 +12,7 @@ import {
 	canSubscribeToPlan,
 	getDefaultPaymentMethod,
 	PaymentData,
-	queryAppStoreSubscriptionOwnership,
+	queryExternalSubscriptionOwnership,
 	UpgradeType,
 } from "../subscription/utils/SubscriptionUtils"
 import { locator } from "../api/main/CommonLocator"
@@ -49,6 +49,7 @@ import { UsageTestModel } from "../misc/UsageTestModel"
 import { UsageTestController } from "@tutao/usagetests"
 import { InvoiceData } from "../subscription/utils/PaymentUtils"
 import { Country } from "../gui/CountryList"
+import { NotFoundError } from "@tutao/rest-client/error"
 
 EnvProvider.assertMainOrNode()
 
@@ -177,21 +178,31 @@ export class SignupViewModel {
 	}
 
 	async init() {
-		const priceDataProvider = await PriceAndConfigProvider.getInitializedInstance(
-			this.registrationDataId,
-			locator.serviceExecutor,
-			this.referralData?.code ?? null,
-		)
+		let priceDataProvider: PriceAndConfigProvider
+		try {
+			priceDataProvider = await PriceAndConfigProvider.getInitializedInstance(
+				this.registrationDataId,
+				locator.serviceExecutor,
+				this.referralData?.code ?? null,
+			)
+		} catch (e) {
+			if (e instanceof NotFoundError && this.registrationDataId != null) {
+				this.registrationDataId = null
+				priceDataProvider = await PriceAndConfigProvider.getInitializedInstance(null, locator.serviceExecutor, this.referralData?.code ?? null)
+			} else {
+				throw e
+			}
+		}
 		const prices = priceDataProvider.getRawPricingData()
 		this.globalCampaignName = prices.globalCampaignName
 		const domainConfig = locator.domainConfigProvider().getCurrentDomainConfig()
 		const featureListProvider = await FeatureListProvider.getInitializedInstance(domainConfig)
 		let message: MaybeTranslation | null = null
 		this.options.businessUse(prices.business)
-		if (EnvProvider.get().isIOSApp()) {
+		if (EnvProvider.get().getPaymentSetup() !== PaymentSetup.Default) {
 			this.options.businessUse(false)
-			const appstoreSubscriptionOwnership = await queryAppStoreSubscriptionOwnership(null)
-			// if we are on iOS app we only show other plans if AppStore payments are enabled and there's no subscription for this Apple ID.
+			const appstoreSubscriptionOwnership = await queryExternalSubscriptionOwnership(null)
+			// if we are on iOS/google play we only show other plans if there's no subscription for this Apple ID/Google ID.
 			if (appstoreSubscriptionOwnership !== MobilePaymentSubscriptionOwnership.NoSubscription) {
 				this.acceptedPlans = this.acceptedPlans.filter((plan) => plan === PlanType.Free)
 			}
@@ -355,7 +366,7 @@ export class SignupView extends BaseTopLevelView implements TopLevelView<SignupV
 							this.wizardViewModel.targetPlanType,
 							this.wizardViewModel.options.paymentInterval(),
 						)
-						if (EnvProvider.get().isIOSApp()) {
+						if (EnvProvider.get().getPaymentSetup() !== PaymentSetup.Default) {
 							SignupFlowUsageTestController.completeStage(
 								SignupFlowStage.SELECT_PAYMENT_METHOD,
 								this.wizardViewModel.targetPlanType,
@@ -376,7 +387,7 @@ export class SignupView extends BaseTopLevelView implements TopLevelView<SignupV
 							this.wizardViewModel.paymentData.paymentMethod,
 						)
 					},
-					isEnabled: (ctx) => ctx.viewModel.targetPlanType !== PlanType.Free && !EnvProvider.get().isIOSApp(),
+					isEnabled: (ctx) => ctx.viewModel.targetPlanType !== PlanType.Free && EnvProvider.get().getPaymentSetup() === PaymentSetup.Default,
 				},
 				{
 					title: "Order Confirmation",

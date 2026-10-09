@@ -5,10 +5,9 @@ import { lang } from "../../../../ui/utils/LanguageViewModel"
 import { Dialog } from "../../../../ui/base/Dialog"
 import { CancelledError, EnvProvider, FeatureType, MAX_LABELS_PER_FREE_USER, UpgradePromptType } from "../../../../platform-kit/app-env"
 import { AppHeaderAttrs, Header } from "../../../../ui/Header.js"
-import { assertNotNull, first, getFirstOrThrow, isEmpty, isNotEmpty, noOp, ofClass } from "../../../../platform-kit/utils"
+import { assertNotNull, first, getFirstOrThrow, isEmpty, isNotEmpty, noOp, ofClass, Thunk } from "../../../../platform-kit/utils"
 import { MailListView } from "./MailListView"
-import type { Shortcut } from "../../../../ui/utils/KeyManager"
-import { keyManager } from "../../../../ui/utils/KeyManager"
+import { KeyManager, Shortcut } from "../../../../ui/utils/KeyManager"
 import { getMailSelectionMessage, MultiItemViewer } from "./MultiItemViewer.js"
 import { Icons } from "../../../../ui/base/icons/Icons"
 import { showProgressDialog } from "../../../../ui/dialogs/ProgressDialog"
@@ -132,6 +131,7 @@ export class MailView extends BaseTopLevelView implements TopLevelView<MailViewA
 
 	private readonly collapsedMailGroups: Set<Id>
 	private readonly expandedMailSets: Set<Id>
+	private ongoingDelayedMailSetExpand: { mailSetId: Id; cancelExpand: Thunk } | null = null
 	private readonly mailViewModel: MailViewModel
 
 	private readonly undoModel: UndoModel
@@ -146,7 +146,7 @@ export class MailView extends BaseTopLevelView implements TopLevelView<MailViewA
 		this.expandedMailSets = new Set(deviceConfig.getExpandedFolders(userId))
 		this.collapsedMailGroups = new Set(deviceConfig.getCollapsedMailGroups(userId))
 		this.cache = vnode.attrs.cache
-		this.folderColumn = this.createFolderColumn(null, vnode.attrs.drawerAttrs)
+		this.folderColumn = this.createFolderColumn(null, vnode.attrs.drawerAttrs, userId)
 		this.mailViewModel = vnode.attrs.mailViewModel
 		this.undoModel = vnode.attrs.undoModel
 
@@ -371,7 +371,7 @@ export class MailView extends BaseTopLevelView implements TopLevelView<MailViewA
 
 		this.oncreate = (vnode) => {
 			this.countersStream = this.mailViewModel.mailModel.mailboxCounters.map(m.redraw)
-			keyManager.registerShortcuts(shortcuts)
+			KeyManager.get().registerShortcuts(shortcuts)
 			this.cache.conversationViewPreference = deviceConfig.getConversationViewShowOnlySelectedMail()
 		}
 
@@ -382,7 +382,7 @@ export class MailView extends BaseTopLevelView implements TopLevelView<MailViewA
 			this.countersStream?.end(true)
 			this.countersStream = null
 
-			keyManager.unregisterShortcuts(shortcuts)
+			KeyManager.get().unregisterShortcuts(shortcuts)
 		}
 	}
 
@@ -1072,7 +1072,7 @@ export class MailView extends BaseTopLevelView implements TopLevelView<MailViewA
 			: null
 	}
 
-	private createFolderColumn(editingFolderForMailGroup: Id | null = null, drawerAttrs: DrawerMenuAttrs) {
+	private createFolderColumn(editingFolderForMailGroup: Id | null = null, drawerAttrs: DrawerMenuAttrs, userId: string) {
 		return new ViewColumn(
 			{
 				view: () => {
@@ -1084,6 +1084,7 @@ export class MailView extends BaseTopLevelView implements TopLevelView<MailViewA
 								? {
 										label: "newMail_action",
 										click: () => this.showNewMailDialog().catch(ofClass(PermissionError, noOp)),
+										icon: Icons.Write,
 									}
 								: null,
 						content: this.renderFoldersAndLabels(editingFolderForMailGroup),
@@ -1094,9 +1095,12 @@ export class MailView extends BaseTopLevelView implements TopLevelView<MailViewA
 			editingFolderForMailGroup ? ColumnType.Background : ColumnType.Foreground,
 			{
 				minWidth: layout_size.first_col_min_width,
-				maxWidth: layout_size.first_col_max_width,
+				maxWidth: deviceConfig.getFolderListSize(userId) ?? layout_size.first_col_max_width,
 				testId: "mailFolderColumn",
 				headerCenter: "folderTitle_label",
+				resizeCallback: (size: number) => {
+					deviceConfig.setFolderListSize(userId, size)
+				},
 			},
 		)
 	}
@@ -1135,18 +1139,19 @@ export class MailView extends BaseTopLevelView implements TopLevelView<MailViewA
 				SidebarSection,
 				{
 					name: lang.makeTranslation("mailbox_name", getMailboxName(locator.logins, mailboxDetail)),
-					button: userHasMultipleMailboxes
-						? m(IconButton, {
-								label: isMailGroupCollapsed ? "show_action" : "hide_action",
-								size: ButtonSize.Compact,
-								icon: isMailGroupCollapsed ? Icons.ChevronDown : Icons.ChevronUp,
-								click: () => {
-									this.setCollapsedMailGroups(mailGroupId, isMailGroupCollapsed)
-								},
-							})
-						: null,
+					button:
+						userHasMultipleMailboxes && !inEditMode
+							? m(IconButton, {
+									label: isMailGroupCollapsed ? "show_action" : "hide_action",
+									size: ButtonSize.Compact,
+									icon: isMailGroupCollapsed ? Icons.ChevronDown : Icons.ChevronUp,
+									click: () => {
+										this.setCollapsedMailGroups(mailGroupId, isMailGroupCollapsed)
+									},
+								})
+							: null,
 				},
-				userHasMultipleMailboxes
+				userHasMultipleMailboxes && !inEditMode
 					? m(
 							ExpanderPanel,
 							{
@@ -1171,6 +1176,8 @@ export class MailView extends BaseTopLevelView implements TopLevelView<MailViewA
 				}
 			},
 			onFolderExpanded: (folder, state) => this.setExpandedMailSetState(folder, state),
+			onExpandFolderWithDelay: (folder) => this.expandMailSetWithDelay(folder),
+			onCancelFolderDelayedExpand: (predicate) => this.cancelOngoingDelayedMailSetExpand(predicate),
 			onShowFolderAddEditDialog: (...args) => this.showFolderAddEditDialog(...args),
 			onDeleteCustomMailFolder: (folder) => this.deleteCustomMailFolder(mailboxDetail, folder),
 			onFolderDrop: (dropData, folder) => {
@@ -1199,6 +1206,8 @@ export class MailView extends BaseTopLevelView implements TopLevelView<MailViewA
 				}
 			},
 			onLabelExpanded: (folder, state) => this.setExpandedMailSetState(folder, state),
+			onExpandLabelWithDelay: (label) => this.expandMailSetWithDelay(label),
+			onCancelLabelDelayedExpand: (predicate) => this.cancelOngoingDelayedMailSetExpand(predicate),
 			onShowLabelAddEditDialog: (...args) => this.showLabelFolderAddEditDialog(this.mailViewModel, ...args),
 			onDeleteCustomMailLabel: (folder) => this.showLabelDeleteDialog(folder),
 			onLabelDrop: (dropData: DropData, label) => {
@@ -1235,12 +1244,27 @@ export class MailView extends BaseTopLevelView implements TopLevelView<MailViewA
 		if (isTargetDescendent) return
 
 		// don't move label into another label that contains child with same name
-		const message = checkMailSetName(labelFolderSystem, labelToMove.name, targetLabel._id, true)
+		const message = checkMailSetName(labelFolderSystem, labelToMove.name, getElementId(labelToMove), targetLabel._id, true)
 		if (message != null) {
 			await Dialog.message(message)
 		} else {
 			await mailLocator.mailFacade.updateLabel(labelToMove, labelToMove.name, assertNotNull(labelToMove.color), targetLabel._id)
 		}
+	}
+
+	private cancelOngoingDelayedMailSetExpand(predicate: (mailSetId: Id) => boolean): void {
+		if (this.ongoingDelayedMailSetExpand && predicate(this.ongoingDelayedMailSetExpand.mailSetId)) {
+			this.ongoingDelayedMailSetExpand.cancelExpand()
+			this.ongoingDelayedMailSetExpand = null
+		}
+	}
+
+	private expandMailSetWithDelay(mailSet: MailSet, delay = 400): void {
+		const timeoutId = setTimeout(() => {
+			this.setExpandedMailSetState(mailSet, false)
+			m.redraw()
+		}, delay)
+		this.ongoingDelayedMailSetExpand = { mailSetId: getElementId(mailSet), cancelExpand: () => clearTimeout(timeoutId) }
 	}
 
 	private setExpandedMailSetState(folder: MailSet, currentExpansionState: boolean) {
@@ -1385,7 +1409,7 @@ export class MailView extends BaseTopLevelView implements TopLevelView<MailViewA
 		if (isTargetDescendent) return
 
 		// don't move folder into another folder that contains child with same name
-		const message = checkMailSetName(folderSystem, folderToMove.name, targetFolder._id, false)
+		const message = checkMailSetName(folderSystem, folderToMove.name, getElementId(folderToMove), targetFolder._id, false)
 		if (message != null) {
 			await Dialog.message(message)
 		} else {

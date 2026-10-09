@@ -256,6 +256,7 @@ export type CustomerParams = {
 	orderProcessingAgreement: null | IdTuple
 	rejectedSenders: null | RejectedSendersRef
 	referralCode: null | Id
+	plugins: null | CustomerPlugins
 }
 
 export type Customer = {
@@ -289,6 +290,7 @@ export type Customer = {
 	orderProcessingAgreement: null | IdTuple
 	rejectedSenders: null | RejectedSendersRef
 	referralCode: null | Id
+	plugins: null | CustomerPlugins
 
 	//== some entities have these and some don't
 
@@ -534,6 +536,7 @@ export type UserParams = {
 	pushIdentifierList: null | PushIdentifierList
 	auth: null | UserAuthentication
 	alarmInfoList: null | UserAlarmInfoListType
+	plugins: null | UserPlugins
 }
 
 export type User = {
@@ -563,6 +566,7 @@ export type User = {
 	pushIdentifierList: null | PushIdentifierList
 	auth: null | UserAuthentication
 	alarmInfoList: null | UserAlarmInfoListType
+	plugins: null | UserPlugins
 
 	//== some entities have these and some don't
 
@@ -916,6 +920,7 @@ export type CustomerInfoParams = {
 	managedByPartner: null | Id
 	partnerManagedCustomers: null | Id
 	revocationRequest: null | IdTuple
+	storeNotificationLog: null | Id
 }
 
 export type CustomerInfo = {
@@ -963,6 +968,7 @@ export type CustomerInfo = {
 	managedByPartner: null | Id
 	partnerManagedCustomers: null | Id
 	revocationRequest: null | IdTuple
+	storeNotificationLog: null | Id
 
 	//== some entities have these and some don't
 
@@ -3020,6 +3026,7 @@ export type InvoiceInfoParams = {
 	discountPercentage: null | NumberString
 
 	paymentErrorInfo: null | PaymentErrorInfo
+	discountEligiblePlans: PlanTypeWrapper[]
 }
 
 export type InvoiceInfo = {
@@ -3045,6 +3052,7 @@ export type InvoiceInfo = {
 	// == associations
 
 	paymentErrorInfo: null | PaymentErrorInfo
+	discountEligiblePlans: PlanTypeWrapper[]
 
 	//== some entities have these and some don't
 
@@ -5171,6 +5179,7 @@ export type PlanPricesParams = {
 	customDomains: NumberString
 	planName: string
 	businessPlan: boolean
+	bonusMonthsForYearlyPlan: NumberString
 
 	planConfiguration: PlanConfiguration
 }
@@ -5191,6 +5200,7 @@ export type PlanPrices = {
 	customDomains: NumberString
 	planName: string
 	businessPlan: boolean
+	bonusMonthsForYearlyPlan: NumberString
 
 	// == associations
 
@@ -10433,5 +10443,143 @@ export type SubscriptionRevocationServicePostIn = {
 	// === these are not present in metamodel
 	_type: TypeRef<SubscriptionRevocationServicePostIn>
 	_original: Nullable<SubscriptionRevocationServicePostIn>
+	isAdapter: false
+}
+export const PlanTypeWrapperTypeRef: TypeRef<PlanTypeWrapper> = new TypeRef("sys", 2783)
+
+export function createPlanTypeWrapper(values: PlanTypeWrapperParams): PlanTypeWrapper {
+	return Object.assign(create(typeModels[PlanTypeWrapperTypeRef.typeId], PlanTypeWrapperTypeRef), values)
+}
+
+export type PlanTypeWrapperParams = {
+	plan: NumberString
+}
+
+export type PlanTypeWrapper = {
+	// == values
+
+	_id: Id
+	plan: NumberString
+
+	// == associations
+
+	//== some entities have these and some don't
+	_permissions: null
+	bucketKey: null
+	_ownerGroup: null
+	_ownerEncSessionKey: null
+	_ownerKeyVersion: null
+	_kdfNonce: null
+	ownerEncSessionKey: null
+	ownerEncSessionKeyVersion: null
+
+	// === these are not present in metamodel
+	_type: TypeRef<PlanTypeWrapper>
+	_original: Nullable<PlanTypeWrapper>
+	isAdapter: false
+}
+export const PluginConfigurationTypeRef: TypeRef<PluginConfiguration> = new TypeRef("sys", 2798)
+
+export function createPluginConfiguration(values: PluginConfigurationParams): PluginConfiguration {
+	return Object.assign(create(typeModels[PluginConfigurationTypeRef.typeId], PluginConfigurationTypeRef), values)
+}
+
+export type PluginConfigurationParams = {
+	configJson: string
+}
+
+export type PluginConfiguration = {
+	// == values
+
+	_id: ListElementId
+	_permissions: Id
+	_format: NumberString
+	_ownerGroup: null | Id
+	_ownerEncSessionKey: null | Uint8Array<ArrayBuffer>
+	_ownerKeyVersion: null | NumberString
+	_kdfNonce: null | Uint8Array<ArrayBuffer>
+	configJson: string
+
+	// == associations
+
+	//== some entities have these and some don't
+
+	bucketKey: null
+
+	ownerEncSessionKey: null
+	ownerEncSessionKeyVersion: null
+
+	// === these are not present in metamodel
+	_type: TypeRef<PluginConfiguration>
+	_errors: Object
+	_original: Nullable<PluginConfiguration>
+	isAdapter: false
+}
+export const UserPluginsTypeRef: TypeRef<UserPlugins> = new TypeRef("sys", 2808)
+
+export function createUserPlugins(values: UserPluginsParams): UserPlugins {
+	return Object.assign(create(typeModels[UserPluginsTypeRef.typeId], UserPluginsTypeRef), values)
+}
+
+export type UserPluginsParams = {
+	pluginConfigs: Id
+}
+
+export type UserPlugins = {
+	// == values
+
+	_id: Id
+
+	// == associations
+
+	pluginConfigs: Id
+
+	//== some entities have these and some don't
+	_permissions: null
+	bucketKey: null
+	_ownerGroup: null
+	_ownerEncSessionKey: null
+	_ownerKeyVersion: null
+	_kdfNonce: null
+	ownerEncSessionKey: null
+	ownerEncSessionKeyVersion: null
+
+	// === these are not present in metamodel
+	_type: TypeRef<UserPlugins>
+	_original: Nullable<UserPlugins>
+	isAdapter: false
+}
+export const CustomerPluginsTypeRef: TypeRef<CustomerPlugins> = new TypeRef("sys", 2812)
+
+export function createCustomerPlugins(values: CustomerPluginsParams): CustomerPlugins {
+	return Object.assign(create(typeModels[CustomerPluginsTypeRef.typeId], CustomerPluginsTypeRef), values)
+}
+
+export type CustomerPluginsParams = {
+	pluginConfigs: Id
+}
+
+export type CustomerPlugins = {
+	// == values
+
+	_id: Id
+
+	// == associations
+
+	pluginConfigs: Id
+
+	//== some entities have these and some don't
+	_permissions: null
+	bucketKey: null
+	_ownerGroup: null
+	_ownerEncSessionKey: null
+	_ownerKeyVersion: null
+	_kdfNonce: null
+	ownerEncSessionKey: null
+	ownerEncSessionKeyVersion: null
+
+	// === these are not present in metamodel
+	_type: TypeRef<CustomerPlugins>
+	_original: Nullable<CustomerPlugins>
 	isAdapter: false
 }

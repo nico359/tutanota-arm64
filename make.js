@@ -22,6 +22,7 @@ await program
 			program.outputHelp()
 			process.exit(1)
 		}
+		stage = stage ?? "local"
 
 		if (stage === "localSecure") {
 			stage = "host"
@@ -36,7 +37,7 @@ await program
 
 		try {
 			await runDevBuild({
-				stage: stage ?? "local",
+				stage,
 				host,
 				clean,
 				watch,
@@ -44,6 +45,7 @@ await program
 				desktop: startDesktop || desktopBuildOnly,
 				networkDebugging,
 				app,
+				shadowDomAppRoot: null,
 			})
 
 			if (startDesktop) {

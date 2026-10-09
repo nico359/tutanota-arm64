@@ -46,6 +46,7 @@ export type DropData = FileDropData | MailDropData | FolderDropData | DriveDropD
 
 export type DragStartHandler = (event: DragEvent) => void
 export type DragEnterHandler = (event: DragEvent) => void
+export type DragLeaveHandler = (event: DragEvent) => void
 export type DropHandler = (dropData: DropData) => void
 // not all browsers have the actual button as e.currentTarget, but all of them send it as a second argument (see https://github.com/tutao/tutanota/issues/1110)
 export type ClickHandler = (event: MouseEvent, dom: HTMLElement) => void
@@ -477,7 +478,7 @@ export function renderDragElement(name: string, icon: Icons, count: number, subS
 }
 
 export function contextDropdown(e: MouseEvent, dropdownAttrs: DropdownButtonAttrs[]): void {
-	if (isEmpty(dropdownAttrs)) {
+	if (isEmpty(dropdownAttrs) || ClientDetector.get().isMobileDevice()) {
 		return
 	}
 	e.preventDefault()

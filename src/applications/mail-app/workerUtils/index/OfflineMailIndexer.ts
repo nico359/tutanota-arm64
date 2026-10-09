@@ -5,12 +5,13 @@ import { BlobFacade } from "../../../common/api/worker/facades/lazy/BlobFacade"
 import {
 	assertNotNull,
 	collectToMap,
+	deduplicate,
 	difference,
 	getFirstOrThrow,
-	groupBy,
 	groupByAndMap,
 	isEmpty,
 	isNotEmpty,
+	isNotNull,
 	lastThrow,
 	LazyLoaded,
 	promiseMap,
@@ -19,10 +20,10 @@ import {
 import { MailFacade } from "../../../common/api/worker/facades/lazy/MailFacade"
 import { filterMailMemberships } from "../../../common/api/common/utils/IndexUtils"
 import { MailWithDetailsAndAttachments } from "./MailIndexerBackend"
-import { InstancePipeline, ServerTypeModelResolver } from "@tutao/instance-pipeline"
+import { DecryptedParsedInstance, InstancePipeline, ServerTypeModelResolver } from "@tutao/instance-pipeline"
 import { InfoMessageHandler } from "../../../common/gui/InfoMessageHandler"
 import { IndexingErrorReason, SearchIndexStateInfo } from "../../../common/api/worker/search/SearchTypes"
-import { EntityClient } from "../../../../platform-kit/network/EntityClient"
+import { EntityClient, loadMultipleFromLists } from "../../../../platform-kit/network/EntityClient"
 import {
 	compareNewestFirst,
 	compareOldestFirst,
@@ -53,7 +54,7 @@ import {
 	MailTypeRef,
 } from "@tutao/entities/tutanota"
 import { User } from "@tutao/entities/sys"
-import { GroupType } from "../../../../entities/sys/Utils"
+import { ArchiveDataType, GroupType } from "../../../../entities/sys/Utils"
 import { CryptoFacade } from "../../../../platform-kit/base/base-crypto/CryptoFacade"
 import { ConnectionError, NotAuthorizedError } from "@tutao/rest-client/error"
 import { IncomingServerJson } from "../../../../platform-kit/instance-pipeline/TypeMapper"
@@ -61,6 +62,7 @@ import { CommonImportedMail } from "./WebMailIndexer"
 import { MailImportType, MailSetKind } from "../../../../entities/tutanota/Utils"
 import { isDraft } from "../../mail/model/MailChecks"
 import { CryptoError, SessionKeyNotFoundError } from "@tutao/crypto/error"
+import type { CacheStorage } from "../../../../app-kit/local-store/CacheStorage"
 
 EnvProvider.assertWorkerOrNode()
 
@@ -69,6 +71,16 @@ const TAG = "[OfflineMailIndexer]"
 // we do not want to bump this up any higher, as it determines how big our range requests are, and we can potentially
 // break MAX_SAFE_SQL_VARS
 const INDEX_CHUNK_SIZE = 1000
+
+// the portion of the progress bar reserved for preloading archives
+const PRELOAD_PROGRESS_PORTION: number = 0.25
+
+interface MailWithDetailsAndAttachmentsBlob extends MailWithDetailsAndAttachments {
+	/**
+	 * This will not be set if the blob is already cached or the mail is a draft
+	 */
+	incomingMailDetailsBlob?: DecryptedParsedInstance
+}
 
 /**
  * Mail indexer that efficiently indexes the entire user (i.e. all mailboxes they have access to)
@@ -84,6 +96,7 @@ export class OfflineMailIndexer implements MailIndexer {
 		private readonly infoMessageHandler: InfoMessageHandler,
 		private readonly newMailDownloader: MailIndexerNewMailDownloader,
 		private readonly instancePipeline: InstancePipeline,
+		private readonly cacheStorage: CacheStorage,
 		private readonly indexChunkSize: number = INDEX_CHUNK_SIZE,
 	) {}
 
@@ -212,11 +225,9 @@ export class OfflineMailIndexer implements MailIndexer {
 				const mailbox = await this.entityClient.load(MailBoxTypeRef, idToElementId(mailboxGroupRoot.mailbox))
 				const data = assertNotNull(mailGroupData.get(group))
 
-				await this.indexMailbox(data, mailbox, async (mailboxProgress, newMailsIndexed) => {
-					if (newMailsIndexed != null) {
-						indexedMailCount += newMailsIndexed
-					}
-					const progress = baseProgress + mailboxProgress / totalMailboxes
+				await this.indexMailbox(data, mailbox, async (fraction: number, newMailsIndexed: number) => {
+					indexedMailCount += newMailsIndexed
+					const progress = baseProgress + fraction / totalMailboxes
 					await updateProgress(progress)
 				})
 
@@ -240,50 +251,130 @@ export class OfflineMailIndexer implements MailIndexer {
 		console.log(TAG, `Cleaned up and fully indexed (took ${cleanupEnd - end} ms)`)
 	}
 
-	private async indexMailbox(
-		groupData: IndexedGroupData,
-		mailbox: MailBox,
-		mailboxProgress: (mailboxProgress: number, newMailsIndexed?: number) => Promise<unknown>,
-	) {
+	private async indexMailbox(groupData: IndexedGroupData, mailbox: MailBox, mailboxProgress: (fraction: number, indexedMails: number) => Promise<unknown>) {
+		console.log(TAG, `Began indexing mail group ${mailbox._id}`)
+
+		const indexStart = performance.now()
+
+		const allArchives = await this.preloadEncryptedArchivesForGroup(assertNotNull(mailbox._ownerGroup), (fraction: number) =>
+			mailboxProgress(PRELOAD_PROGRESS_PORTION * fraction, 0),
+		)
+
+		let estimatedMailsWithBlobs = await this.offlineStoragePersistence.estimateTotalBlobCountForArchives(groupData.groupId, allArchives)
+		let totalMailsIndexedWithBlobs = 0
+		let totalMailsIndexed = 0
+
+		console.log(TAG, `Estimated remaining number of mails with blobs for mail group ${mailbox._ownerGroup}:`, estimatedMailsWithBlobs)
+
 		// Sort in reverse order to keep a consistent list
 		const allMailBags = [assertNotNull(mailbox.currentMailBag), ...mailbox.archivedMailBags]
 			.map((a) => a.mails)
 			.sort((a, b) => compareNewestFirst(a, b, EntityIdEncoding.Base64Ext))
-
-		const totalMailbags = allMailBags.length
-		let indexedMailbags = 0
 
 		for (const mailList of allMailBags) {
 			if (groupData.lastIndexedEntityListId === mailList || !firstBiggerThanSecondBase64Ext(mailList, groupData.lastIndexedEntityListId)) {
 				const startingId = groupData.lastIndexedEntityListId === mailList ? groupData.lastIndexedEntityElementId : GENERATED_MAX_ID
 				console.log(TAG, `Indexing mailbag with mail list ${mailList}`)
 				const indexMailbagStart = performance.now()
-				await this.indexMailbag(groupData.groupId, mailList, startingId, async (newMailsIndexed, currentMailbagMailsDownloaded) => {
-					// We don't know how many mails a user has in a mailbox, so this curve actually never reaches 1 (but
-					// reaches ~99.98% after 5000 mails)
-					//
-					// This shows the user there is progress even it isn't known how long until it's finished.
-					const currentMailbagDownloadedPartialProgress = 1 - 5000 ** (-currentMailbagMailsDownloaded / 5000)
-					await mailboxProgress((indexedMailbags + currentMailbagDownloadedPartialProgress) / totalMailbags, newMailsIndexed)
+				await this.indexMailbag(groupData.groupId, mailList, startingId, async (newMailsWithBlobsIndexed, newMailsIndexed) => {
+					totalMailsIndexedWithBlobs = totalMailsIndexedWithBlobs + newMailsWithBlobsIndexed
+					newMailsIndexed += newMailsIndexed
+
+					// We may be slightly off on our estimate (such as when resuming, especially if drafts were already indexed)
+					const totalCapped = Math.min(totalMailsIndexedWithBlobs, estimatedMailsWithBlobs)
+					if (totalCapped === 0) {
+						await mailboxProgress(PRELOAD_PROGRESS_PORTION, newMailsIndexed)
+					} else {
+						await mailboxProgress(
+							PRELOAD_PROGRESS_PORTION + (totalCapped / estimatedMailsWithBlobs) * (1 - PRELOAD_PROGRESS_PORTION),
+							newMailsIndexed,
+						)
+					}
 				})
 				const indexMailbagEnd = performance.now()
 				console.log(TAG, `Finished indexing mail list ${mailList} (took ${indexMailbagEnd - indexMailbagStart} ms)`)
 			}
-
-			indexedMailbags += 1
 		}
+
+		const indexEnd = performance.now() - indexStart
+		console.log(
+			TAG,
+			`Finished indexing mail group ${mailbox._id}; indexed ${totalMailsIndexed} mail(s) (${totalMailsIndexedWithBlobs} with blob(s)) in ${indexEnd} ms`,
+		)
+	}
+
+	/**
+	 * @return a list of all archives
+	 */
+	private async preloadEncryptedArchivesForGroup(mailGroupId: Id, onArchivePreloaded?: (partialProgressFraction: number) => Promise<unknown>): Promise<Id[]> {
+		const allArchives = await this.blobFacade.enumerateArchivesForGroup(mailGroupId, ArchiveDataType.MailDetails)
+
+		// if the user simply hits the reindex button, we don't want to go and redownload archives...
+		const archivesAlreadyStored = await this.offlineStoragePersistence.getDownloadedArchives()
+		let totalArchivesPreloaded = archivesAlreadyStored.length
+
+		const remainder = difference(allArchives, archivesAlreadyStored)
+		if (isEmpty(remainder)) {
+			await onArchivePreloaded?.(1)
+		} else {
+			await this.preloadArchives(remainder, async () => {
+				if (++totalArchivesPreloaded >= allArchives.length) {
+					await onArchivePreloaded?.(1)
+				} else {
+					await onArchivePreloaded?.(totalArchivesPreloaded / allArchives.length)
+				}
+			})
+		}
+
+		return allArchives
+	}
+
+	/**
+	 * @return total blob count
+	 * @private
+	 */
+	private async preloadArchives(archivesNeeded: readonly Id[], onArchivePreloaded?: () => Promise<unknown>): Promise<void> {
+		const mailDetailsBlobTypeModel = await this.mailDetailsBlobTypeModel.getAsync()
+		const archivesToLoad = deduplicate(archivesNeeded)
+
+		if (isEmpty(archivesToLoad)) {
+			console.log(TAG, "No archives to preload")
+		} else {
+			console.log(TAG, `Preloading ${archivesToLoad.length} archive(s)`)
+			const everythingStart = performance.now()
+			for (const archiveId of archivesToLoad) {
+				console.log(TAG, `Downloading archive ${archiveId}...`)
+				await abortAware(this.abortController, async () => {
+					const downloadStart = performance.now()
+					const blobs = await this.blobFacade.downloadFullEncryptedBlobElementEntityArchive(MailDetailsBlobTypeRef, archiveId)
+					const downloadEnd = performance.now()
+					console.log(
+						TAG,
+						`Finished downloading archive ${archiveId} (${blobs.length} blob(s), took ${downloadEnd - downloadStart} ms), storing in offline db...`,
+					)
+					await this.offlineStoragePersistence.storeEncryptedMailDetailsBlobs(mailDetailsBlobTypeModel, blobs)
+
+					// we know for sure we have the full archive now, so we do not want to redownload it even if we cancel right now
+					await this.offlineStoragePersistence.markArchiveAsDownloaded(archiveId)
+					const storeEnd = performance.now()
+					console.log(TAG, `Finished storing archive ${archiveId} in offline db (took ${storeEnd - downloadEnd} ms)`)
+				})
+				await onArchivePreloaded?.()
+			}
+
+			const everythingEnd = performance.now()
+			console.log(TAG, `Preloaded ${archivesToLoad.length} archive(s) (took ${everythingEnd - everythingStart} ms)`)
+		}
+		console.log("Preloading complete")
 	}
 
 	private async indexMailbag(
 		mailGroup: Id,
 		mailList: Id,
 		startingId: Id,
-		updateStorageProgress: (newMailsIndexed: number, currentMailbagMailsDownloaded: number) => Promise<unknown>,
+		updateStorageProgress: (newMailsWithBlobsIndexed: number, newMailsIndexed: number) => Promise<unknown>,
 	) {
 		let currentId = startingId
-
-		const archiveDownloadPromises = new Map()
-		let totalMailsDownloaded = 0
 
 		let mails: Mail[] = []
 		while (!this.abortController.signal.aborted) {
@@ -302,20 +393,29 @@ export class OfflineMailIndexer implements MailIndexer {
 				return
 			}
 
+			// Load all files into cache (we should be able to retrieve these later if we are successful) so we don't
+			// have network requests for each email with attachments later
 			const attachmentIds: IdTuple[] = mails.flatMap((mails) => mails.attachments)
-			const attachmentsByList: Map<Id, IdTuple[]> = groupBy(attachmentIds, listIdPart)
+			await loadMultipleFromLists(FileTypeRef, this.entityClient, attachmentIds)
 
-			// load all files into cache (we should be able to retrieve these later if we are successful)
-			for (const [list, ids] of attachmentsByList.entries()) {
-				await this.entityClient.loadMultiple(FileTypeRef, list, ids.map(elementIdPart))
+			// Attempt to get all blobs from storage
+			//
+			// Of course, we want to do this in chunks to reduce IPC calls.
+			const mailDetailsBlobIds = mails.map((mail) => mail.mailDetails).filter(isNotNull)
+			const archives = groupByAndMap(mailDetailsBlobIds, listIdPart, elementIdPart)
+			const mailDetailsBlobs: Map<Id, MailDetailsBlob> = new Map()
+			for (const [list, blobIds] of archives.entries()) {
+				const localBlobs = await this.cacheStorage.provideMultiple(MailDetailsBlobTypeRef, list, blobIds)
+				for (const b of localBlobs) {
+					mailDetailsBlobs.set(getElementId(b), b)
+				}
 			}
 
 			const lastMail = lastThrow(mails)
 			currentId = getElementId(lastMail)
-			await this.indexNonRecentMails(mails, archiveDownloadPromises, async () => {
-				await updateStorageProgress(1, totalMailsDownloaded++)
-			})
+			const { mailsIndexed, mailsWithBlobsIndexed } = await this.indexNonRecentMails(mails, mailDetailsBlobs)
 			await this.offlineStoragePersistence.updateIndexingElement(mailGroup, lastMail._id)
+			await updateStorageProgress(mailsWithBlobsIndexed, mailsIndexed)
 		}
 
 		// abort signal reached; rethrow cancellation error
@@ -324,91 +424,81 @@ export class OfflineMailIndexer implements MailIndexer {
 
 	private async indexNonRecentMails(
 		mails: readonly Mail[],
-		archiveDownloadPromises: Map<Id, Promise<unknown>> = new Map(),
-		onMailStore?: () => Promise<unknown>,
-	) {
+		cachedMailDetailsBlobs: Map<Id, MailDetailsBlob>,
+	): Promise<{ mailsWithBlobsIndexed: number; mailsIndexed: number }> {
 		const mailDetailsBlobTypeModel = await this.mailDetailsBlobTypeModel.getAsync()
 
-		const mailsToStore: MailWithDetailsAndAttachments[] = []
+		const mailsToStore: MailWithDetailsAndAttachmentsBlob[] = []
 		await promiseMap(
 			mails,
 			async (mail) => {
-				const data = await this.loadNonRecentMail(mail, mailDetailsBlobTypeModel, archiveDownloadPromises)
+				const data = await this.loadNonRecentMail(mail, mailDetailsBlobTypeModel, cachedMailDetailsBlobs)
 				if (data != null) {
 					mailsToStore.push(data)
-					await onMailStore?.()
 				}
 			},
 			{ concurrency: 10 },
 		)
 
 		if (!isEmpty(mailsToStore)) {
+			const mailDetailsBlobs = mailsToStore.map(({ incomingMailDetailsBlob }) => incomingMailDetailsBlob).filter(isNotNull)
+
+			if (!isEmpty(mailDetailsBlobs)) {
+				await this.cacheStorage.putMultiple(MailDetailsBlobTypeRef, mailDetailsBlobs)
+			}
+
 			await this.offlineStoragePersistence.storeMailData(mailsToStore)
+		}
+
+		return {
+			mailsIndexed: mailsToStore.length,
+			mailsWithBlobsIndexed: mailsToStore.filter((mail) => mail.mail.mailDetails != null).length,
 		}
 	}
 
 	private async loadNonRecentMail(
 		mail: Mail,
 		mailDetailsBlobTypeModel: ServerTypeModel,
-		archiveDownloadPromises: Map<Id, Promise<unknown>>,
-	): Promise<MailWithDetailsAndAttachments | null> {
+		cachedMailDetailsBlobs: Map<Id, MailDetailsBlob>,
+	): Promise<MailWithDetailsAndAttachmentsBlob | null> {
 		if (isDraft(mail)) {
 			return await this.newMailDownloader(mail._id)
 		}
 
 		const mailDetailsBlobId = assertNotNull(mail.mailDetails)
+		const attachments = await this.mailFacade.loadAttachments(mail)
 
-		const retrieveBlob = () => {
-			return this.offlineStoragePersistence.retrieveEncryptedMailDetailsBlob(mailDetailsBlobTypeModel, elementIdPart(mailDetailsBlobId))
-		}
-
-		// Get the mail details blob cached from persistence, first
-		let storedBlobJson: IncomingServerJson | null = await retrieveBlob()
-		if (storedBlobJson == null) {
-			// Wasn't there; we'll need to download the archive
-			const archiveId = listIdPart(mailDetailsBlobId)
-			const pendingPromise = archiveDownloadPromises.get(archiveId)
-
-			// Prevent concurrent downloading of the same archive
-			if (pendingPromise != null) {
-				await pendingPromise
-			} else {
-				console.log(TAG, `Downloading archive ${archiveId}...`)
-				const storePromise = abortAware(this.abortController, async () => {
-					const downloadStart = performance.now()
-					const blobs = await this.blobFacade.downloadFullEncryptedBlobElementEntityArchive(MailDetailsBlobTypeRef, archiveId)
-					const downloadEnd = performance.now()
-					console.log(
-						TAG,
-						`Finished downloading archive ${archiveId} (${blobs.length} blob(s), took ${downloadEnd - downloadStart} ms), storing in offline db...`,
-					)
-					await this.offlineStoragePersistence.storeEncryptedMailDetailsBlobs(mailDetailsBlobTypeModel, blobs)
-					const storeEnd = performance.now()
-					console.log(TAG, `Finished storing archive ${archiveId} in offline db (took ${storeEnd - downloadEnd} ms)`)
-				})
-
-				archiveDownloadPromises.set(archiveId, storePromise)
-				await storePromise
+		// if the blob is already stored, we don't want to reload it (or recache it)
+		const cachedMailDetailsBlob = cachedMailDetailsBlobs.get(elementIdPart(mailDetailsBlobId))
+		if (cachedMailDetailsBlob != null) {
+			return {
+				mail,
+				mailDetails: cachedMailDetailsBlob.details,
+				attachments,
 			}
-
-			storedBlobJson = await retrieveBlob()
 		}
 
+		// Get the mail details blob cached from persistence
+		let storedBlobJson: IncomingServerJson | null = await this.offlineStoragePersistence.retrieveEncryptedMailDetailsBlob(
+			mailDetailsBlobTypeModel,
+			elementIdPart(mailDetailsBlobId),
+		)
+
+		// Fallback if somehow we didn't archive this mail
 		if (storedBlobJson == null) {
-			console.warn(TAG, `Could not retrieve ${mail._id}'s MailDetailsBlob (tried twice, blob id = ${mail.mailDetails})`)
-			return null
+			return await this.newMailDownloader(mail._id)
 		}
 
 		try {
 			const mailSessionKey = assertNotNull(await this.crypto.resolveSessionKey(mail))
-			const mailDetails = await this.instancePipeline.decryptAndMap<MailDetailsBlob>(storedBlobJson, mailSessionKey)
-			const attachments = await this.mailFacade.loadAttachments(mail)
-
+			const json = await this.instancePipeline.typeMapper.parseServerJson(storedBlobJson)
+			const mailDetails = await this.instancePipeline.decryptAndMapEncryptedInstanceParsed<MailDetailsBlob>(json, mailSessionKey)
 			return {
 				mail,
-				mailDetails: mailDetails.details,
+				mailDetails: mailDetails.instance.details,
 				attachments,
-			} satisfies MailWithDetailsAndAttachments
+				incomingMailDetailsBlob: mailDetails.decryptedParsedInstance,
+			} satisfies MailWithDetailsAndAttachmentsBlob
 		} catch (e) {
 			// Usually we should be able to resolve the session key, but some emails are permanently stuck in this state
 			// due to being corrupted.
@@ -502,18 +592,25 @@ export class OfflineMailIndexer implements MailIndexer {
 		let indexedMailCount = 0
 		await this.infoMessageHandler.onSearchIndexStateUpdate(this.createSearchIndexStateInfo(1, indexedMailCount))
 
-		const archiveDownloadPromises = new Map()
-
 		for (const chunk of splitInChunks(this.indexChunkSize, mailIds)) {
 			const idsGrouped = groupByAndMap(chunk, listIdPart, elementIdPart)
 			const mails = await promiseMap(idsGrouped, async ([list, elements]) => {
 				return await this.entityClient.loadMultiple(MailTypeRef, list, elements)
 			})
 			const mailsFlat = mails.flat()
-			await this.indexNonRecentMails(mailsFlat, archiveDownloadPromises, async () => {
-				const update = this.createSearchIndexStateInfo(Math.max(1, (indexedMailCount / mailIds.length) * 100), indexedMailCount++)
-				await this.infoMessageHandler.onSearchIndexStateUpdate(update)
-			})
+
+			const allArchivesForThisChunk = mailsFlat
+				.map((mail: Mail) => mail.mailDetails)
+				.filter(isNotNull)
+				.map(listIdPart)
+
+			await this.preloadArchives(allArchivesForThisChunk)
+
+			const { mailsIndexed } = await this.indexNonRecentMails(mailsFlat, new Map())
+			indexedMailCount += mailsIndexed
+
+			const update = this.createSearchIndexStateInfo(Math.max(1, (indexedMailCount / mailIds.length) * 100), indexedMailCount)
+			await this.infoMessageHandler.onSearchIndexStateUpdate(update)
 
 			const latestMailId = lastThrow(chunk)
 			const latestMail = assertNotNull(mailsFlat.find((mail) => isSameId(mail._id, latestMailId)))

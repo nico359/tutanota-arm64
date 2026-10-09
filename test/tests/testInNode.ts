@@ -24,6 +24,7 @@ const dom = new JSDOM("", {
 
 globalThis.requestAnimationFrame = dom.window.requestAnimationFrame
 globalThis.window = dom.window
+globalThis.self = globalThis.window
 dom.reconfigure({ url: "http://tutanota.com" })
 globalThis.window.getElementsByTagName = function () {} // for styles.js
 globalThis.window.document.addEventListener = function () {}
@@ -51,6 +52,7 @@ globalThis.performance = {
 	now: Date.now,
 	mark: noOp,
 	measure: noOp,
+	markResourceTiming: noOp,
 }
 
 globalThis.XMLHttpRequest = (await import("xhr2")).default

@@ -185,7 +185,7 @@ export class MailListView implements Component<MailListViewAttrs> {
 		// We listen to mouseup to detect if the user released the mouse before the download was complete
 		// we can't use dragend because we broke the DragEvent chain by calling prevent default
 		const mouseupPromise = newPromise((resolve) => {
-			document.addEventListener("mouseup", resolve, {
+			window.tutao.root.getDom().addEventListener("mouseup", resolve, {
 				once: true,
 			})
 		})
@@ -353,7 +353,7 @@ export class MailListView implements Component<MailListViewAttrs> {
 				ListColumnWrapper,
 				{
 					headerContent: this.renderListHeader(purgeButtonAttrs),
-					class: Styles.get().isSingleColumnLayout() ? undefined : "column-resize-margin",
+					class: Styles.get().isSingleColumnLayout() ? undefined : "column-resize-padding",
 				},
 				listModel == null || listModel.isEmptyAndDone()
 					? m(ColumnEmptyMessageBox, {

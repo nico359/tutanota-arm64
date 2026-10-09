@@ -24,7 +24,7 @@ import { SqlValue } from "../../../../app-kit/local-store/Types"
 import { decode, encode } from "cborg"
 import { IncomingServerJson } from "../../../../platform-kit/instance-pipeline/TypeMapper"
 import { MailImportType } from "../../../../entities/tutanota/Utils"
-import { delay, isEmpty, splitInChunks } from "@tutao/utils"
+import { deduplicate, delay, isEmpty, splitInChunks } from "@tutao/utils"
 
 export const SearchTableDefinitions: Record<string, OfflineStorageTable> = Object.freeze({
 	search_group_data: {
@@ -90,6 +90,14 @@ mailAddresses
 	encrypted_mail_details_blobs: {
 		definition:
 			"CREATE TABLE IF NOT EXISTS encrypted_mail_details_blobs (blobId TEXT NOT NULL PRIMARY KEY, archiveId TEXT NOT NULL, data BLOB NOT NULL, typeref STRING NOT NULL, modelVersion NUMBER NOT NULL)",
+		purgedWithCache: true,
+	},
+
+	// All successfully indexed mail details blobs archives.
+	//
+	// This is saved to prevent redownloading entire archives.
+	cached_mail_details_archives: {
+		definition: "CREATE TABLE IF NOT EXISTS cached_mail_details_archives (archiveId TEXT NOT NULL PRIMARY KEY)",
 		purgedWithCache: true,
 	},
 })
@@ -283,6 +291,11 @@ VALUES (
 		await this.sqlCipherFacade.run(query, params)
 	}
 
+	async getEncryptedMailDetailsBlobsArchives(): Promise<Id[]> {
+		const archives = await this.sqlCipherFacade.all("SELECT DISTINCT archiveId FROM encrypted_mail_details_blobs", [])
+		return archives.map(({ archiveId }) => untagSqlValue(archiveId) as Id)
+	}
+
 	async storeEncryptedMailDetailsBlobs(serverTypeModel: ServerTypeModel, blobs: readonly IncomingServerJson[]): Promise<void> {
 		if (isEmpty(blobs)) {
 			return
@@ -382,6 +395,18 @@ VALUES (
 	}
 
 	async clearEncryptedMailDetailsBlobs(): Promise<void> {
+		// Prevent redownloading any archives we downloaded in this.
+		{
+			const { query, params } = sql`SELECT DISTINCT archiveId
+										  FROM encrypted_mail_details_blobs`
+			const rows = await this.sqlCipherFacade.all(query, params)
+			const archives = rows.map(untagSqlObject).map(({ archiveId }) => archiveId as Id)
+			for (const archive of archives) {
+				await this.markArchiveAsDownloaded(archive)
+			}
+		}
+
+		// Now delete
 		{
 			const { query, params } = sql`DELETE
 										  FROM encrypted_mail_details_blobs`
@@ -403,6 +428,48 @@ VALUES (
 			return null
 		}
 		return untagSqlObject(rowIdResult).rowid
+	}
+
+	async estimateTotalBlobCountForArchives(ownerGroup: Id, archiveIds: readonly Id[]): Promise<number> {
+		// First, we need to get the number of every Mail that's indexed. This will include drafts, so it's not going to
+		// be 100% accurate. However, we expect drafts to not take up a significant portion of most mailboxes.
+		//
+		// We can't just check the cache for mail details blobs, as we might also be re-indexing.
+		let alreadyIndexedCount: number
+		{
+			const { query, params } =
+				sql`SELECT COUNT(*) as total from list_entities WHERE ownerGroup = ${ownerGroup} AND rowid IN (SELECT rowid FROM mail_index)`
+			const result = await this.sqlCipherFacade.get(query, params)
+			alreadyIndexedCount = (untagSqlObject(result ?? {})["total"] ?? 0) as number
+		}
+
+		let total = 0
+		for (const archive of archiveIds) {
+			let estimatedCount = 0
+
+			// First, let's get the preloaded count
+			{
+				const { query, params } = sql`SELECT COUNT(*) as total FROM encrypted_mail_details_blobs WHERE archiveId = ${archive}`
+				const result = await this.sqlCipherFacade.get(query, params)
+				if (result != null) {
+					estimatedCount = untagSqlValue(result["total"]) as number
+				}
+			}
+
+			// This might not have been preloaded, though! If so, it's already in our cache
+			if (estimatedCount === 0) {
+				const { query, params } = sql`SELECT COUNT(*) as total FROM blob_element_entities WHERE listId = ${archive}`
+				const result = await this.sqlCipherFacade.get(query, params)
+				if (result != null) {
+					estimatedCount = untagSqlValue(result["total"]) as number
+				}
+			}
+
+			total += estimatedCount
+		}
+
+		// There is some inaccuracy here. We don't know what mails actually have blobs (non-drafts).
+		return Math.max(total - alreadyIndexedCount, 0)
 	}
 
 	async resetMailIndex() {
@@ -441,6 +508,21 @@ VALUES (
 		${mailImportType}
 		)`
 		await this.sqlCipherFacade.run(query, params)
+	}
+
+	async markArchiveAsDownloaded(archiveId: Id): Promise<void> {
+		const { query, params } = sql`INSERT
+		OR REPLACE INTO cached_mail_details_archives VALUES (
+		${archiveId}
+		)`
+		await this.sqlCipherFacade.run(query, params)
+	}
+
+	async getDownloadedArchives(): Promise<Id[]> {
+		const { query, params } = sql`SELECT archiveId
+									  FROM cached_mail_details_archives`
+		const rows = await this.sqlCipherFacade.all(query, params)
+		return rows.map(untagSqlObject).map(({ archiveId }) => archiveId as Id)
 	}
 
 	async enqueueImport(importedMails: Id, mailImportType: MailImportType) {

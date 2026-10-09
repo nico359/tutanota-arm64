@@ -194,6 +194,7 @@ class ViewController: UIViewController, WKNavigationDelegate, UIScrollViewDelega
 			mutableParams["theme"] = encodedTheme
 		}
 		mutableParams["platformId"] = "ios"
+		mutableParams["paymentSetup"] = "appstore"
 		let queryParams = NSURLQueryItem.from(dict: mutableParams)
 		var components = URLComponents.init(url: fileUrl, resolvingAgainstBaseURL: false)!
 		components.queryItems = queryParams
@@ -242,8 +243,7 @@ class ViewController: UIViewController, WKNavigationDelegate, UIScrollViewDelega
 			return
 		}
 
-		// FIXME
-		do { try await self.commonNativeFacade.createMailEditor(info.fileUrls.map { $0.path }, info.text, [], "", "") } catch {
+		do { try await self.commonNativeFacade.createMailEditor(info.fileUrls.map { $0.absoluteString }, info.text, [], "", "") } catch {
 			printLog("failed to open mail editor to share: \(error)")
 			try FileUtils.deleteSharedStorage(subDir: info.identifier)
 		}

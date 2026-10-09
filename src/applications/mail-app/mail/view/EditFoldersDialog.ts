@@ -1,6 +1,6 @@
 import { modal, ModalComponent } from "../../../../ui/base/Modal.js"
 import { assertNotNull, noOp, Thunk } from "../../../../platform-kit/utils"
-import { focusNext, focusPrevious, keyManager, Shortcut } from "../../../../ui/utils/KeyManager.js"
+import { focusNext, focusPrevious, KeyManager, Shortcut } from "../../../../ui/utils/KeyManager.js"
 import m, { Children } from "mithril"
 import { alpha, AlphaEnum, AnimationPromise, animations, DefaultAnimationTime, opacity } from "../../../../ui/animation/Animations.js"
 import { getElevatedBackground, theme } from "../../../../ui/theme.js"
@@ -10,6 +10,8 @@ import { component_size, layout_size, px } from "../../../../ui/size.js"
 import { Styles } from "../../../../ui/styles.js"
 import { PrimaryButton } from "../../../../ui/base/buttons/VariantButtons.js"
 import { Keys } from "../../../../ui/utils/KeyboardKeys"
+import { deviceConfig } from "../../../common/misc/DeviceConfig"
+import { locator } from "../../../common/api/main/CommonLocator"
 
 export class EditFoldersDialog implements ModalComponent {
 	private visible: boolean
@@ -61,11 +63,13 @@ export class EditFoldersDialog implements ModalComponent {
 		}
 		this.usedBottomNavBefore = Styles.get().isUsingBottomNavigation()
 		const marginTop = this.usedBottomNavBefore ? "var(--safe-area-inset-top)" : px(component_size.navbar_height)
+		const userId = locator.logins.getUserController().userId
+		const width = px((deviceConfig.getFolderListSize(userId) ?? layout_size.first_col_max_width) - component_size.button_height)
 		return m(
-			".flex.col",
+			".flex.col.border-radius-16",
 			{
 				style: {
-					width: px(layout_size.first_col_max_width - component_size.button_height),
+					width: width,
 					height: `calc(100% - ${marginTop})`,
 					// for the header
 					marginTop,
@@ -90,7 +94,7 @@ export class EditFoldersDialog implements ModalComponent {
 						}),
 					])
 
-					// select first input field. blur first to avoid that users can enter text in the previously focused element while the animation is running
+					// select the first input field. blur first to avoid that users can enter text in the previously focused element while the animation is running
 					window.requestAnimationFrame(() => {
 						const activeElement = document.activeElement as HTMLElement | null
 						if (activeElement && typeof activeElement.blur === "function") {
@@ -104,7 +108,7 @@ export class EditFoldersDialog implements ModalComponent {
 			},
 			[
 				m(
-					".plr-8.mt-16.mb-16",
+					".plr-16.mt-16.mb-16",
 					m(PrimaryButton, {
 						label: "done_action",
 						onclick: () => this.close(),
@@ -197,7 +201,7 @@ export class EditFoldersDialog implements ModalComponent {
 		this._shortcuts.push(shortcut)
 
 		if (this.visible) {
-			keyManager.registerModalShortcuts([shortcut])
+			KeyManager.get().registerModalShortcuts([shortcut])
 		}
 
 		return this

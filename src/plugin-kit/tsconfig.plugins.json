@@ -1,0 +1,16 @@
+{
+	"extends": "../../tsconfig_common.json",
+	"include": ["./plugins/", "../../types/", "./plugins/nextcloud/manifest.json"],
+	"compilerOptions": {
+		"rootDir": "./plugins/",
+		"outDir": "../../build/plugin-kit/plugins",
+		"tsBuildInfoFile": "../../build/plugin-kit/plugins/tsbuildinfo",
+		"composite": true,
+		"paths": {}
+	},
+	"references": [
+		{
+			"path": "tsconfig.sdk.json"
+		}
+	]
+}

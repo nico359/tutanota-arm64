@@ -78,7 +78,7 @@ import { ConversationViewModel, ConversationViewModelFactory } from "./mail/view
 import { CreateMailViewerOptions } from "./mail/view/MailViewer.js"
 import { MailViewerViewModel } from "./mail/view/MailViewerViewModel.js"
 import { ExternalLoginViewModel } from "./mail/view/ExternalLoginView.js"
-import { MailAddressNameChanger, MailAddressTableModel, MailAddressTableInfo } from "../common/settings/mailaddress/MailAddressTableModel.js"
+import { MailAddressNameChanger, MailAddressTableInfo, MailAddressTableModel } from "../common/settings/mailaddress/MailAddressTableModel.js"
 import { DrawerMenuAttrs, isPartnerEnabled } from "../common/gui/nav/DrawerMenu.js"
 import type { GroupInfo } from "@tutao/entities/sys"
 import { DomainConfigProvider } from "../common/api/common/DomainConfigProvider.js"
@@ -106,7 +106,7 @@ import { SearchIndexStateInfo } from "../common/api/worker/search/SearchTypes.js
 import { MAIL_PREFIX } from "../../ui/utils/RouteChange.js"
 import { getDisplayedSender } from "../common/api/common/CommonMailUtils.js"
 import { MailModel } from "./mail/model/MailModel.js"
-import type { CommonLocator } from "../common/api/main/CommonLocator.js"
+import { CommonLocator, DialogProvider } from "../common/api/main/CommonLocator.js"
 import { WorkerRandomizer } from "../common/api/worker/workerInterfaces.js"
 import { WorkerInterface } from "./workerUtils/worker/WorkerImpl.js"
 import { isEditableDraft, isMailInSpamOrTrash } from "./mail/model/MailChecks.js"
@@ -171,6 +171,9 @@ import { registerIndexingNotAvailableHandler } from "../common/misc/ErrorHandler
 import { DriveModel } from "../drive-app/drive/model/DriveModel"
 import { ContactEditor } from "./contacts/ContactEditor"
 import { ContactViewModel } from "./contacts/view/ContactViewModel"
+import { PluginManager } from "../../plugin-kit/plugin-manager/PluginManager"
+import { PluginConfigurationProvider } from "../common/plugin/PluginConfigurationProvider"
+import { MailPluginIntegrationAdapter } from "./plugin/MailPluginIntegrationAdapter"
 
 EnvProvider.assertMainOrNode()
 
@@ -250,6 +253,8 @@ class MailLocator implements CommonLocator {
 	private entropyFacade!: EntropyFacade
 	private sqlCipherFacade!: SqlCipherFacade
 	private oauthFacade: OauthFacade | null = null
+	pluginManager!: PluginManager
+	pluginConfigurationProvider!: PluginConfigurationProvider
 
 	readonly recipientsModel: lazyAsync<RecipientsModel> = lazyMemoized(async () => {
 		const { RecipientsModel } = await import("../common/api/main/RecipientsModel.js")
@@ -511,6 +516,7 @@ class MailLocator implements CommonLocator {
 			this.entityClient,
 			responseTo,
 			await this.calendarInviteHandler(),
+			this.pluginManager,
 			getTimeZone(),
 			showProgress,
 		)
@@ -599,6 +605,7 @@ class MailLocator implements CommonLocator {
 				this.transferProgressDispatcher,
 				this.operationProgressTracker,
 				this.syncTracker,
+				this.pluginManager,
 			)
 	}
 
@@ -947,6 +954,12 @@ class MailLocator implements CommonLocator {
 
 		this.transferProgressDispatcher = new TransferProgressDispatcher()
 
+		this.pluginConfigurationProvider = new PluginConfigurationProvider(this.entityClient, this.logins)
+		this.pluginManager = new PluginManager(this.pluginConfigurationProvider, new DialogProvider(), new MailPluginIntegrationAdapter(this.mailboxModel))
+		this.eventController.addEntityUpdatesListener(this.pluginManager.entityUpdatesListener)
+		this.pluginConfigurationProvider.setPluginManager(this.pluginManager)
+		this.logins.addPostLoginAction(async () => this.pluginConfigurationProvider)
+
 		if (!EnvProvider.get().isBrowser()) {
 			const { WebDesktopFacade } = await import("../common/native/WebDesktopFacade")
 			const { WebMobileFacade } = await import("../common/native/WebMobileFacade.js")
@@ -1160,7 +1173,6 @@ class MailLocator implements CommonLocator {
 			deviceConfig,
 			!EnvProvider.get().isBrowser() ? this.pushService : null,
 			this.syncTracker,
-			noOp,
 			lang,
 		)
 	})
@@ -1355,9 +1367,11 @@ class MailLocator implements CommonLocator {
 			this.customerFacade,
 			this.themeController,
 			this.syncTracker,
+			this.configFacade,
 			() => this.showSetupWizard(),
 			() => this.updateClients(),
 			this.loginFacade,
+			this.pluginManager,
 		)
 	})
 

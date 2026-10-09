@@ -47,7 +47,7 @@ import {
 } from "@tutao/entities/tutanota"
 import { func, matchers, object, verify, when } from "testdouble"
 import { EntityClient } from "../../../../../src/platform-kit/network/EntityClient"
-import { GroupType } from "../../../../../src/entities/sys/Utils"
+import { ArchiveDataType, GroupType } from "../../../../../src/entities/sys/Utils"
 import { FULL_INDEXED_TIMESTAMP, NOTHING_INDEXED_TIMESTAMP } from "../../../../../src/platform-kit/app-env"
 import { MailWithDetailsAndAttachments } from "../../../../../src/applications/mail-app/workerUtils/index/MailIndexerBackend"
 import { assert, assertNotNull, collectToMap, deepEqual, last, stringToBase64UrlCustomId } from "../../../../../src/platform-kit/utils"
@@ -55,6 +55,7 @@ import { CryptoFacade } from "../../../../../src/platform-kit/base/base-crypto/C
 import { aes256RandomKey } from "@tutao/crypto/symmetric-cipher-utils"
 import { IncomingServerJson } from "../../../../../src/platform-kit/instance-pipeline/TypeMapper"
 import { MailImportType, MailSetKind } from "../../../../../src/entities/tutanota/Utils"
+import { CacheStorage } from "../../../../../src/app-kit/local-store/CacheStorage"
 
 const TEST_INDEX_CHUNK_SIZE = 50
 o.spec("OfflineMailIndexer", () => {
@@ -98,6 +99,7 @@ o.spec("OfflineMailIndexer", () => {
 	let mail: Mail
 	let mailSetEntry: MailSetEntry
 	let mailDetailsBlobModel: ServerTypeModel
+	let cacheStorage: CacheStorage
 
 	o.beforeEach(async () => {
 		typeModelResolver = clientInitializedTypeModelResolver()
@@ -108,6 +110,7 @@ o.spec("OfflineMailIndexer", () => {
 		mailFacade = object()
 		crypto = object()
 		infoMessageHandler = object()
+		cacheStorage = object()
 		newMailDownloader = func<MailIndexerNewMailDownloader>()
 		mailDetailsBlobModel = await typeModelResolver.resolveServerTypeReference(MailDetailsBlobTypeRef)
 
@@ -121,6 +124,7 @@ o.spec("OfflineMailIndexer", () => {
 			infoMessageHandler,
 			newMailDownloader,
 			realInstancePipeline,
+			cacheStorage,
 			TEST_INDEX_CHUNK_SIZE,
 		)
 		user = createTestEntity(UserTypeRef, {
@@ -153,6 +157,8 @@ o.spec("OfflineMailIndexer", () => {
 				storedBlobs.set(elementIdPart(b.getValueByName("_id").asIdTuple()), b)
 			}
 		})
+
+		when(persistence.getEncryptedMailDetailsBlobsArchives()).thenResolve([])
 
 		entityRestClientMock.addElementInstances(mailBox, mailboxGroupRoot)
 		entityRestClientMock.addListInstances(importedMailSet)
@@ -197,7 +203,7 @@ o.spec("OfflineMailIndexer", () => {
 		verify(persistence.deleteMailData(mail._id))
 	})
 
-	o.test("index one mail", async () => {
+	o.test("index one mail initially", async () => {
 		mail.mailDetails = ["whooooa", "i'm a blob :D"]
 
 		when(crypto.resolveSessionKey(matchers.anything())).thenResolve(aes256RandomKey())
@@ -208,6 +214,7 @@ o.spec("OfflineMailIndexer", () => {
 		})
 
 		const sk = aes256RandomKey()
+		when(blobs.enumerateArchivesForGroup(mailGroupId, ArchiveDataType.MailDetails)).thenResolve([listIdPart(mail.mailDetails)])
 		when(blobs.downloadFullEncryptedBlobElementEntityArchive(MailDetailsBlobTypeRef, listIdPart(mail.mailDetails))).thenDo(async () => {
 			return [
 				IncomingServerJson.expectSingleMailDetailsBlob(
@@ -234,6 +241,8 @@ o.spec("OfflineMailIndexer", () => {
 				lastIndexedEntityElementId: GENERATED_MAX_ID,
 			},
 		])
+		when(cacheStorage.provideMultiple(MailDetailsBlobTypeRef, listIdPart(mail.mailDetails), [elementIdPart(mail.mailDetails)])).thenResolve([])
+		when(persistence.getDownloadedArchives()).thenResolve([])
 
 		user.memberships = [
 			createTestEntity(GroupMembershipTypeRef, {
@@ -247,12 +256,75 @@ o.spec("OfflineMailIndexer", () => {
 		const storedMailData = matchers.captor()
 
 		verify(persistence.storeMailData(storedMailData.capture()))
+		verify(persistence.markArchiveAsDownloaded(listIdPart(mail.mailDetails)))
 
 		const storedMails: Array<MailWithDetailsAndAttachments> = storedMailData.values![0]
-		o(storedMails.length).equals(1)
-		o(removeOriginals(storedMails[0].mail)).deepEquals(mail)
-		o(removeOriginals(storedMails[0].mailDetails)).deepEquals(removeOriginals(mailDetails.details))
-		o(storedMails[0].attachments.map(removeOriginals)).deepEquals(attachments)
+		o.check(storedMails.length).equals(1)
+		verify(cacheStorage.putMultiple(MailDetailsBlobTypeRef, [storedMails[0]["incomingMailDetailsBlob"]]))
+		o.check(removeOriginals(storedMails[0].mail)).deepEquals(mail)
+		o.check(removeOriginals(storedMails[0].mailDetails)).deepEquals(removeOriginals(mailDetails.details))
+		o.check(storedMails[0].attachments.map(removeOriginals)).deepEquals(attachments)
+
+		verify(persistence.updateIndexingTimestamp(mailGroupId, FULL_INDEXED_TIMESTAMP))
+		verify(persistence.clearEncryptedMailDetailsBlobs())
+	})
+
+	o.test("index one mail that was cached already", async () => {
+		mail.mailDetails = ["whooooa", "i'm a blob :D"]
+
+		when(crypto.resolveSessionKey(matchers.anything())).thenResolve(aes256RandomKey())
+
+		const mailDetails = createTestEntity(MailDetailsBlobTypeRef, {
+			_id: mail.mailDetails,
+			details: createTestEntity(MailDetailsTypeRef, {}, { populateAggregates: true }),
+		})
+
+		when(blobs.downloadFullEncryptedBlobElementEntityArchive(MailDetailsBlobTypeRef, listIdPart(mail.mailDetails))).thenDo(() => {
+			throw new Error("whoops I tried to download an archive for no reason :(")
+		})
+
+		addTestMail()
+
+		const attachments = [
+			createTestEntity(FileTypeRef, {
+				name: `this is a file.txt`,
+			}),
+		]
+		when(mailFacade.loadAttachments(mail)).thenResolve(attachments)
+		when(persistence.getIndexedGroups()).thenResolve([
+			{
+				groupId: mailGroupId,
+				type: GroupType.Mail,
+				indexedTimestamp: NOTHING_INDEXED_TIMESTAMP,
+				lastIndexedEntityListId: GENERATED_MAX_ID,
+				lastIndexedEntityElementId: GENERATED_MAX_ID,
+			},
+		])
+		when(cacheStorage.provideMultiple(MailDetailsBlobTypeRef, listIdPart(mail.mailDetails), [elementIdPart(mail.mailDetails)])).thenResolve([mailDetails])
+
+		user.memberships = [
+			createTestEntity(GroupMembershipTypeRef, {
+				group: mailGroupId,
+				groupType: GroupType.Mail,
+			}),
+		]
+
+		when(persistence.getDownloadedArchives()).thenResolve([listIdPart(mail.mailDetails)])
+		when(blobs.enumerateArchivesForGroup(mailGroupId, ArchiveDataType.MailDetails)).thenResolve([listIdPart(mail.mailDetails)])
+
+		await mailIndexer.extendMailIndex(user)
+
+		const storedMailData = matchers.captor()
+
+		verify(persistence.storeMailData(storedMailData.capture()))
+
+		const storedMails: Array<MailWithDetailsAndAttachments> = storedMailData.values![0]
+		o.check(storedMails.length).equals(1)
+		o.check(removeOriginals(storedMails[0].mail)).deepEquals(mail)
+		o.check(removeOriginals(storedMails[0].mailDetails)).deepEquals(removeOriginals(mailDetails.details))
+		o.check(storedMails[0].attachments.map(removeOriginals)).deepEquals(attachments)
+		verify(cacheStorage.putMultiple(matchers.anything(), matchers.anything()), { times: 0 })
+		verify(persistence.markArchiveAsDownloaded(matchers.anything()), { times: 0 })
 
 		verify(persistence.updateIndexingTimestamp(mailGroupId, FULL_INDEXED_TIMESTAMP))
 		verify(persistence.clearEncryptedMailDetailsBlobs())
@@ -260,12 +332,15 @@ o.spec("OfflineMailIndexer", () => {
 
 	o.test("index 2000 mails", async () => {
 		// two pages
-		const mailCount = 1000 * 2
+		const mailCount = 2 * 1000
 
 		const mails: MailWithDetailsAndAttachments[] = []
 		const detailBlobs: MailDetailsBlob[] = []
 
 		const archiveId = "WHOA, I store LOTS of cool stuff!"
+
+		when(persistence.getDownloadedArchives()).thenResolve([])
+		when(blobs.enumerateArchivesForGroup(mailGroupId, ArchiveDataType.MailDetails)).thenResolve([archiveId])
 
 		for (let i = 0; i < mailCount; i++) {
 			const mailDetails = createTestEntity(
@@ -315,6 +390,7 @@ o.spec("OfflineMailIndexer", () => {
 		when(mailFacade.loadAttachments(matchers.anything())).thenDo((mailToFind: Mail) => {
 			return Promise.resolve(assertNotNull(mailsMap.get(getElementId(mailToFind)), `no ${getElementId(mailToFind)}`).attachments)
 		})
+		when(cacheStorage.provideMultiple(MailDetailsBlobTypeRef, matchers.anything(), matchers.anything())).thenResolve([])
 
 		const sk = aes256RandomKey()
 		when(crypto.resolveSessionKey(matchers.anything())).thenResolve(sk)
@@ -350,24 +426,35 @@ o.spec("OfflineMailIndexer", () => {
 
 		// note: getRange just gets everything with the mock, and we're not guaranteed (or likely) to store in order, so
 		// we need to compare sorted
-		verify(
-			persistence.storeMailData(
-				matchers.argThat((arr: readonly MailWithDetailsAndAttachments[]) => {
-					const sorted = arr.toSorted((a, b) => compareOldestFirst(getElementId(a.mail), getElementId(b.mail), EntityIdEncoding.Base64Ext))
-					for (const m of mails) {
-						removeOriginals(m.mail)
-						removeOriginals(m.mailDetails)
-					}
-					for (const s of sorted) {
-						removeOriginals(s.mail)
-						removeOriginals(s.mailDetails)
-					}
-					return deepEqual(sorted, mails)
+		const mailCaptor = matchers.captor()
+		verify(persistence.storeMailData(mailCaptor.capture()))
+
+		const allMailsStored: MailWithDetailsAndAttachments[] = mailCaptor
+			.values!.flat()
+			.toSorted((a, b) => compareOldestFirst(getElementId(a.mail), getElementId(b.mail), EntityIdEncoding.Base64Ext))
+
+		const allBlobs = new Set()
+
+		// was everything stored?
+		o.check(
+			deepEqual(
+				allMailsStored.map((s): MailWithDetailsAndAttachments => {
+					removeOriginals(s.mail)
+					removeOriginals(s.mailDetails)
+					allBlobs.add(assertNotNull(s["incomingMailDetailsBlob"]))
+					return { mail: s.mail, mailDetails: s.mailDetails, attachments: s.attachments }
 				}),
+				mails,
 			),
-		)
+		).equals(true)
+
+		// and were all blobs saved?
+		const blobCaptor = matchers.captor()
+		verify(cacheStorage.putMultiple(MailDetailsBlobTypeRef, blobCaptor.capture()))
+		o.check(blobCaptor.values?.flat().every((a) => allBlobs.has(a))).equals(true)
 
 		verify(persistence.updateIndexingTimestamp(mailGroupId, FULL_INDEXED_TIMESTAMP))
+		verify(persistence.markArchiveAsDownloaded(archiveId))
 		verify(persistence.clearEncryptedMailDetailsBlobs())
 	})
 
@@ -401,6 +488,7 @@ o.spec("OfflineMailIndexer", () => {
 			const sk = aes256RandomKey()
 			when(persistence.getImportQueueProgress(listIdPart(importedMail._id))).thenResolve(GENERATED_MIN_ID)
 			when(crypto.resolveSessionKey(matchers.anything())).thenResolve(sk)
+			when(persistence.getDownloadedArchives()).thenResolve([])
 
 			when(blobs.downloadFullEncryptedBlobElementEntityArchive(MailDetailsBlobTypeRef, listIdPart(mail.mailDetails))).thenDo(async () => {
 				return [
@@ -423,10 +511,10 @@ o.spec("OfflineMailIndexer", () => {
 			verify(persistence.storeMailData(storeMailData.capture()))
 			const storedMails: Array<MailWithDetailsAndAttachments> = storeMailData.values![0]
 
-			o(storedMails.length).equals(1)
-			o(removeOriginals(storedMails[0].mail)).deepEquals(removeOriginals(mail))
-			o(removeOriginals(storedMails[0].mailDetails)).deepEquals(removeOriginals(mailDetails.details))
-			o(storedMails[0].attachments.map(removeOriginals)).deepEquals(attachments)
+			o.check(storedMails.length).equals(1)
+			o.check(removeOriginals(storedMails[0].mail)).deepEquals(removeOriginals(mail))
+			o.check(removeOriginals(storedMails[0].mailDetails)).deepEquals(removeOriginals(mailDetails.details))
+			o.check(storedMails[0].attachments.map(removeOriginals)).deepEquals(attachments)
 
 			verify(persistence.clearEncryptedMailDetailsBlobs())
 			verify(persistence.updateImportQueueProgress(listIdPart(importedMail._id), elementIdPart(importedMail._id), MailImportType.FileImport))
@@ -521,11 +609,11 @@ o.spec("OfflineMailIndexer", () => {
 			const storeMailDataCaptor = matchers.captor()
 			verify(persistence.storeMailData(storeMailDataCaptor.capture()))
 			const storedMails = storeMailDataCaptor.values!.reduce((acc, val) => acc.concat(val), [])
-			o(storedMails.length).equals(totalMails)
+			o.check(storedMails.length).equals(totalMails)
 
 			const updateProgressCaptor = matchers.captor()
 			verify(persistence.updateImportQueueProgress(importList, updateProgressCaptor.capture(), mailImportType))
-			o(last(updateProgressCaptor.values!)).equals(elementIdPart(importedMails[totalMails - 1]._id))
+			o.check(last(updateProgressCaptor.values!)).equals(elementIdPart(importedMails[totalMails - 1]._id))
 
 			verify(persistence.clearEncryptedMailDetailsBlobs())
 			verify(persistence.removeImportQueueEntry(matchers.anything()), { times: 0 })
@@ -630,7 +718,7 @@ o.spec("OfflineMailIndexer", () => {
 			firstRun = false
 			const progressAfterFirstRun = updateProgressCaptor.values![updateProgressCaptor.values!.length - 1]
 			const lastMailFirstBatch = importedMails[FIRST_BATCH - 1]
-			o(progressAfterFirstRun).equals(elementIdPart(lastMailFirstBatch._id))
+			o.check(progressAfterFirstRun).equals(elementIdPart(lastMailFirstBatch._id))
 
 			for (let i = FIRST_BATCH + 1; i <= TOTAL_MAILS; i++) {
 				createMailInstances(i)
@@ -641,12 +729,12 @@ o.spec("OfflineMailIndexer", () => {
 			await mailIndexer.beforeImportedMailFinished(listId, mailImportType)
 			await mailIndexer.waitForIndex()
 
-			o(totalStored).equals(TOTAL_MAILS)
-			o(storedFirstRun).equals(FIRST_BATCH)
+			o.check(totalStored).equals(TOTAL_MAILS)
+			o.check(storedFirstRun).equals(FIRST_BATCH)
 
 			const finalProgress = updateProgressCaptor.values![updateProgressCaptor.values!.length - 1]
 			const lastMailTotal = importedMails[TOTAL_MAILS - 1]
-			o(finalProgress).equals(elementIdPart(lastMailTotal._id))
+			o.check(finalProgress).equals(elementIdPart(lastMailTotal._id))
 
 			verify(persistence.removeImportQueueEntry(matchers.anything()), { times: 0 })
 			verify(persistence.clearEncryptedMailDetailsBlobs())

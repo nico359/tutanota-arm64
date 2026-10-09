@@ -264,6 +264,14 @@ import "./drive/DriveTransferStackTest.js"
 import "./calendar/CalendarSearchTest.js"
 import "./drive/DriveSearchModelTest.js"
 import "./drive/DriveModelTest.js"
+import "./plugin-kit/sdk/PluginIdTest.js"
+import "./plugin-kit/sdk/PluginApiTest.js"
+import "./plugin-kit/plugin-manager/hostApi/UiHostTest.js"
+import "./plugin-kit/plugin-manager/hostApi/WindowHostTest.js"
+import "./plugin-kit/plugin-manager/hostApi/PluginHostTest.js"
+import "./plugin-kit/plugin-manager/PluginManagerTest.js"
+import "./plugin-kit/plugins/nextcloud/NextcloudPluginTest.js"
+import "./plugin-kit/plugins/nextcloud/NextcloudApiTest.js"
 
 import * as td from "testdouble"
 import { EntropySource } from "../../src/platform-kit/crypto"
@@ -347,6 +355,7 @@ async function setupSuite({ integration }: { integration?: boolean }) {
 		await import("./desktop/integration/DesktopIntegratorTest.js")
 		await import("./desktop/integration/WindowsRegistryFacadeTest.js")
 		await import("./desktop/net/ProtocolProxyTest.js")
+		await import("./desktop/net/NetAgentTest.js")
 		await import("./desktop/sse/DesktopAlarmSchedulerTest.js")
 		await import("./desktop/sse/DesktopAlarmStorageTest.js")
 		await import("./desktop/sse/SecretStorageTest.js")

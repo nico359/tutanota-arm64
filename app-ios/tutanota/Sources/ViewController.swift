@@ -150,6 +150,13 @@ class ViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, UISc
 
 	}
 
+	//Called when the web processes crash
+	func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+		TUTSLog("webView process terminated")
+		// reload on the WKWebView doesn't do anything, because the DOM disappeared when the web proxy process crash.
+		self.loadMainPage(params: [:])
+	}
+
 	var appDelegate: AppDelegate { get { UIApplication.shared.delegate as! AppDelegate } }
 
 	func loadMainPage(params: [String: String]) { DispatchQueue.main.async { self._loadMainPage(params: params) } }
@@ -221,6 +228,7 @@ class ViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, UISc
 			mutableParams["theme"] = encodedTheme
 		}
 		mutableParams["platformId"] = "ios"
+		mutableParams["paymentSetup"] = "appstore"
 		let queryParams = NSURLQueryItem.from(dict: mutableParams)
 		var components = URLComponents.init(url: fileUrl, resolvingAgainstBaseURL: false)!
 		components.queryItems = queryParams
@@ -286,7 +294,7 @@ class ViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, UISc
 			return
 		}
 
-		do { try await self.commonNativeFacade.createMailEditor(info.fileUrls.map { $0.path }, info.text, [], "", "") } catch {
+		do { try await self.commonNativeFacade.createMailEditor(info.fileUrls.map { $0.absoluteString }, info.text, [], "", "") } catch {
 			TUTSLog("failed to open mail editor to share: \(error)")
 			try FileUtils.deleteSharedStorage(subDir: info.identifier)
 		}

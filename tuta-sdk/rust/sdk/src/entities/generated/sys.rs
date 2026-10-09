@@ -237,6 +237,8 @@ pub struct Customer {
 	pub rejectedSenders: Option<RejectedSendersRef>,
 	#[serde(rename = "2061")]
 	pub referralCode: Option<GeneratedId>,
+	#[serde(rename = "2815")]
+	pub plugins: Option<CustomerPlugins>,
 }
 
 impl Entity for Customer {
@@ -435,6 +437,8 @@ pub struct User {
 	pub auth: Option<UserAuthentication>,
 	#[serde(rename = "1552")]
 	pub alarmInfoList: Option<UserAlarmInfoListType>,
+	#[serde(rename = "2811")]
+	pub plugins: Option<UserPlugins>,
 }
 
 impl Entity for User {
@@ -758,6 +762,8 @@ pub struct CustomerInfo {
 	pub partnerManagedCustomers: Option<GeneratedId>,
 	#[serde(rename = "2770")]
 	pub revocationRequest: Option<IdTupleGenerated>,
+	#[serde(rename = "2797")]
+	pub storeNotificationLog: Option<GeneratedId>,
 }
 
 impl Entity for CustomerInfo {
@@ -2026,6 +2032,8 @@ pub struct InvoiceInfo {
 	pub discountPercentage: Option<i64>,
 	#[serde(rename = "1640")]
 	pub paymentErrorInfo: Option<PaymentErrorInfo>,
+	#[serde(rename = "2788")]
+	pub discountEligiblePlans: Vec<PlanTypeWrapper>,
 }
 
 impl Entity for InvoiceInfo {
@@ -3369,6 +3377,8 @@ pub struct PlanPrices {
 	pub planName: String,
 	#[serde(rename = "2129")]
 	pub businessPlan: bool,
+	#[serde(rename = "2789")]
+	pub bonusMonthsForYearlyPlan: i64,
 	#[serde(rename = "2127")]
 	pub planConfiguration: PlanConfiguration,
 }
@@ -6569,6 +6579,95 @@ impl Entity for SubscriptionRevocationServicePostIn {
 		TypeRef {
 			app: AppName::Sys,
 			type_id: TypeId::from(2771),
+		}
+	}
+}
+
+#[derive(uniffi::Record, Clone, Serialize, Deserialize)]
+#[cfg_attr(any(test, feature = "testing"), derive(PartialEq, Debug))]
+pub struct PlanTypeWrapper {
+	#[serde(rename = "2784")]
+	pub _id: Option<CustomId>,
+	#[serde(rename = "2785")]
+	pub plan: i64,
+}
+
+impl Entity for PlanTypeWrapper {
+	fn type_ref() -> TypeRef {
+		TypeRef {
+			app: AppName::Sys,
+			type_id: TypeId::from(2783),
+		}
+	}
+}
+
+#[derive(uniffi::Record, Clone, Serialize, Deserialize)]
+#[cfg_attr(any(test, feature = "testing"), derive(PartialEq, Debug))]
+pub struct PluginConfiguration {
+	#[serde(rename = "2800")]
+	pub _id: Option<IdTupleCustom>,
+	#[serde(rename = "2801")]
+	pub _permissions: GeneratedId,
+	#[serde(rename = "2802")]
+	pub _format: i64,
+	#[serde(rename = "2803")]
+	pub _ownerGroup: Option<GeneratedId>,
+	#[serde(rename = "2804")]
+	#[serde(with = "serde_bytes")]
+	pub _ownerEncSessionKey: Option<Vec<u8>>,
+	#[serde(rename = "2805")]
+	pub _ownerKeyVersion: Option<i64>,
+	#[serde(rename = "2806")]
+	#[serde(with = "serde_bytes")]
+	pub _kdfNonce: Option<Vec<u8>>,
+	#[serde(rename = "2807")]
+	pub configJson: String,
+
+	#[serde(default)]
+	pub _errors: Errors,
+}
+
+impl Entity for PluginConfiguration {
+	fn type_ref() -> TypeRef {
+		TypeRef {
+			app: AppName::Sys,
+			type_id: TypeId::from(2798),
+		}
+	}
+}
+
+#[derive(uniffi::Record, Clone, Serialize, Deserialize)]
+#[cfg_attr(any(test, feature = "testing"), derive(PartialEq, Debug))]
+pub struct UserPlugins {
+	#[serde(rename = "2809")]
+	pub _id: Option<CustomId>,
+	#[serde(rename = "2810")]
+	pub pluginConfigs: GeneratedId,
+}
+
+impl Entity for UserPlugins {
+	fn type_ref() -> TypeRef {
+		TypeRef {
+			app: AppName::Sys,
+			type_id: TypeId::from(2808),
+		}
+	}
+}
+
+#[derive(uniffi::Record, Clone, Serialize, Deserialize)]
+#[cfg_attr(any(test, feature = "testing"), derive(PartialEq, Debug))]
+pub struct CustomerPlugins {
+	#[serde(rename = "2813")]
+	pub _id: Option<CustomId>,
+	#[serde(rename = "2814")]
+	pub pluginConfigs: GeneratedId,
+}
+
+impl Entity for CustomerPlugins {
+	fn type_ref() -> TypeRef {
+		TypeRef {
+			app: AppName::Sys,
+			type_id: TypeId::from(2812),
 		}
 	}
 }

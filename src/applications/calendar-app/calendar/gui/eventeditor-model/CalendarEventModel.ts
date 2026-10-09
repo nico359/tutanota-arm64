@@ -88,7 +88,7 @@ import { RecipientsModel } from "../../../../common/api/main/RecipientsModel.js"
 import { LoginController } from "../../../../common/api/main/LoginController.js"
 import m from "mithril"
 import { getPasswordStrengthForUser } from "../../../../common/misc/passwords/PasswordUtils.js"
-import { CalendarEventWhenModel } from "./CalendarEventWhenModel.js"
+import { CalendarEventWhenModel, CalendarEventWhenModelInvalidReason } from "./CalendarEventWhenModel.js"
 import { CalendarEventWhoModel } from "./CalendarEventWhoModel.js"
 import { CalendarEventAlarmModel } from "./CalendarEventAlarmModel.js"
 import { SanitizedTextViewModel } from "../../../../common/misc/SanitizedTextViewModel.js"
@@ -102,6 +102,7 @@ import { getDefaultSender } from "../../../../common/mailFunctionality/SharedMai
 import { CalendarInviteHandler } from "../../view/CalendarInvites"
 import { NotFoundError, PayloadTooLargeError } from "@tutao/rest-client/error"
 import { clone, IDENTITY_FIELDS, TECHNICAL_FIELDS } from "@tutao/meta"
+import { PluginManager } from "../../../../../plugin-kit/plugin-manager/PluginManager"
 
 /** the type of the event determines which edit operations are available to us. */
 export const enum EventType {
@@ -191,6 +192,7 @@ export async function makeCalendarEventModel(
 	entityClient: EntityClient,
 	responseTo: Mail | null,
 	calendarInviteHandler: CalendarInviteHandler,
+	pluginManager: PluginManager,
 	calendarTimeZone: string = getTimeZone(),
 	showProgress: ShowProgressCallback = identity,
 	uiUpdateCallback: () => void = m.redraw,
@@ -272,7 +274,10 @@ export async function makeCalendarEventModel(
 		createCalendarEvent(initialOrDefaultValues),
 		cleanInitialValues,
 	)
-	return strategy && new CalendarEventModel(strategy, eventType, operation, logins.getUserController(), notificationSender, entityClient, calendarInfos)
+	return (
+		strategy &&
+		new CalendarEventModel(strategy, eventType, operation, logins.getUserController(), notificationSender, entityClient, calendarInfos, pluginManager)
+	)
 }
 
 async function selectStrategy(
@@ -380,6 +385,7 @@ export class CalendarEventModel {
 		private readonly distributor: CalendarNotificationSender,
 		private readonly entityClient: EntityClient,
 		private readonly calendars: ReadonlyMap<Id, CalendarInfo>,
+		public readonly pluginManager: PluginManager,
 	) {
 		this.calendars = calendars
 	}
@@ -496,9 +502,18 @@ export function eventHasChanged(now: CalendarEvent, previous: Partial<CalendarEv
  * @throws UserError
  */
 export function createCalendarEventFromEditResult(models: CalendarEventEditModels, identity: Require<"uid", Partial<CalendarEventIdentity>>) {
-	if (!models.whenModel.hasValidStartBeforeEnd()) {
-		throw new UserError("fromAfterToError_msg")
+	switch (models.whenModel.getInvalidReason()) {
+		case null:
+			// Valid: do nothing
+			break
+		case CalendarEventWhenModelInvalidReason.InvalidEndBeforeStart:
+			throw new UserError("fromAfterToError_msg")
+		case CalendarEventWhenModelInvalidReason.TimesInHourSkippedWhenChangingToDST:
+			throw new UserError("timesInHourSkippedWhenChangingToDSTError_msg")
+		default:
+			throw new ProgrammingError(`Unexpected reason for CalendarEventWhenModel being invalid. Enum value = ${models.whenModel.getInvalidReason()}`)
 	}
+
 	const whenResult = models.whenModel.result
 	const whoResult = models.whoModel.result
 	const summary = models.summary.content

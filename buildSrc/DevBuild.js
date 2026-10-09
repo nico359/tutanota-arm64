@@ -84,6 +84,7 @@ export async function runDevBuild({ stage, host, desktop, clean, networkDebuggin
 				firstPartyDomain: true,
 				partneredDomainTransitionUrl: uri,
 				apiUrl: uri,
+				websocketUrl: uri.replace(/^http/, "ws"), // replaces http: with ws: and https: with wss:
 				paymentUrl: `${uri}/braintree.html`,
 				webauthnUrl: `${uri}/webauthn`,
 				legacyWebauthnUrl: `${uri}/webauthn`,
@@ -101,6 +102,8 @@ export async function runDevBuild({ stage, host, desktop, clean, networkDebuggin
 	const extendedDomainConfigs = updateDomainConfigForHostname(host)
 
 	await buildWebPart({ stage, host, version, domainConfigs: extendedDomainConfigs, networkDebugging, app })
+
+	await buildPlugins(buildDir)
 
 	if (desktop) {
 		await buildDesktopPart({ version, networkDebugging, app })
@@ -131,7 +134,11 @@ export async function buildWebPart({ stage, host, version, domainConfigs, networ
 		await buildArgon2(resolvedBuildDir)
 		await buildLibOqs(resolvedBuildDir)
 		const bundle = await rolldown({
-			input: { app: entry, worker, "pow-worker": "src/applications/common/api/common/pow-worker.ts" },
+			input: {
+				app: entry,
+				worker,
+				"pow-worker": "src/applications/common/api/common/pow-worker.ts",
+			},
 			transform: {
 				define: {
 					// Need it at least until inlining enums is supported
@@ -163,6 +170,21 @@ export async function buildWebPart({ stage, host, version, domainConfigs, networ
 	import "./worker.js"
 	`,
 		)
+	})
+}
+
+export async function buildPlugins(buildDir) {
+	const bundle = await rolldown({
+		input: { nextcloud: "src/plugin-kit/plugins/nextcloud/NextcloudPlugin.js" },
+	})
+	await bundle.write({
+		dir: `./${buildDir}/plugin-kit/plugins/`,
+		format: "esm",
+		// Setting source map to inline for web part because source maps won't be loaded correctly on mobile because requests from dev tools are not
+		// intercepted, so we can't serve the files.
+		sourcemap: "inline",
+		// overwrite the files rather than keeping all versions in the build folder
+		chunkFileNames: "[name].js",
 	})
 }
 
@@ -206,7 +228,16 @@ async function buildDesktopPart({ version, networkDebugging }) {
 							targetName: "simple-windows-notifications",
 						})
 					: undefined,
-				preludeEnvPlugin(env.create({ staticUrl: null, version, mode: "Desktop", dist: false, domainConfigs, networkDebugging })),
+				preludeEnvPlugin(
+					env.create({
+						staticUrl: null,
+						version,
+						mode: "Desktop",
+						dist: false,
+						domainConfigs,
+						networkDebugging,
+					}),
+				),
 			],
 		})
 
@@ -274,6 +305,10 @@ if (env.staticUrl == null && window.tutaoDefaultApiUrl) {
     // overriden by js dev server
     window.env.staticUrl = window.tutaoDefaultApiUrl
 }
+if (document.getElementById("nextcloud-tutamail")) {
+    // present only when this page is served embedded in the Nextcloud tutamail app
+    window.env.integrationPlatform = "Nextcloud"
+}
 import('./app.js')`
 	await writeFile(`./${buildDir}/${jsFileName}`, template)
 	const html = await LaunchHtml.renderHtml(imports, env)
@@ -294,7 +329,7 @@ function getStaticUrl(stage, mode, host) {
 	} else if (stage === "local") {
 		return "http://" + os.hostname() + ":9000"
 	} else {
-		// host
+		// plugin-manager
 		return host
 	}
 }
@@ -325,7 +360,18 @@ export async function prepareAssets(stage, host, version, domainConfigs, buildDi
 	/** @type {EnvMode[]} */
 	const modes = ["Browser", "App", "Desktop"]
 	for (const mode of modes) {
-		await createBootstrap(env.create({ staticUrl: getStaticUrl(stage, mode, host), version, mode, dist: false, domainConfigs, networkDebugging }), buildDir)
+		await createBootstrap(
+			env.create({
+				staticUrl: getStaticUrl(stage, mode, host),
+				version,
+				mode,
+				dist: false,
+				domainConfigs,
+				networkDebugging,
+				integrationPlatform: null,
+			}),
+			buildDir,
+		)
 	}
 }
 

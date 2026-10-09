@@ -58,13 +58,26 @@ export const allowedImports = {
 	boot: ["polyfill-helpers", "common-min", "common"],
 	common: ["polyfill-helpers", "common-min"],
 	"gui-base": ["polyfill-helpers", "common-min", "common", "boot"],
-	main: ["polyfill-helpers", "common-min", "common", "boot", "gui-base", "date", "qr"],
+	main: ["polyfill-helpers", "common-min", "common", "boot", "gui-base", "date", "qr", "plugin-sdk", "plugin-manager"],
 	sanitizer: ["polyfill-helpers", "common-min", "common", "boot", "gui-base"],
 	date: ["polyfill-helpers", "common-min", "common"],
-	"date-gui": ["polyfill-helpers", "common-min", "common", "boot", "gui-base", "main", "sharing", "date", "contacts", "ui-extra", "calendar-importer"],
+	"date-gui": [
+		"polyfill-helpers",
+		"common-min",
+		"common",
+		"boot",
+		"gui-base",
+		"main",
+		"sharing",
+		"date",
+		"contacts",
+		"ui-extra",
+		"calendar-importer",
+		"plugin-sdk",
+	],
 	"calendar-importer": ["polyfill-helpers", "common-min", "common", "boot", "date", "date-gui"],
-	"mail-view": ["polyfill-helpers", "common-min", "common", "boot", "gui-base", "main", "ui-extra"],
-	"mail-editor": ["polyfill-helpers", "common-min", "common", "boot", "gui-base", "main", "mail-view", "sanitizer", "sharing", "date", "date-gui"],
+	"mail-view": ["polyfill-helpers", "common-min", "common", "boot", "gui-base", "main", "ui-extra", "plugin-sdk"],
+	"mail-editor": ["polyfill-helpers", "common-min", "common", "boot", "gui-base", "main", "mail-view", "sanitizer", "sharing"],
 	search: [
 		"polyfill-helpers",
 		"common-min",
@@ -104,6 +117,8 @@ export const allowedImports = {
 		"login",
 		"sharing",
 		"qr",
+		"plugin-sdk",
+		"plugin-manager",
 	],
 	"mail-settings": [
 		"polyfill-helpers",
@@ -198,7 +213,9 @@ export const allowedImports = {
 	"openid-client": [],
 	pdf: ["common-min", "qr"],
 	"material-color-utilities": [],
-	drive: ["common-min", "common", "boot", "gui-base", "main"],
+	drive: ["common-min", "common", "boot", "gui-base", "main", "plugin-manager"],
+	"plugin-manager": ["common-min", "plugin-sdk", "common"],
+	"plugin-sdk": ["common-min", "common"],
 }
 
 /** resolves certain imports to vendored libraries for the dist build */
@@ -434,7 +451,6 @@ export function getChunkName(moduleId, { getModuleInfo }) {
 		return "common-min"
 	} else if (
 		isIn("src/platform-kit/meta") ||
-		isIn("src/platform-kit/rest-client/error.ts") ||
 		isIn("src/platform-kit/instance-pipeline/utils") ||
 		isIn("src/ui/utils") ||
 		isIn("src/platform-kit/base/base-crypto/Constants.ts") ||
@@ -485,6 +501,14 @@ export function getChunkName(moduleId, { getModuleInfo }) {
 		return "calendar-importer"
 	} else if (isIn("src/applications/common/calendar/")) {
 		return "common"
+	} else if (isIn("src/plugin-kit/sdk")) {
+		return `plugin-sdk`
+	} else if (isIn("src/plugin-kit/plugin-manager")) {
+		return "plugin-manager"
+	} else if (isIn("src/platform-kit/http-client/error.ts")) {
+		return "common-min"
+	} else if (isIn("src/platform-kit/http-client")) {
+		return "common"
 	} else {
 		// Put all translations into "translation-code"
 		// Almost like in Rollup example: https://rollupjs.org/guide/en/#outputmanualchunks
@@ -493,7 +517,7 @@ export function getChunkName(moduleId, { getModuleInfo }) {
 		if (match) {
 			const language = match[1]
 			return "translation-" + language
-		} else if (isIn(`src/applications/mail-app`) || isIn(`src/applications/calendar-app`)) {
+		} else if (isIn(`src/applications/mail-app`) || isIn(`src/applications/calendar-app`) || isIn("src/applications/common/plugin")) {
 			return "main"
 		} else {
 			throw new Error("I do not know which chunk? for: " + moduleId)

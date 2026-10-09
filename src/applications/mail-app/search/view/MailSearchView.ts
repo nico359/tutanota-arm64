@@ -30,7 +30,7 @@ import { IconButton } from "../../../../ui/base/IconButton"
 import { Icons } from "../../../../ui/base/icons/Icons"
 import { MAIL_PREFIX, throttleRoute } from "../../../../ui/utils/RouteChange"
 import { ProgressBar } from "../../../../ui/base/ProgressBar"
-import { keyManager, Shortcut } from "../../../../ui/utils/KeyManager"
+import { KeyManager, Shortcut } from "../../../../ui/utils/KeyManager"
 import { elementIdToId, getElementId, getIds, isSameId } from "@tutao/meta"
 import { Mail } from "@tutao/entities/tutanota"
 import { SearchCategoryType } from "../../../common/api/worker/search/SearchTypes"
@@ -93,7 +93,6 @@ import { AppPromo } from "../../../common/gui/AppPromo"
 import { SearchViewSearchBar } from "../../../common/search/SearchViewSearchBar"
 import { PaidFunctionResult } from "../../../common/search/SearchUtils"
 import { Styles } from "../../../../ui/styles"
-import { Keys } from "../../../../ui/utils/KeyboardKeys"
 import { ClientDetector } from "../../../../platform-kit/app-env/boot/ClientDetector"
 import { showEditFolderDialog } from "../../mail/view/EditFolderDialog"
 
@@ -142,8 +141,11 @@ export class MailSearchView extends BaseTopLevelView implements TopLevelView<Mai
 			ColumnType.Foreground,
 			{
 				minWidth: layout_size.first_col_min_width,
-				maxWidth: layout_size.first_col_max_width,
+				maxWidth: deviceConfig.getFolderListSize(this.searchViewModel.getUserId()) ?? layout_size.first_col_max_width,
 				headerCenter: "search_label",
+				resizeCallback: (size) => {
+					deviceConfig.setFolderListSize(this.searchViewModel.getUserId(), size)
+				},
 			},
 		)
 		this.resultListColumn = new ViewColumn(
@@ -227,6 +229,7 @@ export class MailSearchView extends BaseTopLevelView implements TopLevelView<Mai
 	private getMainButton(): {
 		label: TranslationKey
 		click: ClickHandler
+		icon: Icons
 	} | null {
 		if (Styles.get().isUsingBottomNavigation()) {
 			return null
@@ -239,6 +242,7 @@ export class MailSearchView extends BaseTopLevelView implements TopLevelView<Mai
 							.catch(ofClass(PermissionError, noOp))
 					},
 					label: "newMail_action",
+					icon: Icons.Write,
 				}
 			} else return null
 		}
@@ -425,11 +429,21 @@ export class MailSearchView extends BaseTopLevelView implements TopLevelView<Mai
 			placeholder: lang.get("searchEmails_placeholder"),
 			text: this.searchViewModel.getCurrentQuery(),
 			busy: this.searchViewModel.busy,
-			onInput: (text: string) => {
-				this.searchViewModel.onSearchQueryUpdated(text)
-			},
+			onInput: (text: string) => this.search(text),
 			onClear: () => this.searchViewModel.onSearchQueryUpdated(""),
 		})
+	}
+
+	private async search(query: string) {
+		const needsToEnableSearch = !(await mailLocator.mailSearchModel()).indexState().mailIndexEnabled
+		if (needsToEnableSearch) {
+			const confirmed = await Dialog.confirm("enableSearchMailbox_msg", "search_label")
+			if (!confirmed) {
+				return
+			}
+			void mailLocator.indexerFacade.enableMailIndexing()
+		}
+		this.searchViewModel.onSearchQueryUpdated(query)
 	}
 
 	protected async onNewUrl(args: Record<string, any>, requestedPath: string) {
@@ -566,12 +580,17 @@ export class MailSearchView extends BaseTopLevelView implements TopLevelView<Mai
 
 	oncreate() {
 		this.searchViewModel.init()
-		keyManager.registerShortcuts(this.shortcuts())
+		KeyManager.get().registerShortcuts(this.shortcuts())
 	}
 	onremove() {
 		this.searchViewModel.dispose()
-		keyManager.unregisterShortcuts(this.shortcuts())
+		KeyManager.get().unregisterShortcuts(this.shortcuts())
 	}
+
+	getViewSlider(): ViewSlider | null {
+		return this.viewSlider
+	}
+
 	private renderDetailsView(header: AppHeaderAttrs): Children {
 		const selectedMails = this.searchViewModel.getSelectedMails()
 

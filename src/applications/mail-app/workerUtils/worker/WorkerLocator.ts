@@ -205,6 +205,7 @@ export async function initLocator(worker: WorkerImpl, browserData: BrowserData, 
 				mainInterface.infoMessageHandler,
 				newMailDownloader,
 				locator.base.instancePipeline,
+				locator.cacheStorage,
 			)
 		} else {
 			const dateProvider = new LocalTimeDateProvider()
@@ -479,6 +480,7 @@ export async function initLocator(worker: WorkerImpl, browserData: BrowserData, 
 			locator.base.blobAccessToken,
 			mainInterface.uploadProgressListener,
 			locator.base.typeModelResolver,
+			locator.base.serviceExecutor,
 		)
 	})
 

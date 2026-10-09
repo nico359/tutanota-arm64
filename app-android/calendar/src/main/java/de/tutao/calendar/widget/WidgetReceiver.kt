@@ -1,6 +1,8 @@
 package de.tutao.calendar.widget
 
+import android.appwidget.AppWidgetManager
 import android.content.Context
+import android.util.Log
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.preferencesDataStore
@@ -11,6 +13,8 @@ import androidx.work.ExistingPeriodicWorkPolicy
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import de.tutao.calendar.widget.data.WidgetDataRepository
+import de.tutao.calendar.widget.model.WidgetUIViewModel
+import de.tutao.calendar.widget.workers.WidgetPeriodicRefresherWorker
 import java.time.Duration
 import java.util.concurrent.TimeUnit
 
@@ -26,15 +30,19 @@ val Context.widgetCacheDataStore: DataStore<Preferences> by preferencesDataStore
 val Context.widgetDataRepository: WidgetDataRepository
 	get() = WidgetDataRepository.getInstance()
 
+private val widgetUiViewModel = mutableMapOf<Int, WidgetUIViewModel>()
+val Context.widgetIdToViewModel: MutableMap<Int, WidgetUIViewModel>
+	get() = widgetUiViewModel
+
 enum class WidgetUpdateTrigger {
 	WORKER,
-	APP
+	APP,
+	SETTINGS
 }
 
 class WidgetReceiver : GlanceAppWidgetReceiver() {
 	companion object {
-		const val WIDGET_WORKER_TAG = "agenda_widget_worker"
-		const val TAG = "WidgetReceiver"
+		private const val TAG = "WidgetReceiver"
 	}
 
 	override val glanceAppWidget: GlanceAppWidget = Agenda()
@@ -42,18 +50,41 @@ class WidgetReceiver : GlanceAppWidgetReceiver() {
 	override fun onEnabled(context: Context) {
 		super.onEnabled(context)
 
+		Log.d(TAG, "onEnabled called")
+
 		WorkManager.getInstance(context).enqueueUniquePeriodicWork(
-			WIDGET_WORKER_TAG,
+			WidgetPeriodicRefresherWorker.TAG,
 			ExistingPeriodicWorkPolicy.UPDATE,
-			PeriodicWorkRequestBuilder<WidgetWorkManager>(30, TimeUnit.MINUTES)
-				.addTag(WIDGET_WORKER_TAG).setInitialDelay(Duration.ofMinutes(1))
+			PeriodicWorkRequestBuilder<WidgetPeriodicRefresherWorker>(30, TimeUnit.MINUTES)
+				.addTag(WidgetPeriodicRefresherWorker.TAG).setInitialDelay(Duration.ofMinutes(1))
 				.build()
 		)
 	}
 
+	override fun onUpdate(context: Context, appWidgetManager: AppWidgetManager, appWidgetIds: IntArray) {
+
+		super.onUpdate(context, appWidgetManager, appWidgetIds)
+
+		Log.d(
+			TAG, "[App widget ids full array] ${appWidgetIds.contentToString()}"
+		)
+
+		appWidgetIds.forEach { appWidgetId ->
+			context.widgetIdToViewModel.getOrPut(appWidgetId) { WidgetUIViewModel.init(context, appWidgetId) }
+		}
+	}
+
 	override fun onDisabled(context: Context) {
 		super.onDisabled(context)
-		WorkManager.getInstance(context).cancelAllWorkByTag(WIDGET_WORKER_TAG)
+		WorkManager.getInstance(context).cancelAllWorkByTag(WidgetPeriodicRefresherWorker.TAG)
 		context.preferencesDataStoreFile(WIDGET_SETTINGS_DATASTORE_FILE).delete()
+		context.preferencesDataStoreFile(WIDGET_CACHE_DATASTORE_FILE).delete()
+	}
+
+	override fun onDeleted(context: Context, appWidgetIds: IntArray) {
+		super.onDeleted(context, appWidgetIds)
+		appWidgetIds.forEach { appWidgetId ->
+			WorkManager.getInstance(context).cancelUniqueWork("${LOAD_EVENTS_AFTER_CONFIG_WORK}_$appWidgetId")
+		}
 	}
 }

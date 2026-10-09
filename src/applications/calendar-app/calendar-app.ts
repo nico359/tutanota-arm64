@@ -42,6 +42,7 @@ import { RevocationView, RevocationViewAttrs } from "../common/revocation/Revoca
 import { RevocationViewModel } from "../common/revocation/RevocationViewModel"
 import { CalendarSearchView, CalendarSearchViewAttrs } from "./calendar/search/view/CalendarSearchView"
 import { CalendarSearchViewModel } from "./calendar/search/view/CalendarSearchViewModel"
+import { KeyManager } from "../../ui/utils/KeyManager"
 
 EnvProvider.assertMainOrNodeBoot()
 EnvProvider.bootFinished()
@@ -157,7 +158,8 @@ import("../../ui/translations/en.js")
 			})
 		}
 
-		Styles.get().init(calendarLocator.themeController)
+		Styles.get().init(calendarLocator.themeController, null)
+		KeyManager.get().initializeKeydownEventListener(null)
 
 		const { makeSignupViewResolver } = await import("../common/signup/SignupViewResolver.js")
 		const paths = applicationPaths({

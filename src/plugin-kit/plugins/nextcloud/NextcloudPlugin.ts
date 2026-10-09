@@ -1,0 +1,169 @@
+import { PluginApi } from "../../sdk/PluginApi"
+import { ButtonConfiguration, ConfigFieldConfiguration, ExtensionPoint, PluginHostApi } from "../../sdk/hostApi/PluginHostApi"
+import { AttachmentButtonExtension, PluginDataFile } from "../../sdk/AttachmentButtonExtensionPoint"
+import { EventLocationButtonExtension } from "../../sdk/EventLocationButtonExtensionPoint"
+import { assertNotNull, isNotNull, Nullable } from "../../../platform-kit/utils"
+import { isNull } from "../../../platform-kit/utils/Utils"
+import { FileImportExtension, PluginFileReference } from "../../sdk/FileImportExtensionPoint"
+import { initTutaPluginWorker, PluginFactory } from "../../sdk/PluginLoader"
+import { NextcloudApi } from "./NextcloudApi"
+import { PluginId } from "../../sdk/PluginId"
+import { CustomerConfigPluginError } from "../../sdk/PluginError"
+import { PluginManifest } from "../../sdk/PluginManifest"
+
+type UserPluginConfig = {
+	credentials: Nullable<NextcloudCredentials>
+}
+
+type CustomerPluginConfig = {
+	nextCloudUrl: string
+	targetAttachmentFolder: string
+}
+
+type NextcloudCredentials = {
+	appPassword: string
+	loginName: string
+	server: string
+}
+
+export class NextcloudPlugin extends PluginApi implements AttachmentButtonExtension, EventLocationButtonExtension, FileImportExtension {
+	public static readonly PLUGIN_ID: PluginId = "nextcloud"
+	private userConfig: UserPluginConfig = null!
+	private customerConfig: CustomerPluginConfig = null!
+	private nextcloudApi: NextcloudApi = null!
+	private manifest: PluginManifest = null!
+
+	constructor(pluginHost: PluginHostApi) {
+		super(pluginHost)
+	}
+
+	override async load(manifest: PluginManifest): Promise<void> {
+		this.manifest = manifest
+		await this.applyConfigExtensionPoints()
+		await this.loadCustomerConfig()
+		await this.loadUserConfig()
+		await this.applyAppExtensionPoints()
+		if (isNotNull(this.customerConfig)) {
+			await this.initializeNextcloudApi()
+		}
+	}
+
+	private async initializeNextcloudApi(): Promise<void> {
+		const currentHost = await this.pluginHost.getHost()
+		const customerConfig = assertNotNull(this.customerConfig, "No customerConfig to get nextCloud url from")
+		this.nextcloudApi = new NextcloudApi(customerConfig.nextCloudUrl, this.pluginHost, currentHost, this)
+		if (isNotNull(this.userConfig) && isNotNull(this.userConfig.credentials)) {
+			this.nextcloudApi.setNextcloudCredentials(this.userConfig.credentials)
+		}
+	}
+
+	public async credentialsUpdated(updatedCredentials: NextcloudCredentials) {
+		this.userConfig.credentials = updatedCredentials
+		await this.updateUserConfig()
+	}
+
+	public async applyConfigExtensionPoints() {
+		const configFieldConfig: ConfigFieldConfiguration = {
+			extensionPoint: ExtensionPoint.ConfigField,
+			configFieldId: "nextCloudUrl",
+			text: { en: "Nextcloud instance URL", de: "URL der Nextcloud Instanz" },
+			defaultValue: "",
+		}
+
+		const defaultFolderConfig: ConfigFieldConfiguration = {
+			configFieldId: "targetAttachmentFolder",
+			extensionPoint: ExtensionPoint.ConfigField,
+			text: { en: "Folder name for attachments", de: "Ordnername für Anhänge" },
+			defaultValue: "TutaAttachments",
+		}
+		await this.pluginHost.registerConfigFields([configFieldConfig, defaultFolderConfig])
+	}
+
+	private async applyAppExtensionPoints() {
+		let saveAttachmentBtnConfig: ButtonConfiguration = {
+			extensionPoint: ExtensionPoint.SaveAttachmentDialog,
+			text: {
+				en: "Save to Nextcloud",
+				de: "In Nextcloud speichern",
+			},
+		}
+		await this.pluginHost.registerButton(saveAttachmentBtnConfig)
+
+		let eventLocationBtnConfig: ButtonConfiguration = {
+			extensionPoint: ExtensionPoint.EventLocationButton,
+			text: { en: "Generate Nextcloud Talk meeting", de: "Nextcloud Talk Meeting anlegen" },
+		}
+		await this.pluginHost.registerButton(eventLocationBtnConfig)
+	}
+
+	override async unload(): Promise<void> {}
+
+	async attachmentButtonClicked(dataFile: PluginDataFile): Promise<void> {
+		const targetFolder = this.customerConfig.targetAttachmentFolder
+
+		const { filesUiUrl } = await this.nextcloudApi.uploadFile(dataFile, targetFolder)
+		await this.pluginHost.openWindow(filesUiUrl)
+	}
+
+	async receiveFileReference(fileReference: PluginFileReference): Promise<void> {
+		const downloadedFile = await this.nextcloudApi.downloadFile(fileReference)
+		await this.pluginHost.openMailEditor(downloadedFile)
+	}
+
+	async eventLocationButtonClicked(roomName: string): Promise<string> {
+		const { joinUrl } = await this.nextcloudApi.createTalkRoom(roomName)
+
+		return joinUrl
+	}
+
+	private async loadUserConfig() {
+		const configString = await this.pluginHost.getUserConfig()
+		this.userConfig = isNotNull(configString) ? JSON.parse(configString) : { credentials: null }
+	}
+
+	private async loadCustomerConfig(): Promise<void> {
+		const configString = await this.pluginHost.getCustomerConfig()
+		this.customerConfig = isNotNull(configString) ? JSON.parse(configString) : null
+	}
+
+	private async updateUserConfig(): Promise<void> {
+		await this.pluginHost.storeUserConfig(JSON.stringify(this.userConfig))
+	}
+
+	override async onCustomerConfigChange(): Promise<void> {
+		await this.loadCustomerConfig()
+		if (isNull(this.nextcloudApi)) {
+			await this.initializeNextcloudApi()
+		}
+		this.nextcloudApi.setNextcloudUrl(this.customerConfig.nextCloudUrl)
+	}
+
+	override async verifyCustomerConfiguration(newCustomerConfig: string): Promise<void> {
+		const customerConfig: CustomerPluginConfig = JSON.parse(newCustomerConfig)
+
+		const newUrl = customerConfig.nextCloudUrl
+		const installedVersion = await NextcloudApi.getInstalledVersion(newUrl)
+		if (installedVersion.major > this.manifest.version.major) {
+			throw new CustomerConfigPluginError(
+				`Tuta plugin installed in Nextcloud is too old. Try updating tuta app in nexcloud to version: ${this.manifest.version.major}`,
+			)
+		}
+		if (newUrl.endsWith("/")) {
+			throw new CustomerConfigPluginError("URL should not end in a trailing slash.")
+		}
+
+		if (isNull(customerConfig.targetAttachmentFolder) || customerConfig.targetAttachmentFolder.trim().length === 0) {
+			throw new CustomerConfigPluginError(`Need a non-empty folder name`)
+		}
+	}
+
+	override async onUserConfigChange(): Promise<void> {
+		await this.loadUserConfig()
+		if (isNotNull(this.userConfig.credentials)) {
+			this.nextcloudApi.setNextcloudCredentials(this.userConfig.credentials)
+		}
+	}
+}
+
+const pluginFactory: PluginFactory = (factoryParams) => new NextcloudPlugin(factoryParams.pluginHost)
+initTutaPluginWorker(NextcloudPlugin.PLUGIN_ID, pluginFactory)

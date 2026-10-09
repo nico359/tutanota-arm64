@@ -2,6 +2,7 @@ import m, { Children, Vnode, VnodeDOM } from "mithril"
 import stream from "mithril/stream"
 import { SettingsFolder } from "../../common/settings/SettingsFolder.js"
 import { GlobalSettingsViewer } from "./GlobalSettingsViewer"
+import { PluginsSettingsViewer } from "../../common/settings/plugins/PluginsSettingsViewer"
 import { DesktopSettingsViewer } from "./DesktopSettingsViewer"
 import { MailSettingsViewer } from "./MailSettingsViewer"
 import { UserListView } from "../../common/settings/UserListView.js"
@@ -49,7 +50,7 @@ import { AppearanceSettingsViewer } from "../../common/settings/AppearanceSettin
 import { createMoreActionButtonAttrs, getConfirmation } from "../../../ui/base/GuiUtils"
 import { Icons } from "../../../ui/base/icons/Icons.js"
 import { IconButton } from "../../../ui/base/IconButton"
-import { CancelledError, EnvProvider, FeatureType } from "@tutao/app-env"
+import { CancelledError, EnvProvider, FeatureType, PaymentSetup } from "@tutao/app-env"
 import { BaseTopLevelView } from "../../../ui/BaseTopLevelView"
 import { TopLevelView } from "../../../ui/base/TopLevelView"
 import { ViewSlider } from "../../../ui/nav/ViewSlider"
@@ -469,6 +470,16 @@ export class SettingsView extends BaseTopLevelView implements TopLevelView<Setti
 				),
 			)
 
+			adminFolders.push(
+				new SettingsFolder(
+					() => "plugins_label",
+					() => Icons.GridFilled,
+					"plugins",
+					() => new PluginsSettingsViewer(),
+					undefined,
+				),
+			)
+
 			if (!this.logins.isEnabled(FeatureType.WhitelabelChild) && !shouldHideBusinessPlans()) {
 				adminFolders.push(
 					new SettingsFolder(
@@ -489,7 +500,8 @@ export class SettingsView extends BaseTopLevelView implements TopLevelView<Setti
 						() => "adminSubscription_action",
 						() => Icons.TrophyFilled,
 						"subscription",
-						() => new SubscriptionSettingsViewer(EnvProvider.get().isIOSApp() ? locator.mobilePaymentsFacade : null),
+						() =>
+							new SubscriptionSettingsViewer(EnvProvider.get().getPaymentSetup() !== PaymentSetup.Default ? locator.mobilePaymentsFacade : null),
 						undefined,
 					),
 				)

@@ -57,6 +57,7 @@ import de.tutao.calendar.widget.WidgetRefresher
 import de.tutao.tutashared.ActivityResult
 import de.tutao.tutashared.ActivityUtils
 import de.tutao.tutashared.AndroidCalendarFacade
+import de.tutao.tutashared.AndroidMobilePaymentsFacade
 import de.tutao.tutashared.AndroidMobileSystemFacade
 import de.tutao.tutashared.AndroidNativeCryptoFacade
 import de.tutao.tutashared.AppType
@@ -122,12 +123,15 @@ class MainActivity : FragmentActivity(), ActivityUtils {
 	private lateinit var commonNativeFacade: CommonNativeFacade
 	private lateinit var commonSystemFacade: AndroidCommonSystemFacade
 	private lateinit var sqlCipherFacade: SqlCipherFacade
+	private lateinit var paymentsFacade: AndroidMobilePaymentsFacade
 
 	private val permissionsRequests: MutableMap<Int, Continuation<Unit>> = ConcurrentHashMap()
 	private val activityRequests: MutableMap<Int, Continuation<ActivityResult>> = ConcurrentHashMap()
 
 	private var firstLoaded = false
 	private var webauthnResultHandler: WebauthnHandler? = null
+
+	private var widgetRefresher: WidgetRefresher = WidgetRefresher()
 
 	@SuppressLint("SetJavaScriptEnabled", "StaticFieldLeak")
 	override fun onCreate(savedInstanceState: Bundle?) {
@@ -201,12 +205,15 @@ class MainActivity : FragmentActivity(), ActivityUtils {
 
 		val webauthnFacade = AndroidWebauthnFacade(this, ipcJson)
 
+		paymentsFacade = AndroidMobilePaymentsFacade(this, AppType.CALENDAR)
+
 		val globalDispatcher = AndroidGlobalDispatcher(
 			ipcJson,
 			commonSystemFacade,
 			calendarFacade,
 			fileFacade,
 			AndroidMobileContactsFacade(this),
+			paymentsFacade,
 			AndroidMobileSystemFacade(
 				fileFacade,
 				this,
@@ -214,7 +221,7 @@ class MainActivity : FragmentActivity(), ActivityUtils {
 				db,
 				BuildConfig.FILE_PROVIDER_AUTHORITY,
 				AppType.CALENDAR,
-				WidgetRefresher(),
+				widgetRefresher,
 				tempDir
 			),
 			CredentialsEncryptionFactory.create(this, cryptoFacade, db),
@@ -396,7 +403,6 @@ class MainActivity : FragmentActivity(), ActivityUtils {
 				queryParameters["noAutoLogin"] = "true"
 			}
 
-
 			// Start observing SSE users in the background.
 			// If there are no users we need to tell web part to invalidate alarms.
 			launch {
@@ -497,7 +503,13 @@ class MainActivity : FragmentActivity(), ActivityUtils {
 
 	override fun onStop() {
 		Log.d(TAG, "onStop")
-		lifecycleScope.launch { mobileFacade.visibilityChange(false) }
+		lifecycleScope.launch {
+			mobileFacade.visibilityChange(false)
+			widgetRefresher.refresh(
+				applicationContext
+			)
+		}
+
 		super.onStop()
 	}
 
@@ -598,6 +610,9 @@ class MainActivity : FragmentActivity(), ActivityUtils {
 			parameters["theme"] = JSONObject.wrap(theme)!!.toString()
 		}
 		parameters["platformId"] = "android"
+		if (paymentsFacade.hasPlaystorePayment()) {
+			parameters["paymentSetup"] = "playstore"
+		}
 		val queryBuilder = StringBuilder()
 		for ((key, value) in parameters) {
 			try {

@@ -41,6 +41,16 @@ android {
 		buildConfig = true
 	}
 
+	flavorDimensions.add("releaseType")
+	productFlavors {
+		create("tutao") {
+			dimension = "releaseType"
+		}
+		create("fdroid") {
+			dimension = "releaseType"
+		}
+	}
+
 	buildTypes {
 		debug {
 			generatePackageName("de.tutao.tutashared.debug")
@@ -82,8 +92,8 @@ kotlin {
 }
 
 val tutanota3Root = layout.projectDirectory
-	.dir("..") // tutanota/tutashared
-	.dir("..") // tutanota
+	.dir("..") // tutashared/tutashared
+	.dir("..") // tutashared
 val ftsCreatePath = tutanota3Root.dir("libs").dir("Signal-FTS5-Extension")
 
 fun getActiveBuildType(): String {
@@ -121,7 +131,12 @@ cargo {
 
 tasks.whenTaskAdded {
 	when (name) {
-		"mergeDebugJniLibFolders", "mergeReleaseJniLibFolders", "mergeReleaseTestJniLibFolders" -> {
+		"mergeFdroidDebugJniLibFolders",
+		"mergeFdroidReleaseJniLibFolders",
+		"mergeFdroidReleaseTestJniLibFolders",
+		"mergeTutaoDebugJniLibFolders",
+		"mergeTutaoReleaseJniLibFolders",
+		"mergeTutaoReleaseTestJniLibFolders" -> {
 			dependsOn("cargoBuild")
 			mustRunAfter("cargoBuild")
 		}
@@ -129,7 +144,7 @@ tasks.whenTaskAdded {
 }
 
 tasks.register("itest") {
-	dependsOn("testDeviceDebugAndroidTest")
+	dependsOn("testDeviceFdroidDebugAndroidTest")
 }
 
 dependencies {
@@ -141,6 +156,9 @@ dependencies {
 	implementation(libs.androidx.browser)
 	implementation(libs.androidx.biometric)
 	implementation(libs.androidx.datastore.preferences)
+
+	// tutaoImplementation means that this dependency will not be present for the f-droid builds
+	add("tutaoImplementation", libs.billing)
 
 	implementation(libs.androidx.room.ktx)
 	// For Kotlin use kapt instead of annotationProcessor

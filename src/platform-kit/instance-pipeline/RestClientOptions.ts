@@ -15,12 +15,12 @@ export const DEFAULT_ENTITY_RESTCLIENT_SETUP_OPTIONS: EntityRestClientSetupOptio
 
 export interface EntityRestClientUpdateOptions {
 	baseUrl: Nullable<string>
-	/** Use this key to encrypt session key instead of trying to resolve the owner key based on the ownerGroup. */
-	ownerKey: Nullable<VersionedKey>
+	/** Use the key provided by this to decrypt the existing ownerEncSessionKey instead of trying to resolve the owner key based on the ownerGroup. */
+	ownerKeyProvider: Nullable<OwnerKeyProvider>
 }
 export const DEFAULT_ENTITY_RESTCLIENT_UPDATE_OPTIONS: EntityRestClientUpdateOptions = {
 	baseUrl: null,
-	ownerKey: null,
+	ownerKeyProvider: null,
 }
 
 export interface EntityRestClientEraseOptions {
@@ -84,7 +84,8 @@ export interface EntityRestClientLoadOptions {
 export const DEFAULT_REST_CLIENT_OPTIONS: RestClientOptions = {
 	body: null,
 	responseType: null,
-	progressListener: null,
+	uploadProgressListener: null,
+	downloadProgressListener: null,
 	baseUrl: null,
 	headers: null,
 	queryParams: null,

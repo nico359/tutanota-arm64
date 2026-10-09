@@ -30,7 +30,7 @@ import { BaseMobileHeader } from "../../../../ui/BaseMobileHeader"
 import { IconButton } from "../../../../ui/base/IconButton"
 import { MAIL_PREFIX, throttleRoute } from "../../../../ui/utils/RouteChange"
 import { ProgressBar } from "../../../../ui/base/ProgressBar"
-import { keyManager, Shortcut } from "../../../../ui/utils/KeyManager"
+import { KeyManager, Shortcut } from "../../../../ui/utils/KeyManager"
 import { FeatureType } from "@tutao/app-env"
 import { ViewSlider } from "../../../../ui/nav/ViewSlider"
 import { windowFacade } from "../../../common/misc/WindowFacade"
@@ -67,6 +67,7 @@ export class ContactSearchView extends BaseTopLevelView implements TopLevelView<
 	private readonly viewSlider: ViewSlider
 	private readonly searchViewModel: ContactSearchViewModel
 	private readonly routeTo = throttleRoute()
+	private searchBarFocused = false
 
 	constructor(vnode: Vnode<ContactSearchViewAttrs>) {
 		super()
@@ -204,12 +205,17 @@ export class ContactSearchView extends BaseTopLevelView implements TopLevelView<
 
 	oncreate() {
 		this.searchViewModel.init()
-		keyManager.registerShortcuts(this.shortcuts())
+		KeyManager.get().registerShortcuts(this.shortcuts())
 	}
 	onremove() {
 		this.searchViewModel.dispose()
-		keyManager.unregisterShortcuts(this.shortcuts())
+		KeyManager.get().unregisterShortcuts(this.shortcuts())
 	}
+
+	getViewSlider(): ViewSlider | null {
+		return this.viewSlider
+	}
+
 	protected async onNewUrl(args: Record<string, any>, requestedPath: string) {
 		await this.searchViewModel.init()
 		this.searchViewModel.onNewUrl(args, requestedPath)
@@ -219,6 +225,7 @@ export class ContactSearchView extends BaseTopLevelView implements TopLevelView<
 	private getMainButton(): {
 		label: TranslationKey
 		click: ClickHandler
+		icon: Icons
 	} | null {
 		if (Styles.get().isUsingBottomNavigation()) {
 			return null
@@ -230,6 +237,7 @@ export class ContactSearchView extends BaseTopLevelView implements TopLevelView<
 					})
 				},
 				label: "newContact_action",
+				icon: Icons.Plus,
 			}
 	}
 
@@ -284,7 +292,7 @@ export class ContactSearchView extends BaseTopLevelView implements TopLevelView<
 		})
 	}
 	private renderDetailsView(header: AppHeaderAttrs): Children {
-		if (this.searchViewModel.listModel.isSelectionEmpty() && this.viewSlider.focusedColumn === this.resultDetailsColumn) {
+		if (this.searchViewModel.listModel.isSelectionEmpty() && this.viewSlider.focusedColumn === this.resultDetailsColumn && !this.searchBarFocused) {
 			this.viewSlider.focus(this.resultListColumn)
 			return null
 		}
@@ -379,6 +387,8 @@ export class ContactSearchView extends BaseTopLevelView implements TopLevelView<
 			busy: this.searchViewModel.busy,
 			onInput: (text: string) => this.searchViewModel.onSearchQueryUpdated(text),
 			onClear: () => this.searchViewModel.onSearchQueryUpdated(""),
+			onFocus: () => (this.searchBarFocused = true),
+			onBlur: () => (this.searchBarFocused = false),
 		})
 	}
 	private renderFilterBar(): Children {

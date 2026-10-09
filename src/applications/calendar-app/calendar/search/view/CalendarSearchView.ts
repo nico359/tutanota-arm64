@@ -43,7 +43,7 @@ import ColumnEmptyMessageBox from "../../../../../ui/base/ColumnEmptyMessageBox"
 import { ContactCardViewer } from "../../../../mail-app/contacts/view/ContactCardViewer"
 import { writeMail } from "../../../../mail-app/contacts/view/ContactView"
 import { windowFacade } from "../../../../common/misc/WindowFacade"
-import { keyManager, Shortcut } from "../../../../../ui/utils/KeyManager"
+import { KeyManager, Shortcut } from "../../../../../ui/utils/KeyManager"
 import { renderHeaderButtons } from "../../../gui/HeaderButtons"
 import { BottomNav } from "../../../../mail-app/gui/BottomNav"
 import { FolderColumnView } from "../../../../common/gui/FolderColumnView"
@@ -144,12 +144,14 @@ export class CalendarSearchView extends BaseTopLevelView implements TopLevelView
 	private getMainButton(): {
 		label: TranslationKey
 		click: ClickHandler
+		icon: Icons
 	} | null {
 		return {
 			click: () => {
 				this.createNewEventDialog()
 			},
 			label: "newEvent_action",
+			icon: Icons.Plus,
 		}
 	}
 	private async createNewEventDialog(): Promise<void> {
@@ -510,11 +512,15 @@ export class CalendarSearchView extends BaseTopLevelView implements TopLevelView
 
 	oncreate() {
 		this.searchViewModel.init()
-		keyManager.registerShortcuts(this.shortcuts())
+		KeyManager.get().registerShortcuts(this.shortcuts())
 	}
 	onremove() {
 		this.searchViewModel.dispose()
-		keyManager.unregisterShortcuts(this.shortcuts())
+		KeyManager.get().unregisterShortcuts(this.shortcuts())
+	}
+
+	getViewSlider(): ViewSlider | null {
+		return this.viewSlider
 	}
 
 	private renderSearchbar(): Children {

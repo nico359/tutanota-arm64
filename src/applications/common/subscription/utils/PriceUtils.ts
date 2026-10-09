@@ -1,4 +1,4 @@
-import { Const, EnvProvider, ProgrammingError } from "@tutao/app-env"
+import { Const, EnvProvider, PaymentSetup, ProgrammingError } from "@tutao/app-env"
 import { assertTranslation, lang, TranslationKey } from "../../../../ui/utils/LanguageViewModel"
 import { assertNotNull, downcast, neverNull } from "@tutao/utils"
 import { UpgradePriceType, WebsitePlanPrices } from "../FeatureListProvider"
@@ -49,7 +49,7 @@ export function asPaymentInterval(paymentInterval: string | number): PaymentInte
 	}
 }
 
-export function getPaymentMethodName(paymentMethod: PaymentMethodType): string {
+export function getPaymentMethodName(paymentMethod: PaymentMethodType | null): string {
 	if (paymentMethod === PaymentMethodType.Invoice) {
 		return lang.get("paymentMethodOnAccount_label")
 	} else if (paymentMethod === PaymentMethodType.CreditCard) {
@@ -62,6 +62,8 @@ export function getPaymentMethodName(paymentMethod: PaymentMethodType): string {
 		return lang.get("paymentMethodAccountBalance_label")
 	} else if (paymentMethod === PaymentMethodType.AppStore) {
 		return "App Store"
+	} else if (paymentMethod === PaymentMethodType.GooglePlay) {
+		return "Google Play"
 	} else {
 		return "<" + lang.get("comboBoxSelectionNone_msg") + ">"
 	}
@@ -164,7 +166,7 @@ export class PriceAndConfigProvider {
 			referralCode: referralCode,
 		})
 		this.upgradePriceData = await serviceExecutor.execute(UpgradePriceService_GET, data, null)
-		if (EnvProvider.get().isIOSApp()) {
+		if (EnvProvider.get().getPaymentSetup() !== PaymentSetup.Default) {
 			this.mobilePrices = new Map()
 
 			const allPrices = await locator.mobilePaymentsFacade.getPlanPrices()
@@ -207,7 +209,7 @@ export class PriceAndConfigProvider {
 	): SubscriptionPrice {
 		const subscription = data.targetPlanType
 
-		if (EnvProvider.get().isIOSApp()) {
+		if (EnvProvider.get().getPaymentSetup() !== PaymentSetup.Default) {
 			return this.getAppStorePaymentsSubscriptionPrice(subscription, paymentInterval)
 		} else {
 			const price = this.getSubscriptionPrice(paymentInterval, subscription, type)
