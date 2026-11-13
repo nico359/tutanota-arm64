@@ -19,8 +19,8 @@ android {
 		applicationId = "de.tutao.tutanota"
 		minSdk = 26
 		targetSdk = 36
-		versionCode = 396721
-		versionName = "361.261006.0"
+		versionCode = 396742
+		versionName = "369.261111.0"
 
 		testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -144,7 +144,8 @@ tasks.register("itest") {
 }
 
 dependencies {
-	implementation(libs.tutasdk)
+	implementation(libs.appcompat)
+    implementation(libs.tutasdk)
 	implementation(project(":tutashared"))
 
 	implementation(libs.commons.io)

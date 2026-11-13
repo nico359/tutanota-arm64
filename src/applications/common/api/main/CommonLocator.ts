@@ -4,7 +4,7 @@ import { CredentialsProvider } from "../../misc/credentials/CredentialsProvider.
 import {
 	CommonSystemFacade,
 	DesktopSystemFacade,
-	ImapSyncFacade,
+	MigrationSyncFacade,
 	MobileContactsFacade,
 	MobilePaymentsFacade,
 	MobileSystemFacade,
@@ -56,7 +56,7 @@ import { OperationProgressTracker } from "./OperationProgressTracker.js"
 import { DomainConfigProvider } from "../common/DomainConfigProvider.js"
 import { MailAddressTableInfo, MailAddressTableModel } from "../../settings/mailaddress/MailAddressTableModel.js"
 import type { GroupInfo } from "@tutao/entities/sys"
-import { lazy } from "@tutao/utils"
+import { lazy, Nullable } from "@tutao/utils"
 import { NativeInterfaceMain } from "../../native/NativeInterfaceMain.js"
 import { NativePushServiceApp } from "../../native/NativePushServiceApp.js"
 
@@ -91,6 +91,7 @@ import { SearchToken } from "../../../../ui/utils/QueryTokenUtils"
 import { ClientModelInfo } from "@tutao/instance-pipeline"
 import { DialogAdapter } from "../../../../plugin-kit/sdk/PluginApi"
 import { Dialog } from "../../../../ui/base/Dialog"
+import { InboxRuleModel } from "../../../mail-app/mail/model/InboxRuleModel"
 
 export interface CommonLocator {
 	clientModelInfo: ClientModelInfo
@@ -137,7 +138,7 @@ export interface CommonLocator {
 	connectivityModel: WebsocketConnectivityModel
 	identityKeyCreator: IdentityKeyCreator
 	driveFacade: DriveFacade
-	imapImporter: ImapSyncFacade
+	mailboxImporter: MigrationSyncFacade
 
 	mailboxModel: MailboxModel
 
@@ -177,6 +178,8 @@ export interface CommonLocator {
 	recipientsModel(): Promise<RecipientsModel>
 
 	recipientsSearchModel(): Promise<RecipientsSearchModel>
+
+	inboxRuleModel(): Promise<Nullable<InboxRuleModel>>
 
 	readonly groupSettingsModel: lazy<Promise<GroupSettingsModel>>
 

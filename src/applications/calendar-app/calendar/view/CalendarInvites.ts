@@ -15,9 +15,8 @@ import { RecipientField } from "../../../common/mailFunctionality/SharedMailUtil
 import { lang } from "../../../../ui/utils/LanguageViewModel.js"
 import { ResolvedUidIndexEntry } from "../../../common/api/worker/facades/lazy/CalendarFacade"
 import { CalendarEvent, CalendarEventAttendee, File, Mail, MailboxProperties } from "@tutao/entities/tutanota"
-import { CalendarAttendeeStatus, CalendarMethod, ConversationType, Recipient, RecipientList } from "../../../../entities/tutanota/Utils"
+import { CalendarAttendeeStatus, CalendarMethod, ConversationType, DataFile, Recipient, RecipientList } from "../../../../entities/tutanota/Utils"
 import { clone, getAsEnumValue } from "@tutao/meta"
-import { DataFile } from "../../../../entities/tutanota/MailBundle"
 import { IcsCalendarEvent, parseCalendarFile } from "../export/CalendarParser"
 import { makeCalendarEventFromIcsCalendarEvent } from "../../../common/calendar/import/ImportExportUtils"
 // not picking the status directly from CalendarEventAttendee because it's a NumberString
@@ -244,7 +243,6 @@ export class CalendarInviteHandler {
 			if (usersDecision === CalendarAttendeeStatus.DECLINED) {
 				return ReplyResult.ReplySent
 			}
-
 			await this.createEventFromIcsFile(sender, eventUserIsReplyingTo, dbEvents)
 		} else {
 			await this.handleInvitationForExistingEntries(eventUserIsReplyingTo, dbEvents, originalEventOccurrence, sender)
@@ -289,7 +287,6 @@ export class CalendarInviteHandler {
 			dbEvents,
 		)
 	}
-
 	private shouldTreatAsNewInvitation(dbEvents: ResolvedUidIndexEntry | null, originalEventOccurrence: Date | null): boolean {
 		if (!dbEvents) return true
 

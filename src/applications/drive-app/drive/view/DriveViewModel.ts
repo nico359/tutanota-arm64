@@ -46,8 +46,9 @@ import { DriveClipboard, DriveModel } from "../model/DriveModel"
 import { listItemSelectionCallbacksFor } from "../../../common/misc/ListModelUtils"
 import { isDriveFile } from "../../../common/api/common/drive/DriveUtils"
 import { LiveSearchResult, QuickSearchQuery, SearchQuery } from "../../../common/search/SearchUtils"
-import { DuplicateFilesDialogDecision, showDuplicateFilesChoiceDialog } from "./DriveGuiUtils"
 import { SyncListener, SyncTracker } from "../../../common/api/main/SyncTracker"
+import { NameTooLongError } from "../../../common/api/common/error/NameTooLongError"
+import { DuplicateFilesDialogDecision, showDriveDuplicateFileDialog } from "./DriveDuplicateFileDialog"
 
 export interface RegularFolder {
 	type: DriveFolderType.Regular
@@ -416,7 +417,15 @@ export class DriveViewModel {
 				parentFolderId = currentFolder._id
 			}
 		}
-		return this.driveFacade.createFolder(folderName, parentFolderId)
+		try {
+			return this.driveFacade.createFolder(folderName, parentFolderId)
+		} catch (e) {
+			if (e instanceof NameTooLongError) {
+				throw new UserError("nameTooLong_msg")
+			} else {
+				throw e
+			}
+		}
 	}
 
 	navigateToFolder(folderId: IdTuple) {
@@ -426,6 +435,14 @@ export class DriveViewModel {
 	navigateToRootFolder() {
 		if (this.roots) {
 			this.navigateToFolder(this.roots.root)
+		}
+	}
+
+	navigateToCurrentOrRootFolder() {
+		if (this.currentFolder) {
+			this.navigateToFolder(this.currentFolder.folder._id)
+		} else {
+			this.navigateToRootFolder()
 		}
 	}
 
@@ -452,8 +469,16 @@ export class DriveViewModel {
 		this.listModel.sort()
 	}
 
-	rename(item: FolderItem, newName: string) {
-		this.driveModel.rename(item, newName)
+	async rename(item: FolderItem, newName: string) {
+		try {
+			await this.driveFacade.rename(folderItemEntity(item), newName)
+		} catch (e) {
+			if (e instanceof NameTooLongError) {
+				throw new UserError("nameTooLong_msg")
+			} else {
+				throw e
+			}
+		}
 	}
 
 	toggleSelectAll() {
@@ -533,14 +558,14 @@ export class DriveViewModel {
 			}
 
 			const tree = await traverse<FileReference>(folderTransferItems, fileEntryToFileRef)
-			await this.uploadFiles(fileRefs, showDuplicateFilesChoiceDialog, tree)
+			await this.uploadFiles(fileRefs, showDriveDuplicateFileDialog, tree)
 		} else {
 			const tree = await traverse(folderTransferItems, childFileFromEntry)
 			await this.uploadFiles(
 				files.map((f) => {
 					return { _type: "WebFile", file: f } satisfies WebFile
 				}),
-				showDuplicateFilesChoiceDialog,
+				showDriveDuplicateFileDialog,
 				tree,
 			)
 		}

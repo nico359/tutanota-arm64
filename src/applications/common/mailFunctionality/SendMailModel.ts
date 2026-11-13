@@ -53,7 +53,15 @@ import {
 } from "@tutao/utils"
 import Stream from "mithril/stream"
 import stream from "mithril/stream"
-import { checkAttachmentSize, getDefaultSender, getTemplateLanguages, isAliasEnabledWithUser, isUserEmail, RecipientField } from "./SharedMailUtils.js"
+import {
+	checkAttachmentSize,
+	getDefaultSender,
+	getTemplateLanguages,
+	isAliasEnabledWithUser,
+	isSharedMailbox,
+	isUserEmail,
+	RecipientField,
+} from "./SharedMailUtils.js"
 import { cloneInlineImages, InlineImages, revokeInlineImages } from "./inlineImagesUtils.js"
 import { RecipientsModel, ResolvableRecipient } from "../api/main/RecipientsModel.js"
 import {
@@ -100,6 +108,7 @@ import { Time } from "../calendar/Time"
 import { UndoModel } from "../../mail-app/UndoModel"
 import { isAliasEnabledForGroupInfo } from "../../../platform-kit/network/GroupUtils"
 import { createApprovalMail } from "@tutao/entities/monitor"
+import { isDriveEnabled } from "../misc/DriveUtils"
 
 EnvProvider.assertMainOrNode()
 
@@ -250,13 +259,16 @@ export class SendMailModel {
 			this.availableNotificationTemplateLanguages = filteredLanguages
 		}
 	}
+	isDriveEnabled(): boolean {
+		return isDriveEnabled(this.logins)
+	}
 
 	user(): UserController {
 		return this.logins.getUserController()
 	}
 
 	isSharedMailbox(): boolean {
-		return !this.mailboxDetails.mailGroup.user
+		return isSharedMailbox(this.mailboxDetails)
 	}
 
 	getPreviousMail(): Mail | null {

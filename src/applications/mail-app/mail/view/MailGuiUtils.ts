@@ -59,8 +59,16 @@ import { ContactModel } from "../../../common/contactsFunctionality/ContactModel
 import { ContactSelectionDialogAttrs } from "../../contacts/view/ContactSelectionDialog"
 import { PosRect } from "../../../../ui/utils/PosRect"
 import { Contact, File, Mail, MailSet, MovedMails } from "@tutao/entities/tutanota"
-import { DataFile } from "../../../../entities/tutanota/MailBundle"
-import { Attachment, isDataFile, isFileReference, isTutanotaFile, MailReportType, MailSetKind, SystemFolderType } from "../../../../entities/tutanota/Utils"
+import {
+	Attachment,
+	DataFile,
+	isDataFile,
+	isFileReference,
+	isTutanotaFile,
+	MailReportType,
+	MailSetKind,
+	SystemFolderType,
+} from "../../../../entities/tutanota/Utils"
 import { TransferId } from "../../../../entities/drive/Utils"
 import { elementIdPart, getElementId, getIds, isSameId } from "../../../../platform-kit/meta"
 import { getMailFolderType, SimpleMoveMailTarget } from "../MailUtils"
@@ -69,6 +77,12 @@ import { FileOpenError } from "../../../common/api/common/error/FileOpenError"
 import { NativeFileApp } from "../../../../app-kit/native-bridge/common/FileApp"
 import type { Shortcut } from "../../../../ui/utils/KeyManager"
 import { Keys } from "../../../../ui/utils/KeyboardKeys"
+import { ArchiveDataType } from "../../../../entities/sys/Utils"
+import { DriveModel } from "../../../drive-app/drive/model/DriveModel"
+import { PickedDestinationAction } from "../../../drive-app/drive/view/DriveItemPicker"
+import { DialogHeaderBarAttrs } from "../../../../ui/base/DialogHeaderBar"
+import { ButtonType } from "../../../../ui/base/Button"
+import { prependParentLabelNamesToLabel } from "./MailSetTreeUtils"
 
 const UNDO_SNACKBAR_SHOW_TIME = TimeConstants.secondsToMillis(10)
 
@@ -207,9 +221,9 @@ export async function showUndoMailSnackbar(
 
 async function warnUsersIfMovingContactMailToSpam(contactModel: ContactModel, mailModel: MailModel, mailIds: ReadonlyArray<IdTuple>) {
 	const { showContactSelectionDialog } = await import("../../contacts/view/ContactSelectionDialog")
-	const mailWithDetails = await mailModel.loadAllMailsWithDetails(mailIds)
-	const senderAddresses = mailWithDetails
-		.filter((mailWithMailDetails) => mailWithMailDetails.mailDetails.authStatus === MailAuthenticationStatus.AUTHENTICATED)
+	const { mailsWithDetails } = await mailModel.loadAllMailsWithDetails(mailIds)
+	const senderAddresses = mailsWithDetails
+		.filter((mailWithDetails) => mailWithDetails.mailDetails.authStatus === MailAuthenticationStatus.AUTHENTICATED)
 		.map((mailWithMailDetails) => mailWithMailDetails.mail.sender.address)
 
 	const loadedContacts = await contactModel.loadAllContacts()
@@ -894,35 +908,19 @@ export function showLabelsPopup(
 export function getLabelsWithParentLabelNamesPrepended(mailModel: MailModel, mail: Mail): ReadonlyArray<{ name: string; color: string | null }> {
 	const mailLabels = mailModel.getLabelsForMail(mail)
 	const allLabels = mailModel.getLabelsByGroupId(assertNotNull(mail._ownerGroup))
-	const labelsWithParentNamesPrepended: { name: string; color: string | null }[] = mailLabels.map((label) => {
-		const nameParts: string[] = []
-		let current = label
-
-		while (current) {
-			nameParts.push(current.name)
-			if (!current.parentFolder) {
-				break
-			}
-			const parentId = elementIdPart(current.parentFolder)
-			const parent = allLabels.get(parentId)
-			if (!parent) {
-				break
-			}
-			current = parent
-		}
-
-		const fullName = nameParts.reverse().join("/")
-		return { name: fullName, color: label.color }
-	})
-
+	const labelsWithParentNamesPrepended: { name: string; color: string | null }[] = mailLabels.map((label) => ({
+		name: prependParentLabelNamesToLabel(label, allLabels),
+		color: label.color,
+	}))
 	return labelsWithParentNamesPrepended.sort((labelA, labelB) => labelA.name.localeCompare(labelB.name))
 }
 
 // A temporary solution, we should try to use non-modal progress indicators
 export async function showDownloadProgressDialog(
 	transferProgressDispatcher: TransferProgressDispatcher,
-	files: readonly File[],
+	files: readonly { size: string }[],
 	downloadReturn: DownloadReturn,
+	abortDownload: () => unknown,
 ): Promise<unknown> {
 	const progressStream = stream(0)
 	const totalFileSize = files.reduce((acc, file) => acc + filterInt(file.size), 0)
@@ -934,9 +932,18 @@ export async function showDownloadProgressDialog(
 		const downloadedTotal = Array.from(bytesPerTransfer.values()).reduce((acc, bytes) => acc + bytes, 0)
 		progressStream((downloadedTotal / totalFileSize) * 100)
 	}
+	const headerBarAttrs: DialogHeaderBarAttrs = {
+		left: [
+			{
+				label: "cancel_action",
+				click: () => abortDownload(),
+				type: ButtonType.Secondary,
+			},
+		],
+	}
 	transferProgressDispatcher.addDownloadListener(listener)
 	try {
-		return await showProgressDialog("loading_msg", downloadReturn.promise, progressStream)
+		return await showProgressDialog("loading_msg", downloadReturn.promise, { progressStream, headerBarAttrs })
 	} catch (e) {
 		// handle the user cancelling the dialog
 		if (e instanceof CancelledError) {
@@ -1164,12 +1171,14 @@ export class AttachmentDownloader {
 		private readonly fileController: FileController,
 		private readonly fileApp: NativeFileApp | null,
 		private readonly transferProgressDispatcher: TransferProgressDispatcher,
+		private readonly driveModel: DriveModel,
+		private readonly showDriveDestinationPickerDialog: (action: PickedDestinationAction) => unknown,
 	) {}
 
 	canOpenAttachment(attachment: Attachment): boolean {
 		// Can Open: Desktop, Android, iOS
-		// Data files can only be downloaded
-		return (EnvProvider.get().isApp() || EnvProvider.get().isDesktop()) && !isDataFile(attachment)
+		// Data files are written to a temporary file and opened(on desktop & app, erroring on browser)
+		return EnvProvider.get().isApp() || EnvProvider.get().isDesktop()
 	}
 
 	canDownloadAttachment(attachment: Attachment): boolean {
@@ -1177,6 +1186,42 @@ export class AttachmentDownloader {
 		// on iOS you always open and then choose where to save
 		// downloading a file reference does not make any sense, since the file is already on the file system
 		return !EnvProvider.get().isIOSApp() && !isFileReference(attachment)
+	}
+
+	async saveToDrive(attachment: Attachment) {
+		const { showDriveDuplicateFileDialog } = await import("../../../drive-app/drive/view/DriveDuplicateFileDialog.js")
+		try {
+			if (isTutanotaFile(attachment)) {
+				await this.showDriveDestinationPickerDialog(async (destinationFolder) => {
+					const downloadReturn = await this.fileController.downloadToAppDirectory(attachment, ArchiveDataType.Attachments)
+					await showDownloadProgressDialog(this.transferProgressDispatcher, [attachment], downloadReturn, () =>
+						this.fileController.abortDownload(downloadReturn),
+					)
+					const downloadedFile = await downloadReturn.promise
+					await showProgressDialog(
+						lang.getTranslation("savingAttachmentToDrive_Label"),
+						this.driveModel.uploadFiles([downloadedFile], destinationFolder._id, showDriveDuplicateFileDialog),
+					)
+				})
+			} else if (isDataFile(attachment) || isFileReference(attachment)) {
+				await this.showDriveDestinationPickerDialog(async (destinationFolder) => {
+					await showProgressDialog(
+						lang.getTranslation("savingAttachmentToDrive_Label"),
+						this.driveModel.uploadFiles([attachment], destinationFolder._id, showDriveDuplicateFileDialog),
+					)
+				})
+			} else {
+				throw new ProgrammingError("attachment is neither reference, datafile nor tutanotafile!")
+			}
+		} catch (e) {
+			if (e instanceof FileOpenError) {
+				return Dialog.message("canNotOpenFileOnDevice_msg")
+			} else {
+				const msg = e.message || "unknown error"
+				console.error("could not open file:", msg)
+				return Dialog.message("errorDuringFileOpen_msg")
+			}
+		}
 	}
 
 	async openOrDownloadAttachment(attachment: Attachment, postDownload: DownloadPostProcessing) {
@@ -1189,17 +1234,23 @@ export class AttachmentDownloader {
 					throw new ProgrammingError("File Reference cannot be downloaded")
 				}
 			} else if (isDataFile(attachment)) {
+				// the bytes are already in memory, no need to download anything
 				if (postDownload === DownloadPostProcessing.Write) {
-					// When it is a data file, only support downloading
 					await this.fileController.saveDataFile(attachment)
 				} else {
-					throw new ProgrammingError("Data File cannot be opened")
+					await this.fileController.openDataFile(attachment)
 				}
 			} else if (isTutanotaFile(attachment)) {
 				if (postDownload === DownloadPostProcessing.Open) {
-					await showDownloadProgressDialog(this.transferProgressDispatcher, [attachment], await this.fileController.open(attachment))
+					const downloadReturn = await this.fileController.open(attachment)
+					await showDownloadProgressDialog(this.transferProgressDispatcher, [attachment], downloadReturn, () =>
+						this.fileController.abortDownload(downloadReturn),
+					)
 				} else {
-					await showDownloadProgressDialog(this.transferProgressDispatcher, [attachment], await this.fileController.download(attachment))
+					const downloadReturn = await this.fileController.download(attachment)
+					await showDownloadProgressDialog(this.transferProgressDispatcher, [attachment], downloadReturn, () =>
+						this.fileController.abortDownload(downloadReturn),
+					)
 				}
 			} else {
 				throw new ProgrammingError("attachment is neither reference, datafile nor tutanotafile!")

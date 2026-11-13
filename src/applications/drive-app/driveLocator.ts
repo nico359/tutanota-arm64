@@ -66,7 +66,7 @@ import type { CalendarInfo, CalendarModel } from "../calendar-app/calendar/model
 import type { CalendarInviteHandler } from "../calendar-app/calendar/view/CalendarInvites"
 import type { CalendarEventPreviewViewModel } from "../calendar-app/calendar/gui/eventpopup/CalendarEventPreviewViewModel"
 import { FolderItem } from "./drive/view/DriveUtils"
-import { MoveItems } from "./drive/view/DriveMoveItemDialog"
+import { PickedDestinationAction } from "./drive/view/DriveItemPicker"
 import { DriveFilePicker } from "./drive/view/DriveFilePicker"
 import { NativeInterfaceMain } from "../common/native/NativeInterfaceMain"
 import { NativeFileApp } from "../../app-kit/native-bridge/common/FileApp"
@@ -76,7 +76,7 @@ import {
 	ContactSuggestion,
 	DesktopSystemFacade,
 	ExternalCalendarFacade,
-	ImapSyncFacade,
+	MigrationSyncFacade,
 	MobileContactsFacade,
 	MobilePaymentsFacade,
 	MobileSystemFacade,
@@ -189,7 +189,7 @@ class DriveLocator implements CommonLocator {
 	whitelabelThemeGenerator!: WhitelabelThemeGenerator
 	driveFacade!: DriveFacade
 	transferProgressDispatcher!: TransferProgressDispatcher
-	imapImporter!: ImapSyncFacade
+	mailboxImporter!: MigrationSyncFacade
 	searchRouter!: SearchRouter
 
 	private nativeInterfaces: NativeInterfaces | null = null
@@ -277,9 +277,9 @@ class DriveLocator implements CommonLocator {
 		)
 	})
 
-	async showMoveItemDialog(items: FolderItem[], moveItems: MoveItems) {
-		const { showMoveDialog } = await import("./drive/view/DriveMoveItemDialog.js")
-		showMoveDialog(this.entityClient, this.driveFacade, items, moveItems)
+	async showMoveItemDialog(items: FolderItem[], moveItems: PickedDestinationAction) {
+		const { showMoveItemDialog } = await import("./drive/view/DriveGuiUtils.js")
+		showMoveItemDialog(this.entityClient, this.driveFacade, items, moveItems)
 	}
 
 	async driveFilePicker(): Promise<DriveFilePicker> {
@@ -343,6 +343,9 @@ class DriveLocator implements CommonLocator {
 		return new RecipientsSearchModel(await this.recipientsModel(), this.contactModel, suggestionsProvider, this.entityClient)
 	}
 
+	async inboxRuleModel(): Promise<null> {
+		return null
+	}
 	private async contactSuggestionProvider(): Promise<ContactSuggestionProvider> {
 		if (EnvProvider.get().isApp()) {
 			const { MobileContactSuggestionProvider } = await import("../common/native/MobileContactSuggestionProvider.js")
@@ -671,7 +674,7 @@ class DriveLocator implements CommonLocator {
 			pluginConfigurationProvider.setPluginManager(this.pluginManager)
 
 			// TODO: it would be nice to move this facade out of the ApplicationWindow
-			this.imapImporter = {} as ImapSyncFacade
+			this.mailboxImporter = {} as MigrationSyncFacade
 			this.webMobileFacade = new WebMobileFacade(this.connectivityModel, CALENDAR_PREFIX)
 			this.nativeInterfaces = createNativeInterfaces(
 				this.webMobileFacade,
@@ -680,7 +683,7 @@ class DriveLocator implements CommonLocator {
 					async () => this.native,
 					() => this.desktopSettingsFacade,
 				),
-				this.imapImporter,
+				this.mailboxImporter,
 				new WebInterWindowEventFacade(this.logins, windowFacade, deviceConfig),
 				new WebCommonNativeFacade(
 					this.logins,
@@ -999,7 +1002,6 @@ class DriveLocator implements CommonLocator {
 			this.customerFacade,
 			this.themeController,
 			this.syncTracker,
-			this.configFacade,
 			() => this.showSetupWizard(),
 			() => this.updateClients(),
 			this.loginFacade,

@@ -57,6 +57,7 @@ import { MoveDestinationIsSourceError } from "../error/MoveDestinationIsSourceEr
 import { FileTooLargeError } from "../error/FileTooLargeError"
 import { RecipientsNotFoundError } from "../../../../../platform-kit/network/error/RecipientsNotFoundError"
 import { RecipientNotResolvedError } from "../../../../../platform-kit/network/error/RecipientNotResolvedError"
+import { NameTooLongError } from "../error/NameTooLongError"
 
 // If importing fails it is a good idea to adjust the chunking to bundle the error into common
 
@@ -121,6 +122,7 @@ const ErrorNameToType = {
 	MoveToTrashError,
 	MoveDestinationIsSourceError,
 	FileTooLargeError,
+	NameTooLongError,
 	Error,
 	"java.net.SocketTimeoutException": ConnectionError,
 	"java.net.SocketException": ConnectionError,
@@ -153,7 +155,7 @@ const ErrorNameToType = {
 	"de.tutao.tutanota.MobilePayment": MobilePaymentError,
 	"de.tutao.calendar.MobilePayment": MobilePaymentError,
 	"de.tutao.drive.MobilePayment": MobilePaymentError,
-	"de.tutao.tutashared.MobilePaymentException": MobilePaymentError,
+	"de.tutao.tutashared.error.MobilePaymentError": MobilePaymentError,
 }
 
 export function isSecurityError(e: any): boolean {

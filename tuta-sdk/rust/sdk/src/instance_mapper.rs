@@ -1751,6 +1751,7 @@ mod tests {
 				list: GeneratedId::test_random(),
 			}),
 			serverProperties: GeneratedId::test_random(),
+			inboxRules: None,
 		};
 		let result = mapper.serialize_entity(group_root.clone()).unwrap();
 		assert_eq!(
@@ -1923,6 +1924,7 @@ mod tests {
 			name: "encName".to_owned(),
 			group: GeneratedId::test_random(),
 			mailAddressAliases: vec![],
+			_formerInstanceKeys: None,
 			_errors: Default::default(),
 		};
 

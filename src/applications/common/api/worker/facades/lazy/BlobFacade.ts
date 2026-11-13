@@ -2,7 +2,7 @@ import { addParamsToUrl, DEFAULT_REST_CLIENT_OPTIONS, MAX_BLOB_SIZE_BYTES, RestC
 import { handleRestError, NotFoundError } from "@tutao/rest-client/error"
 import { Blob, BlobReferenceTokenWrapper, createBlobReferenceTokenWrapper } from "@tutao/entities/sys"
 import { ArchiveDataType } from "../../../../../../entities/sys/Utils"
-import { HttpMethod, MediaType, RestBinaryBody, RestTextBody, SuspensionBehavior } from "@tutao/rest-client/types"
+import { HttpMethod, MediaType, RestBinaryBody, RestTextBody } from "@tutao/rest-client/types"
 import { CryptoFacade } from "../../../../../../platform-kit/base/base-crypto/CryptoFacade.js"
 import {
 	assertNonNull,
@@ -23,8 +23,8 @@ import {
 	uint8ArrayToString,
 } from "@tutao/utils"
 import { CancelledError, EnvProvider, ProgrammingError } from "@tutao/app-env"
-import { BlobElementEntity, PersistentEntity, TypeRef } from "@tutao/meta"
-import { _encryptBytes, aesDecrypt, aesEncrypt, AesKey, asyncDecryptBytes, sha256Hash } from "@tutao/crypto"
+import { BlobElementEntity, getTypeString, PersistentEntity, TypeRef } from "@tutao/meta"
+import { Aes, AesKey, sha256Hash } from "@tutao/crypto"
 import type { FileUri, NativeFileApp } from "../../../../../../app-kit/native-bridge/common/FileApp.js"
 import type { AesApp } from "../../../../../../app-kit/native-bridge/worker/AesApp.js"
 import { splitFileIntoChunks } from "../../../../../../ui/utils/FileUtils.js"
@@ -36,6 +36,7 @@ import { doBlobRequestWithRetry, tryServers } from "../../../../../../platform-k
 import { TransferId, UploadProgressInfo } from "../../../../../../entities/drive/Utils"
 import {
 	ArchiveEnumerationService_GET,
+	ArchiveMetadata,
 	BlobGetInTypeRef,
 	BlobPostOut,
 	BlobPostOutTypeRef,
@@ -50,11 +51,17 @@ import { FileReference } from "../../../../../../entities/tutanota/Utils"
 import { BlobReferencingInstance } from "../../../../../../entities/storage/BlobUtils"
 import { IncomingServerJson } from "../../../../../../platform-kit/instance-pipeline/TypeMapper"
 import { EntityUtils } from "../../../../../../platform-kit/instance-pipeline/EntityUtils"
+import { ArchiveDownloaderFacade, ArchiveDownloadRangeHeaders } from "@tutao/native-bridge/generatedIpc/types"
 import { IServiceExecutor } from "../../../../../../platform-kit/network/ServiceRequest"
 
 EnvProvider.assertWorkerOrNode()
 
 export const TAG = "BlobFacade"
+
+export interface ArchiveDownloadResumeParams {
+	serverHostname: string
+	rangeHeaders: ArchiveDownloadRangeHeaders
+}
 
 export interface FileData {
 	data: Uint8Array<ArrayBuffer>
@@ -222,6 +229,7 @@ export class BlobFacade {
 		private readonly progressDispatcher: TransferProgressDispatcher,
 		private readonly typeModelResolver: TypeModelResolver,
 		private readonly serviceExecutor: IServiceExecutor,
+		private readonly aes: Aes,
 	) {}
 
 	/**
@@ -276,7 +284,7 @@ export class BlobFacade {
 	 * @throws NotAuthorizedError if the user does not have a membership to that group (regardless of if it exists)
 	 * @throws BadRequestError if the archive type can't be enumerated by the service
 	 */
-	async enumerateArchivesForGroup(group: Id, archiveType: ArchiveDataType): Promise<Id[]> {
+	async enumerateArchivesForGroup(group: Id, archiveType: ArchiveDataType): Promise<ArchiveMetadata[]> {
 		try {
 			const result = await this.serviceExecutor.execute(
 				ArchiveEnumerationService_GET,
@@ -286,7 +294,7 @@ export class BlobFacade {
 				}),
 				null,
 			)
-			return result.archives
+			return result.archiveMetadata
 		} catch (e) {
 			if (e instanceof NotFoundError) {
 				return []
@@ -296,7 +304,7 @@ export class BlobFacade {
 	}
 
 	private async encryptChunk(sessionKey: AesKey, chunk: Uint8Array<ArrayBuffer>): Promise<EncryptedChunk> {
-		return (await _encryptBytes(sessionKey, chunk)) as EncryptedChunk
+		return this.aes.aesEncrypt(sessionKey, chunk) as EncryptedChunk
 	}
 	private async encryptChunkNative(sessionKey: AesKey, fileUri: FileUri): Promise<string> {
 		const encryptedFileInfo = await this.aesApp.aesEncryptFile(sessionKey, fileUri)
@@ -464,7 +472,7 @@ export class BlobFacade {
 		this.abortControllers.set(transferId, abortController)
 
 		const sessionKeyToReferenceTokens = new Map<AesKey, BlobReferenceTokenWrapper[]>(fileData.map((f) => [f.sessionKey, []]))
-		const keyedNewBlobWrappers = encryptMultipleFileData(fileData)
+		const keyedNewBlobWrappers = this.encryptMultipleFileData(fileData)
 		const serializedBinaries = serializeNewBlobsInBinaryChunks(keyedNewBlobWrappers)
 		const doBlobRequest: () => Promise<BlobReferenceTokenWrapper[][]> = async () => {
 			const blobServerAccessInfo = await this.blobAccessTokenFacade.requestWriteToken(archiveDataType, ownerGroupId)
@@ -617,49 +625,50 @@ export class BlobFacade {
 	}
 
 	/**
-	 * Download a full archive of (encrypted) blob entities.
-	 *
-	 * To decrypt the entities, you will have to call {@link CryptoMapper#decryptParsedInstance}.
+	 * Download a full archive of blob entities and store them (encrypted) in offline database.
 	 */
-	async downloadFullEncryptedBlobElementEntityArchive<T extends BlobElementEntity>(typeRef: TypeRef<T>, archiveId: Id): Promise<Array<IncomingServerJson>> {
+	async downloadAndStoreEncryptedBlobArchive<T extends BlobElementEntity>(
+		typeRef: TypeRef<T>,
+		archiveId: Id,
+		archiveDownloader: ArchiveDownloaderFacade,
+		resumeParams: ArchiveDownloadResumeParams | null,
+	): Promise<void> {
 		const clientTypeModel = await this.typeModelResolver.resolveClientTypeReference(typeRef)
-		const headers: Dict = {
-			v: String(clientTypeModel.version),
-		}
-
-		if (clientTypeModel.dependsOnVersion) {
-			headers.dv = String(clientTypeModel.dependsOnVersion)
-		}
+		const typeString = getTypeString(typeRef)
 
 		const blobServerAccessInfo = await this.blobAccessTokenFacade.requestReadTokenArchive(archiveId)
-		const allParams = await this.blobAccessTokenFacade.createQueryParams(blobServerAccessInfo, {}, typeRef)
 		const serversToTry = blobServerAccessInfo.servers
 
+		let rangeHeaders: ArchiveDownloadRangeHeaders | null = null
+		if (resumeParams != null) {
+			// try to resume from the last-used server first
+			const resumeServerIndex = blobServerAccessInfo.servers.findIndex(({ url }) => new URL(url).hostname === resumeParams.serverHostname)
+			if (resumeServerIndex !== -1) {
+				rangeHeaders = resumeParams.rangeHeaders
+				const resumeServer = getFirstOrThrow(serversToTry.splice(resumeServerIndex, 1))
+				serversToTry.unshift(resumeServer)
+			}
+		}
+
+		const allParams = await this.blobAccessTokenFacade.createQueryParams(blobServerAccessInfo, {}, typeRef)
 		// blob element types are accessed with a specific rest path
 		const path = `${EntityUtils.typeModelToRestPath(clientTypeModel)}/${archiveId}`
 
 		const t = () =>
 			tryServers(
 				serversToTry,
-				async (serverUrl) =>
-					this.restClient.request(path, HttpMethod.GET, {
-						queryParams: allParams,
-						headers: {}, // prevent CORS request due to non standard header usage
-						responseType: MediaType.Json,
-						baseUrl: serverUrl,
-						noCORS: true,
-						suspensionBehavior: SuspensionBehavior.Suspend,
-						body: null,
-						uploadProgressListener: null,
-						downloadProgressListener: null,
-						abortSignal: null,
-					}),
+				async (serverUrl) => {
+					const entityUrl = new URL(serverUrl)
+					entityUrl.pathname = path
+					const url = addParamsToUrl(entityUrl, allParams)
+					await archiveDownloader.downloadAndStoreArchive(url.toString(), archiveId, typeString, serverTypeModel.version, rangeHeaders)
+				},
 				`can't load instances from server `,
 			)
 
 		const serverTypeModel = await this.typeModelResolver.resolveServerTypeReference(typeRef)
 		const doEvictToken = () => this.blobAccessTokenFacade.evictArchiveToken(archiveId)
-		return IncomingServerJson.expectMultipleInstance(await doBlobRequestWithRetry(t, doEvictToken), serverTypeModel)
+		await doBlobRequestWithRetry(t, doEvictToken)
 	}
 
 	/**
@@ -720,7 +729,7 @@ export class BlobFacade {
 				return null
 			}
 			try {
-				decryptedChunks.push(aesDecrypt(sessionKey, encryptedChunk))
+				decryptedChunks.push(this.aes.aesDecrypt(sessionKey, encryptedChunk))
 			} catch (e) {
 				// If decrypting one chunk of an instance fails it doesn't make sense to return any data for
 				// that instance
@@ -991,7 +1000,7 @@ export class BlobFacade {
 		}
 		const processedBlobEntries = await promiseMap(Array.from(mapWithEncryptedBlobs.entries()), async ([blobId, blob]) => {
 			abortSignal?.throwIfAborted()
-			return [blobId, await asyncDecryptBytes(sessionKey, blob)] as const
+			return [blobId, await this.aes.asyncDecryptBytes(sessionKey, blob)] as const
 		})
 		return new Map(processedBlobEntries)
 	}
@@ -1167,6 +1176,29 @@ export class BlobFacade {
 			totalBytes: state.totalSize,
 		})
 	}
+
+	encryptMultipleFileData(fileData: FileData[]): KeyedNewBlobWrapper[] {
+		const result: KeyedNewBlobWrapper[] = []
+
+		for (const file of fileData) {
+			for (const chunk of chunkData(file.data, MAX_UNENCRYPTED_BLOB_SIZE_BYTES)) {
+				const encrypted = this.aes.aesEncrypt(file.sessionKey, chunk)
+
+				const hashFull = sha256Hash(encrypted)
+				const shortHash = hashFull.slice(0, 6)
+
+				result.push({
+					sessionKey: file.sessionKey,
+					newBlobWrapper: {
+						hash: shortHash,
+						data: encrypted,
+					},
+				})
+			}
+		}
+
+		return result
+	}
 }
 
 /**
@@ -1241,29 +1273,6 @@ export function serializeNewBlobsInBinaryChunks(
 		sessionKeys: chunk.map((c) => c.sessionKey),
 		binary: serializeNewBlobs(chunk.map((c) => c.newBlobWrapper)),
 	}))
-}
-
-function encryptMultipleFileData(fileData: FileData[]): KeyedNewBlobWrapper[] {
-	const result: KeyedNewBlobWrapper[] = []
-
-	for (const file of fileData) {
-		for (const chunk of chunkData(file.data, MAX_UNENCRYPTED_BLOB_SIZE_BYTES)) {
-			const encrypted = aesEncrypt(file.sessionKey, chunk)
-
-			const hashFull = sha256Hash(encrypted)
-			const shortHash = hashFull.slice(0, 6)
-
-			result.push({
-				sessionKey: file.sessionKey,
-				newBlobWrapper: {
-					hash: shortHash,
-					data: encrypted,
-				},
-			})
-		}
-	}
-
-	return result
 }
 
 function chunkData(data: Uint8Array<ArrayBuffer>, size: number): Uint8Array<ArrayBuffer>[] {

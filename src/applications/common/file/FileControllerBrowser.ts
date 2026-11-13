@@ -1,11 +1,10 @@
-import { EnvProvider } from "@tutao/app-env"
+import { EnvProvider, ProgrammingError } from "@tutao/app-env"
 import { downloadAndDecryptFromArchive, FileController, openDataFileInBrowser, zipDataFiles } from "./FileController.js"
 import { sortableTimestamp } from "@tutao/utils"
 import { BlobFacade } from "../api/worker/facades/lazy/BlobFacade.js"
 import { ArchiveDataType } from "../../../entities/sys/Utils"
-import { assertOnlyDataFiles, FileReference } from "../../../entities/tutanota/Utils"
+import { assertOnlyDataFiles, DataFile, FileReference } from "../../../entities/tutanota/Utils"
 import { TransferId } from "../../../entities/drive/Utils"
-import { DataFile } from "../../../entities/tutanota/MailBundle"
 import { DownloadableFileEntity } from "../../../entities/storage/BlobUtils"
 
 EnvProvider.assertMainOrNode()
@@ -19,24 +18,32 @@ export class FileControllerBrowser extends FileController {
 		return openDataFileInBrowser(file)
 	}
 
+	async openDataFile(file: DataFile): Promise<void> {
+		// Unused because in the browser we only support download
+		throw new ProgrammingError("Opening files within browser is not supported.")
+	}
+
 	async downloadAndDecrypt(file: DownloadableFileEntity, transferId: TransferId, archiveType: ArchiveDataType): Promise<DataFile | FileReference> {
 		return downloadAndDecryptFromArchive(file, this.blobFacade, archiveType, transferId)
 	}
 
-	async writeDownloadedFiles(downloadedFiles: Array<FileReference | DataFile>): Promise<void> {
+	async writeDownloadedFiles(downloadedFiles: readonly (FileReference | DataFile)[]): Promise<void> {
+		assertOnlyDataFiles(downloadedFiles)
+
 		if (downloadedFiles.length < 1) {
 			return
 		}
-		assertOnlyDataFiles(downloadedFiles)
 		const fileToSave = downloadedFiles.length > 1 ? await zipDataFiles(downloadedFiles, `${sortableTimestamp()}-attachments.zip`) : downloadedFiles[0]
 		return await openDataFileInBrowser(fileToSave)
 	}
 
-	async cleanUp(downloadedFiles: DataFile[]): Promise<void> {
+	async cleanUp(_downloadedFiles: readonly (FileReference | DataFile)[]): Promise<void> {
 		// there is nothing to do since nothing gets saved until the browser puts it into the final location
 	}
 
-	protected async openDownloadedFiles(downloadedFiles: Array<FileReference | DataFile>): Promise<void> {
+	protected async openDownloadedFiles(downloadedFiles: readonly (FileReference | DataFile)[]): Promise<void> {
+		assertOnlyDataFiles(downloadedFiles)
+
 		// opening and downloading a file is the same thing in browser environment
 		return await this.writeDownloadedFiles(downloadedFiles)
 	}

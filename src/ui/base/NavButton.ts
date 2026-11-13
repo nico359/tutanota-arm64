@@ -1,5 +1,5 @@
 import m, { Children, Component, RouteLinkAttrs, Vnode } from "mithril"
-import { component_size, px } from "../size"
+import { component_size, rem, px } from "../size"
 import type { lazy } from "../../platform-kit/utils"
 import { neverNull } from "../../platform-kit/utils"
 import { lazyStringValue } from "./MaybeLazy"
@@ -87,7 +87,7 @@ export class NavButton implements Component<NavButtonAttrs> {
 
 	_getNavButtonClass(a: NavButtonAttrs): string {
 		return (
-			"a.nav-button.noselect.items-center.click.plr-8.no-text-decoration.button-height.border-radius" +
+			"a.nav-button.noselect.items-center.click.plr-8.no-text-decoration.min-button-height.border-radius" +
 			(a.vertical ? ".col" : "") +
 			(!a.centred ? ".flex-start" : ".flex-center") +
 			(a.disableHoverBackground ? "" : ".state-bg") +
@@ -125,7 +125,7 @@ export class NavButton implements Component<NavButtonAttrs> {
 			draggable: a.dragStartHandler ? "true" : undefined,
 			ondragstart: a.dragStartHandler,
 			style: {
-				"font-size": a.fontSize ? px(a.fontSize) : "",
+				"font-size": a.fontSize ? rem(a.fontSize) : "",
 				color: this._draggedOver || isNavButtonSelected(a) ? theme.primary : theme.on_surface,
 				...(hasCurrentStyle && { background: theme.state_bg_active }),
 			},

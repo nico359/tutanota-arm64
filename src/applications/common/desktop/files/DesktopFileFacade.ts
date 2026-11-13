@@ -28,9 +28,10 @@ import { HttpMethod } from "@tutao/rest-client/types"
 import { FetchImpl, toGlobalResponse } from "../net/NetAgent"
 import { OpenDialogOptions } from "electron"
 import { CommandExecutor } from "../CommandExecutor"
-import { DataFile } from "../../../../entities/tutanota/MailBundle"
 import { createHash } from "node:crypto"
 import { fileUrlFromString } from "./fileUtils"
+import { ConnectionError } from "@tutao/rest-client/error"
+import { DataFile } from "../../../../entities/tutanota/Utils"
 
 const TAG = "[DesktopFileFacade]"
 
@@ -109,6 +110,12 @@ export class DesktopFileFacade implements FileFacade {
 			log.info(TAG, "Download finished", result.statusCode, result.suspensionTime)
 
 			return result
+		} catch (e) {
+			if (e instanceof CancelledError) {
+				throw e
+			} else {
+				throw new ConnectionError(`Download failed ${e.name} ${e.message} ${e.stack}`)
+			}
 		} finally {
 			this.activeRequests.delete(fileId)
 		}
@@ -329,6 +336,12 @@ export class DesktopFileFacade implements FileFacade {
 				suspensionTime: getHttpHeader(response.headers, "suspension-time") ?? getHttpHeader(response.headers, "retry-after"),
 				responseBody,
 			}
+		} catch (e) {
+			if (e instanceof CancelledError) {
+				throw e
+			} else {
+				throw new ConnectionError(`Upload failed ${e.name} ${e.message} ${e.stack}`)
+			}
 		} finally {
 			this.tfs.closeFileStream(fileStream)
 			this.activeRequests.delete(fileId)
@@ -423,6 +436,14 @@ export class DesktopFileFacade implements FileFacade {
 		}
 		const buffer = await readStreamToBuffer(stream, maxChunkSize)
 		return this.tfs.createInMemoryFile(buffer)
+	}
+
+	async fileUrlToDisplayPath(fileUrl: string): Promise<string | null> {
+		try {
+			return nodeFileURLToPath(fileUrl)
+		} catch (e) {
+			return null
+		}
 	}
 
 	/**

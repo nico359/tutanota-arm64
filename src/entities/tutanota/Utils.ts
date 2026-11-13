@@ -2,7 +2,6 @@ import { PresentableKeyVerificationState, ProgrammingError, TimeFormat } from ".
 import { isSameTypeRef } from "../../platform-kit/meta"
 import { downcast } from "../../platform-kit/utils"
 import { Contact, File, FileTypeRef, UserSettingsGroupRoot } from "./TypeRefs"
-import { DataFile } from "./MailBundle"
 
 export const MAX_NBR_OF_MAILS_SYNC_OPERATION = 50
 export const MAX_NBR_OF_CONVERSATIONS = 50
@@ -133,13 +132,28 @@ export const enum MailState {
 	SENDING = "3",
 }
 
-export const enum InboxRuleType {
+export const enum InboxRuleConditionType {
+	// Email Conditions - value will be an email or domain as a string
 	FROM_EQUALS = "0",
 	RECIPIENT_TO_EQUALS = "1",
 	RECIPIENT_CC_EQUALS = "2",
 	RECIPIENT_BCC_EQUALS = "3",
+	RECIPIENT_ANY_EQUALS = "6",
+	// Text Conditions - value will be a string
 	SUBJECT_CONTAINS = "4",
 	MAIL_HEADER_CONTAINS = "5",
+	// Boolean Conditions - existence is the positive, value will be empty and ignored
+	HAS_ATTACHMENT = "7",
+	HAS_NO_ATTACHMENT = "8",
+}
+
+export const enum InboxRuleActionType {
+	// Results that apply Mail Set - value will be a Mail Set
+	MOVE = "0",
+	LABEL = "1",
+	// Boolean Results - no value needed, existence is the positive
+	READ = "2",
+	EXCLUDE_SPAM = "3",
 }
 
 export enum SpamRuleType {
@@ -153,6 +167,7 @@ export const enum SpamRuleFieldType {
 	TO = "1",
 	CC = "2",
 	BCC = "3",
+	TO_ANY = "4",
 }
 
 export const enum ReportMovedMailsType {
@@ -321,7 +336,7 @@ export const enum FileImportStatus {
 	Finished = 3,
 }
 
-export const enum ImapFolderSyncStatus {
+export const enum MailboxMigrationFolderSyncStatus {
 	RUNNING = "0",
 	PAUSED = "1",
 	FINISHED = "2",
@@ -329,7 +344,7 @@ export const enum ImapFolderSyncStatus {
 	CANCELED = "4",
 }
 
-export enum ImapAccountSyncStatus {
+export enum MailboxMigrationSyncStatus {
 	RUNNING = "0",
 	PAUSED = "1",
 	POSTPONED = "2",
@@ -338,6 +353,7 @@ export enum ImapAccountSyncStatus {
 	AUTH_ERROR = "5",
 	CANCELED = "6",
 	GMAIL_ALL_MAILS_IMAP_DISABLED_ERROR = "7",
+	ALL_FOLDERS_PERMANENTLY_DELETED = "8",
 }
 
 export enum SpamDecision {
@@ -392,6 +408,19 @@ export interface FileReference {
 	mimeType: string
 	location: string
 	size: number
+	cid?: string
+}
+
+/**
+ * a structure containing file content and metadata
+ */
+export interface DataFile {
+	readonly _type: "DataFile"
+	name: string
+	mimeType: string
+	data: Uint8Array<ArrayBuffer>
+	size: number
+	id?: IdTuple
 	cid?: string
 }
 
@@ -450,7 +479,7 @@ export function isDataFile(file: Attachment): file is DataFile {
 	return file._type === "DataFile"
 }
 
-export function assertOnlyDataFiles(files: Array<Attachment>): asserts files is Array<DataFile> {
+export function assertOnlyDataFiles(files: readonly Attachment[]): asserts files is readonly DataFile[] {
 	if (files.some((f) => !isDataFile(f))) throw new TypeError("not only DataFiles")
 }
 
@@ -458,7 +487,7 @@ export function isFileReference(file: Attachment | WebFile): file is FileReferen
 	return file._type === "FileReference"
 }
 
-export function assertOnlyFileReferences(files: Array<Attachment>): asserts files is Array<FileReference> {
+export function assertOnlyFileReferences(files: readonly Attachment[]): asserts files is readonly FileReference[] {
 	if (files.some((f) => !isFileReference(f))) throw new TypeError("not only FileReference")
 }
 
@@ -477,14 +506,12 @@ export function getHourCycle(userSettings: UserSettingsGroupRoot): "h12" | "h23"
 	return userSettings.timeFormat === TimeFormat.TWELVE_HOURS ? "h12" : "h23"
 }
 
-export enum ImapSyncEventType {
+export enum MigrationSyncEventType {
 	CREATE,
 	UPDATE,
 	DELETE,
 }
 
-export const IMAP_ERROR_POSTPONE_TIME: number = 60 * 1000 // 60 seconds
-export const IMAP_AUTH_ERROR_POSTPONE_TIME: number = 15 * 60 * 1000 // 15 minutes
 export enum MailImportType {
 	FileImport = "FileImport",
 	ImapImport = "ImapImport",

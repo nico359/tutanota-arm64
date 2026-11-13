@@ -34,6 +34,7 @@ export const enum DialogType {
 	Progress = "Progress",
 	Alert = "Alert",
 	Reminder = "Reminder",
+	InboxRule = "InboxRule",
 	EditSmall = "EditSmall",
 	EditMedium = "EditMedium",
 	EditLarger = "EditLarger",
@@ -86,10 +87,10 @@ export interface ChoiceCancellableResult<T> {
 
 export class Dialog implements ModalComponent {
 	private static keyboardHeight: number = 0
-	private domDialog: HTMLElement | null = null
-	private _shortcuts: Shortcut[]
 	view: ModalComponent["view"]
 	visible: boolean
+	private domDialog: HTMLElement | null = null
+	private _shortcuts: Shortcut[]
 	private focusOnLoadFunction: (dom: HTMLElement) => void
 	private wasFocusOnLoadCalled: boolean
 	private closeHandler: Thunk | null = null
@@ -273,6 +274,8 @@ export class Dialog implements ModalComponent {
 			dialogStyle += ".dialog-width-alert.pt-16.border-radius-bottom-8"
 		} else if (dialogType === DialogType.Reminder) {
 			dialogStyle += ".dialog-width-m.pt-16.flex.flex-column.border-radius-bottom-8"
+		} else if (dialogType === DialogType.InboxRule) {
+			dialogStyle = ".dialog.flex-grow.border-radius-top-8.dialog-width-l.flex.flex-column.border-radius-bottom-8.nav-bg"
 		} else if (dialogType === DialogType.EditSmall) {
 			dialogStyle += ".dialog-width-s.flex.flex-column.border-radius-bottom-8"
 		} else if (dialogType === DialogType.EditMedium) {
@@ -280,7 +283,7 @@ export class Dialog implements ModalComponent {
 		} else if (dialogType === DialogType.EditLarge || dialogType === DialogType.EditLarger) {
 			dialogStyle += ".dialog-width-l.border-radius-bottom-8"
 		} else if (dialogType === DialogType.SetupWizard) {
-			dialogStyle = ".dialog.flex-grow.border-radius-top-8.dialog-width-l.border-radius-bottom-8.nav-bg"
+			dialogStyle = ".dialog.flex-grow.border-radius-top-8.dialog-width-xl.border-radius-bottom-8.nav-bg"
 		}
 
 		return dialogStyle
@@ -879,7 +882,7 @@ export class Dialog implements ModalComponent {
 		})
 	}
 
-	static async showImapInitializationSuccessfulDialog(): Promise<void> {
+	static async showMigrationInitializationSuccessfulDialog(): Promise<void> {
 		const { ImageWithOptionsDialog } = await import("../dialogs/ImageWithOptionsDialog")
 		return newPromise((resolve) => {
 			let dialog: Dialog
@@ -968,7 +971,19 @@ export class Dialog implements ModalComponent {
 
 			if (validationResult instanceof Promise) {
 				// breaking hard circular dependency
-				import("../dialogs/ProgressDialog").then((module) => module.showProgressDialog("pleaseWait_msg", finalizer))
+				import("../dialogs/ProgressDialog").then((module) =>
+					module.showProgressDialog("pleaseWait_msg", finalizer, { delayDisplayMillis: 200, minDialogVisibilityMillis: 0 }),
+				)
+			}
+		}
+
+		// only respect first call in 500ms
+		let preventAction = false
+		const throttledDoAction = () => {
+			if (!preventAction) {
+				preventAction = true
+				doAction()
+				setTimeout(() => (preventAction = false), 500)
 			}
 		}
 
@@ -988,7 +1003,7 @@ export class Dialog implements ModalComponent {
 				? [
 						{
 							label: okActionTextId,
-							click: doAction,
+							click: throttledDoAction,
 							type: ButtonType.Primary,
 						},
 					]
@@ -1013,7 +1028,7 @@ export class Dialog implements ModalComponent {
 			dialog.addShortcut({
 				key: Keys.RETURN,
 				shift: false,
-				exec: doAction,
+				exec: throttledDoAction,
 				help: "ok_action",
 			})
 		}
@@ -1180,6 +1195,7 @@ export class Dialog implements ModalComponent {
 		child: Class<Component<T>>,
 		childAttrs: T,
 		dialogStyle?: Partial<CSSStyleDeclaration> | object,
+		dialogBodyStyle?: Partial<CSSStyleDeclaration> | object,
 	): Dialog {
 		return new Dialog(DialogType.EditMedium, {
 			view: () =>
@@ -1187,7 +1203,21 @@ export class Dialog implements ModalComponent {
 					/** fixed-height header with a title, left and right buttons that's fixed to the top of the dialog's area */
 					headerBarAttrs.noHeader ? null : m(DialogHeaderBar, headerBarAttrs),
 					/** variable-size child container that may be scrollable. */
-					m(".scroll.hide-outline.plr-24.flex-grow", { style: { "overflow-x": "hidden" } }, m(child, childAttrs)),
+					m(
+						".scroll.hide-outline.plr-24.flex-grow",
+						{
+							style: { "overflow-x": "hidden", ...dialogBodyStyle },
+						},
+						m(child, {
+							...childAttrs,
+							onscroll: (event: Event) => {
+								// Workaround for bug in iOS scrolling Without this, clicking
+								// and dragging text field in iOS will cause modal contents to
+								// move left and out of view.
+								;(event.target! as HTMLElement).scrollTo({ left: 0 })
+							},
+						}),
+					),
 				]),
 		})
 	}

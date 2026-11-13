@@ -4,13 +4,14 @@ import { BlobFacade } from "../../../common/api/worker/facades/lazy/BlobFacade"
 import { CancelledError, ProgrammingError } from "@tutao/app-env"
 import { handleUncaughtError } from "../../../common/misc/ErrorHandler"
 import { FileController } from "../../../common/file/FileController"
-import { FileReference, WebFile } from "../../../../entities/tutanota/Utils"
+import { DataFile, FileReference, WebFile } from "../../../../entities/tutanota/Utils"
 import { isOfflineError } from "@tutao/rest-client/error"
 import { DriveFile } from "@tutao/entities/drive"
 import { TransferId } from "../../../../entities/drive/Utils"
 import { ArchiveDataType } from "../../../../entities/sys/Utils"
 import { FileTooLargeError } from "../../../common/api/common/error/FileTooLargeError"
 import { UserError } from "../../../common/api/main/UserError"
+import { NameTooLongError } from "../../../common/api/common/error/NameTooLongError"
 
 export type DriveTransferType = "upload" | "download"
 
@@ -39,7 +40,7 @@ type QueuedTransfer =
 	| {
 			id: TransferId
 			state: "waiting" | "active" | "finished" | "failed"
-			file: WebFile | FileReference
+			file: WebFile | FileReference | DataFile
 			type: "upload"
 			transferredBytes: number
 			startTime: Date | null
@@ -65,6 +66,7 @@ export class DriveTransferController {
 	private queue: QueuedTransfer[] = []
 	private finishedTransfers: QueuedTransfer[] = []
 	private allTransfersDoneListener: (() => unknown) | null = null
+	private completionListeners: Map<WebFile | FileReference | DataFile, () => unknown> = new Map()
 
 	get state(): DriveTransfers {
 		const currentTransfers = this.queue.map(queuedTransferToState)
@@ -108,7 +110,15 @@ export class DriveTransferController {
 		this.allTransfersDoneListener = listener
 	}
 
-	async upload(file: WebFile | FileReference, filename: string, targetFolderId: IdTuple) {
+	setCompletionListenerFor(file: WebFile | FileReference | DataFile, listener: () => unknown) {
+		if (this.completionListeners.has(file)) {
+			throw new ProgrammingError("completion listener for this file already exists")
+		} else {
+			this.completionListeners.set(file, listener)
+		}
+	}
+
+	async upload(file: WebFile | FileReference | DataFile, filename: string, targetFolderId: IdTuple): Promise<void> {
 		const transferId = await this.blobFacade.generateTransferId()
 		this.queue.push({
 			id: transferId,
@@ -165,6 +175,8 @@ export class DriveTransferController {
 					this.transferFailed(id)
 					if (e instanceof FileTooLargeError) {
 						handleUncaughtError(new UserError("nativeFileUploadTooLarge_msg"))
+					} else if (e instanceof NameTooLongError) {
+						handleUncaughtError(new UserError("nameTooLong_msg"))
 					} else if (!isOfflineError(e)) {
 						handleUncaughtError(e)
 					}
@@ -257,6 +269,7 @@ export class DriveTransferController {
 		const activeTransfers = this.queue.filter((transfer) => transfer.state === "active" || transfer.state === "waiting")
 		this.queue.splice(0, this.queue.length, ...activeTransfers)
 		this.finishedTransfers.splice(0)
+		this.completionListeners.clear()
 	}
 
 	private finishUpload(fileId: FileId) {
@@ -315,9 +328,14 @@ export class DriveTransferController {
 	}
 
 	private finalizeTransfer(transferId: TransferId, newState: "finished" | "failed") {
-		const stateForThisFile = this.transferForId(transferId)
-		if (stateForThisFile) {
-			stateForThisFile.state = newState
+		const transfer = this.transferForId(transferId)
+		if (transfer) {
+			transfer.state = newState
+
+			if (transfer.state === "finished" && transfer.type === "upload" && this.completionListeners.has(transfer.file)) {
+				this.completionListeners.get(transfer.file)?.()
+				this.completionListeners.delete(transfer.file) // do not remove on failed, it might be retried later
+			}
 			// once all transfers are done move them to the finished, which are not used for progress
 			const allTransfersDone = this.checkAllTransfersDone()
 			if (allTransfersDone) {
@@ -340,7 +358,7 @@ export class DriveTransferController {
 function transferSize(transfer: QueuedTransfer): number {
 	if (transfer.file._type === "WebFile") {
 		return transfer.file.file.size
-	} else if (transfer.file._type === "FileReference") {
+	} else if (transfer.file._type === "FileReference" || transfer.file._type === "DataFile") {
 		return transfer.file.size
 	} else {
 		let file: DriveFile = transfer.file // assert that this is a DriveFile

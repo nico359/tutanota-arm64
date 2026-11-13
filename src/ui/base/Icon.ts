@@ -14,6 +14,7 @@ EnvProvider.assertMainOrNode()
 export type AllIcons = Icons
 
 export enum IconSize {
+	PX12,
 	PX20,
 	PX24,
 	PX32,
@@ -59,7 +60,7 @@ export class Icon implements Component<IconAttrs> {
 				title: vnode.attrs.title ?? null,
 				"aria-hidden": "true",
 				class: this.getClass(vnode.attrs),
-				icon: Icons.EyeFilled,
+				icon: vnode.attrs.icon,
 				style: this.getStyle(vnode.attrs.style ?? null),
 				// mithril lets us mute the normal redraw that occurs after
 				// event callbacks, but TS doesn't know
@@ -70,6 +71,7 @@ export class Icon implements Component<IconAttrs> {
 						e.redraw = false
 					}
 				},
+				"data-testid": `icon:${vnode.attrs.icon}`,
 			},
 			icon ? m.trust(icon) : null,
 			vnode.attrs.hoverText &&
@@ -125,6 +127,9 @@ export class Icon implements Component<IconAttrs> {
 	getClass(attrs: IconAttrs): string {
 		let cls = ""
 		switch (attrs.size) {
+			case IconSize.PX12:
+				cls += "icon-small "
+				break
 			case IconSize.PX24:
 				cls += "icon-24 "
 				break

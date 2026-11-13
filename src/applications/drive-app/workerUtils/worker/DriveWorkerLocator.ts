@@ -56,6 +56,7 @@ import { initClientModels } from "../../../common/api/common/ClientModelInfoInit
 import { MailAddressFacade } from "../../../common/api/worker/facades/lazy/MailAddressFacade"
 import { OfflineMapper } from "../../../../platform-kit/instance-pipeline/OfflineMapper"
 import { CachingOfflineStorage } from "../../../../app-kit/local-store/CachingOfflineStorage"
+import { random } from "@tutao/crypto"
 
 EnvProvider.assertWorkerOrNode()
 
@@ -100,7 +101,6 @@ export async function initLocator(worker: DriveWorkerImpl, browserData: BrowserD
 	locator._worker = worker
 	locator._browserData = browserData
 	locator._apps = apps
-	locator.workerFacade = new WorkerFacade()
 	locator.native = worker
 
 	const mainInterface = worker.getMainInterface()
@@ -185,7 +185,7 @@ export async function initLocator(worker: DriveWorkerImpl, browserData: BrowserD
 		cacheManagement: locator.cacheManagement,
 		identityKeyTrustDatabase: locator.identityKeyTrustDatabase,
 		domainConfig: new DomainConfigProvider().getCurrentDomainConfig(),
-		rsa: await createRsaImplementation(worker),
+		rsa: await createRsaImplementation(worker, random),
 		fileFacade: new FileFacadeSendDispatcher(worker),
 		nativeCryptoFacade: new NativeCryptoFacadeSendDispatcher(worker),
 		argon2idFacade: null,
@@ -199,6 +199,8 @@ export async function initLocator(worker: DriveWorkerImpl, browserData: BrowserD
 			instancePipeline,
 			restClient,
 			crypto,
+			symmetricCipherUtils,
+			keyEncryption,
 		}) =>
 			new TutanotaEntityMigrator(
 				cryptoWrapper,
@@ -210,10 +212,13 @@ export async function initLocator(worker: DriveWorkerImpl, browserData: BrowserD
 				instancePipeline,
 				restClient,
 				crypto,
+				symmetricCipherUtils,
+				keyEncryption,
 			),
 		entityRestCache: (entityRestClient, patchMerger, typeModelResolver, lastProcessed) =>
 			new DefaultEntityRestCache(entityRestClient, maybeUninitializedStorage, typeModelResolver, patchMerger, lastProcessed),
 	})
+	locator.workerFacade = new WorkerFacade(locator.base.symmetricCipherUtils)
 
 	// App-specific setup — all platform-kit deps accessed via locator.base.*
 
@@ -236,6 +241,11 @@ export async function initLocator(worker: DriveWorkerImpl, browserData: BrowserD
 			await locator.base.recoverCode(),
 			locator.base.adminKeyLoader,
 			await locator.base.identityKeyCreator(),
+			locator.base.random,
+			locator.base.symmetricCipherUtils,
+			locator.base.keyEncryption,
+			locator.base.cryptoWrapper,
+			locator.base.bcrypt,
 		)
 	})
 
@@ -262,7 +272,7 @@ export async function initLocator(worker: DriveWorkerImpl, browserData: BrowserD
 		)
 	})
 
-	const aesApp = new AesApp(new NativeCryptoFacadeSendDispatcher(worker))
+	const aesApp = new AesApp(new NativeCryptoFacadeSendDispatcher(worker), locator.base.symmetricCipherUtils)
 	locator.blob = lazyMemoized(async () => {
 		const { BlobFacade } = await import("../../../common/api/worker/facades/lazy/BlobFacade.js")
 		return new BlobFacade(
@@ -276,6 +286,7 @@ export async function initLocator(worker: DriveWorkerImpl, browserData: BrowserD
 			mainInterface.uploadProgressListener,
 			locator.base.typeModelResolver,
 			locator.base.serviceExecutor,
+			locator.base.aes,
 		)
 	})
 
@@ -292,8 +303,15 @@ export async function initLocator(worker: DriveWorkerImpl, browserData: BrowserD
 	const scheduler = new SchedulerImpl(dateProvider, self, self)
 
 	locator.configFacade = lazyMemoized(async () => {
-		const { ConfigurationDatabase } = await import("../../../common/api/worker/facades/lazy/ConfigurationDatabase.js")
-		return new ConfigurationDatabase(locator.base.keyLoader, locator.base.user)
+		const { IndexedDbConfigurationDatabase } = await import("../../../common/api/worker/facades/lazy/IndexedDbConfigurationDatabase.js")
+		return new IndexedDbConfigurationDatabase(
+			locator.base.symmetricCipherUtils,
+			locator.base.aes,
+			locator.base.keyEncryption,
+			locator.base.cryptoWrapper,
+			locator.base.keyLoader,
+			locator.base.user,
+		)
 	})
 
 	const eventBusCoordinator = new EventBusEventCoordinator(
@@ -345,7 +363,15 @@ export async function initLocator(worker: DriveWorkerImpl, browserData: BrowserD
 
 	locator.giftCards = lazyMemoized(async () => {
 		const { GiftCardFacade } = await import("../../../common/api/worker/facades/lazy/GiftCardFacade.js")
-		return new GiftCardFacade(locator.base.user, await locator.customer(), locator.base.serviceExecutor, locator.base.crypto, locator.base.keyLoader)
+		return new GiftCardFacade(
+			locator.base.user,
+			await locator.customer(),
+			locator.base.serviceExecutor,
+			locator.base.crypto,
+			locator.base.keyLoader,
+			locator.base.cryptoWrapper,
+			locator.base.symmetricCipherUtils,
+		)
 	})
 
 	locator.driveFacade = lazyMemoized(async () => {
@@ -359,6 +385,7 @@ export async function initLocator(worker: DriveWorkerImpl, browserData: BrowserD
 			locator.base.crypto,
 			locator.base.cryptoWrapper,
 			locator.cacheStorage,
+			locator.base.symmetricCipherUtils,
 		)
 	})
 }

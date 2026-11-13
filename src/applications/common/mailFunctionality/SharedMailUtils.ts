@@ -12,9 +12,8 @@ import { Dialog } from "../../../ui/base/Dialog.js"
 import { ImageHandler } from "../../../ui/editor/Editor"
 import { CustomerPropertiesTypeRef, GroupInfo, User } from "@tutao/entities/sys"
 import { Contact, createContact, createContactMailAddress, Mail } from "@tutao/entities/tutanota"
-import { Attachment, ContactAddressType, ConversationType, MailState, MAX_ATTACHMENT_SIZE } from "../../../entities/tutanota/Utils"
+import { Attachment, ContactAddressType, ConversationType, DataFile, MailState, MAX_ATTACHMENT_SIZE } from "../../../entities/tutanota/Utils"
 import { GroupType, SYSTEM_GROUP_MAIL_ADDRESS } from "../../../entities/sys/Utils"
-import { DataFile } from "../../../entities/tutanota/MailBundle"
 import { idToElementId } from "@tutao/meta"
 
 EnvProvider.assertMainOrNode()
@@ -335,4 +334,8 @@ export type MailBundle = {
 	receivedOn: number // UNIX timestamp,
 	headers: string | null
 	attachments: DataFile[]
+}
+
+export function isSharedMailbox(mailboxDetails: MailboxDetail): boolean {
+	return !mailboxDetails.mailGroup.user
 }

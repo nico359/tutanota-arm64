@@ -25,11 +25,11 @@ import { theme } from "../../../../ui/theme"
 import { DriveTransferStack, DriveTransferStackAttrs } from "../../drive/view/DriveTransferStack"
 import { Dialog } from "../../../../ui/base/Dialog"
 import { FolderItem, FolderItemId, OperationUpdate, SortColumn } from "../../drive/view/DriveUtils"
-import { MoveItems } from "../../drive/view/DriveMoveItemDialog"
+import { PickedDestinationAction } from "../../drive/view/DriveItemPicker"
 import { ListLoadingState, ListState, MultiselectMode } from "../../../../ui/base/List"
 import { IconButton } from "../../../../ui/base/IconButton"
 import { EnterMultiselectIconButton } from "../../../../ui/EnterMultiselectIconButton"
-import { DriveViewAttrs } from "../../drive/view/DriveView"
+import { DriveViewAttrs, MailFileSender } from "../../drive/view/DriveView"
 import { DriveSelectedItemsActions } from "../../drive/view/DriveFolderNav"
 import { DriveFolderContent } from "../../drive/view/DriveFolderContent"
 import { DriveFolder } from "@tutao/entities/drive"
@@ -48,7 +48,6 @@ import {
 	isMobileDriveLayout,
 	newItemActions,
 	operationUpdateSnackbar,
-	showDuplicateFilesChoiceDialog,
 	showRenameDialog,
 } from "../../drive/view/DriveGuiUtils"
 import { AppPromo } from "../../../common/gui/AppPromo"
@@ -60,14 +59,16 @@ import { KeyManager, Shortcut } from "../../../../ui/utils/KeyManager"
 import { listSelectionKeyboardShortcuts, onlySingleSelection } from "../../../../ui/base/ListUtils"
 import { DriveFilePicker } from "../../drive/view/DriveFilePicker"
 import { FileType } from "../../drive/model/DriveMimeUtils"
+import { showDriveDuplicateFileDialog } from "../../drive/view/DriveDuplicateFileDialog"
 
 export interface DriveSearchViewAttrs extends TopLevelAttrs {
 	header: AppHeaderAttrs
 	makeViewModel: () => DriveSearchViewModel
 	drawerAttrs: DrawerMenuAttrs
-	showMoveItemDialog: (items: FolderItem[], moveItems: MoveItems) => unknown
+	showMoveItemDialog: (items: FolderItem[], moveItems: PickedDestinationAction) => unknown
 	filePicker: DriveFilePicker
 	bottomNav?: () => Children
+	sendFileViaMail: MailFileSender | null
 }
 
 /**
@@ -136,7 +137,7 @@ export class DriveSearchView extends BaseTopLevelView implements TopLevelView<Dr
 						backgroundColor: theme.surface_container,
 						desktopToolbar: () => [],
 						columnLayout: [
-							this.renderFolderView(listState, vnode.attrs.showMoveItemDialog),
+							this.renderFolderView(listState, vnode.attrs.showMoveItemDialog, vnode.attrs.sendFileViaMail),
 							m(DriveTransferStack, {
 								driveTransfers: this.searchViewModel.transfers(),
 								cancelTransfer: (transferId) => this.searchViewModel.cancelTransfer(transferId),
@@ -160,13 +161,13 @@ export class DriveSearchView extends BaseTopLevelView implements TopLevelView<Dr
 	}
 	async onPickFilesForUpload(boundingRect: DOMRect): Promise<void> {
 		const files = await this.filePicker.pickFiles(boundingRect)
-		await this.searchViewModel.uploadFiles(files, showDuplicateFilesChoiceDialog)
+		await this.searchViewModel.uploadFiles(files, showDriveDuplicateFileDialog)
 	}
 
 	private async onPickFoldersForUpload(boundingRect: DOMRect): Promise<void> {
 		try {
 			const folders = await this.filePicker.pickFolders(boundingRect)
-			await this.searchViewModel.uploadFiles([], showDuplicateFilesChoiceDialog, folders)
+			await this.searchViewModel.uploadFiles([], showDriveDuplicateFileDialog, folders)
 		} catch (e) {
 			if (!(e instanceof CancelledError)) {
 				throw e
@@ -193,7 +194,12 @@ export class DriveSearchView extends BaseTopLevelView implements TopLevelView<Dr
 			onPaste: null,
 			onMove:
 				!anyItemInTrash && hasSelectedItems
-					? () => showMoveItemDialog(selectedItems, (items, destinationFolder) => this.searchViewModel.moveItems(items, destinationFolder._id))
+					? () =>
+							showMoveItemDialog(selectedItems, async (destinationFolder, items) => {
+								if (items) {
+									this.searchViewModel.moveItems(items, destinationFolder._id)
+								}
+							})
 					: null,
 			onDownload:
 				!anyItemInTrash && hasSelectedItems && this.searchViewModel.isDownloadPermitted(selectedItems)
@@ -517,7 +523,11 @@ export class DriveSearchView extends BaseTopLevelView implements TopLevelView<Dr
 		this.searchViewModel.selectEndDate(end)
 	}
 
-	private renderFolderView(listState: ListState<FolderItem>, showMoveItemDialog: (items: FolderItem[], moveItems: MoveItems) => unknown) {
+	private renderFolderView(
+		listState: ListState<FolderItem>,
+		showMoveItemDialog: (items: FolderItem[], moveItems: PickedDestinationAction) => unknown,
+		sendFileViaMail: MailFileSender | null,
+	) {
 		const selectionEvents = this.searchViewModel.selectionEvents
 		const fileActions: FileActions = {
 			onCut: (item) => this.searchViewModel.cut([item]),
@@ -539,9 +549,10 @@ export class DriveSearchView extends BaseTopLevelView implements TopLevelView<Dr
 			onRestore: (item) => this.searchViewModel.restoreFromTrash([item]),
 			onDelete: (item) => this.deleteItems(item),
 			onStartMove: (item) =>
-				showMoveItemDialog([item], (items: readonly FolderItemId[], destinationFolder: DriveFolder) =>
+				showMoveItemDialog([item], (destinationFolder: DriveFolder, items: readonly FolderItemId[]) =>
 					this.searchViewModel.moveItems(items, destinationFolder._id),
 				),
+			onSendAsEmail: sendFileViaMail ? (item) => sendFileViaMail(item.file) : null,
 		}
 		return m(
 			"div.col.flex.plr-8.fill-absolute..overflow-y-scroll",
@@ -579,7 +590,7 @@ export class DriveSearchView extends BaseTopLevelView implements TopLevelView<Dr
 		showRenameDialog(item, (newName) => this.searchViewModel.rename(item, newName))
 	}
 
-	private renderActionBar(showMoveItemDialog: (items: FolderItem[], moveItems: MoveItems) => unknown): Children {
+	private renderActionBar(showMoveItemDialog: (items: FolderItem[], moveItems: PickedDestinationAction) => unknown): Children {
 		const actions = this.selectedItemsActions(this.searchViewModel.listState(), showMoveItemDialog)
 		return m(DriveActionBar, actions)
 	}

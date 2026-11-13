@@ -1,5 +1,5 @@
 import { ExportFacade } from "@tutao/native-bridge/generatedIpc/types"
-import { MailboxExportState } from "../../../../entities/tutanota/Utils"
+import { DataFile, MailboxExportState } from "../../../../entities/tutanota/Utils"
 import { fileExists } from "../PathUtils.js"
 import path from "node:path"
 import { CancelledError, DesktopConfigKey, ProgrammingError } from "@tutao/app-env"
@@ -15,13 +15,12 @@ import { MailBundle, MailExportMode } from "../../mailFunctionality/SharedMailUt
 import { ElectronExports } from "../ElectronExportTypes.js"
 import { generateExportFileName, mailToEmlFile } from "../../../mail-app/mail/export/emlUtils.js"
 import { MailboxExportPersistence } from "./MailboxExportPersistence.js"
-import { DateProvider, formatSortableDate } from "@tutao/utils"
+import { DateProvider, formatSortableDate, lastThrow } from "@tutao/utils"
 import { FileOpenError } from "../../api/common/error/FileOpenError.js"
 import { ExportError, ExportErrorReason } from "../../api/common/error/ExportError"
 import { DesktopExportLock, LockResult } from "./DesktopExportLock"
 import { createDataFile } from "../../api/worker/utils/DataFile"
 import { elementIdPart } from "@tutao/meta"
-import { DataFile } from "../../../../entities/tutanota/MailBundle"
 
 const EXPORT_DIR = "export"
 
@@ -204,25 +203,27 @@ export class DesktopExportFacade implements ExportFacade {
 		})
 	}
 
-	async saveMailboxExportFailure(userId: string, mailBagId: string, mailId: IdTuple): Promise<void> {
+	async saveMailboxExportFailure(userId: string, mailBagId: string, mailId: IdTuple[]): Promise<void> {
 		const exportState = await this.mailboxExportPersistence.getStateForUser(userId)
 		if (exportState == null || exportState.type !== "running") {
 			throw new ProgrammingError("Export is not running")
 		}
 
-		if (exportState.failedMailIds === null || exportState.failedMailIds === undefined) {
+		const lastMailId = lastThrow(mailId)
+		if (exportState.failedMailIds == null) {
 			exportState.failedMailIds = []
 		}
+
 		await this.mailboxExportPersistence.setStateForUser({
 			type: "running",
 			userId,
 			mailBagId,
-			mailId: elementIdPart(mailId),
+			mailId: elementIdPart(lastMailId),
 			exportDirectoryPath: exportState.exportDirectoryPath,
 			mailboxId: exportState.mailboxId,
 			exportedMails: exportState.exportedMails,
-			failedCount: exportState.failedCount + 1,
-			failedMailIds: [...exportState.failedMailIds, mailId],
+			failedCount: exportState.failedCount + mailId.length,
+			failedMailIds: exportState.failedMailIds.concat(mailId),
 		})
 	}
 

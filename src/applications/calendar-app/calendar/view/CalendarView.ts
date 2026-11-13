@@ -57,7 +57,7 @@ import { getSharedGroupName, loadGroupMembers } from "../../../common/sharing/Gr
 import { GroupInvitationFolderRow } from "../../../common/sharing/view/GroupInvitationFolderRow"
 import { SidebarSection } from "../../../../ui/SidebarSection"
 import { HtmlSanitizer } from "../../../common/misc/HtmlSanitizer"
-import { calendarNavConfiguration, daysHaveEvents, shouldDefaultToAmPmTimeFormat, showDeletePopup } from "../gui/CalendarGuiUtils.js"
+import { calendarNavConfiguration, daysHaveEvents, EventDetailsActions, shouldDefaultToAmPmTimeFormat, showDeletePopup } from "../gui/CalendarGuiUtils.js"
 import { CalendarEventBubbleKeyDownHandler, CalendarPreviewModels, CalendarViewModel, MouseOrPointerEvent, ScrollByListener } from "./CalendarViewModel"
 import { CalendarEventPopup } from "../gui/eventpopup/CalendarEventPopup.js"
 import { showProgressDialog } from "../../../../ui/dialogs/ProgressDialog"
@@ -123,7 +123,6 @@ import { CalendarImporter } from "../../../common/calendar/import/CalendarImport
 import { ImportInteractionHandler } from "../../../common/calendar/gui/ImportInteractionHandler"
 import { EventSeriesResolver } from "../../../common/calendar/import/EventSeriesResolver"
 import { reverse } from "../../../common/misc/EnumUtils"
-import { isFreeSignupOnly } from "../../../common/misc/LoginUtils"
 import { CalendarQuickSearchBar } from "./CalendarQuickSearchBar"
 
 export type GroupColors = Map<Id, string>
@@ -192,40 +191,37 @@ export class CalendarView extends BaseTopLevelView implements TopLevelView<Calen
 								SidebarSection,
 								{
 									name: "yourCalendars_label",
-									button:
-										isFreeSignupOnly() && locator.logins.getUserController().isFreeAccount()
-											? null
-											: m(IconButton, {
-													label: "addCalendar_action",
-													colors: ButtonColor.Nav,
-													click:
-														(EnvProvider.get().isApp() || EnvProvider.get().isDesktop()) &&
-														findFirstPrivateCalendar(attrs.calendarViewModel.calendarInfos)
-															? createDropdown({
-																	lazyButtons: () => [
-																		{
-																			label: "addCalendar_action",
-																			colors: ButtonColor.Nav,
-																			click: () => this.onPressedAddCalendar(CalendarType.Private),
-																			icon: Icons.Plus,
-																			size: ButtonSize.Compact,
-																		},
-																		{
-																			label: "addCalendarFromURL_action",
-																			icon: Icons.Chainlink,
-																			size: ButtonSize.Compact,
-																			click: () => this.onPressedAddCalendar(CalendarType.External),
-																		},
-																	],
-																})
-															: () => this.onPressedAddCalendar(CalendarType.Private),
-													icon: Icons.Plus,
-													size: ButtonSize.Compact,
-												}),
+									button: m(IconButton, {
+										label: "addCalendar_action",
+										colors: ButtonColor.Nav,
+										click:
+											(EnvProvider.get().isApp() || EnvProvider.get().isDesktop()) &&
+											findFirstPrivateCalendar(attrs.calendarViewModel.calendarInfos)
+												? createDropdown({
+														lazyButtons: () => [
+															{
+																label: "addCalendar_action",
+																colors: ButtonColor.Nav,
+																click: () => this.onPressedAddCalendar(CalendarType.Private),
+																icon: Icons.Plus,
+																size: ButtonSize.Compact,
+															},
+															{
+																label: "addCalendarFromURL_action",
+																icon: Icons.Chainlink,
+																size: ButtonSize.Compact,
+																click: () => this.onPressedAddCalendar(CalendarType.External),
+															},
+														],
+													})
+												: () => this.onPressedAddCalendar(CalendarType.Private),
+										icon: Icons.Plus,
+										size: ButtonSize.Compact,
+									}),
 									hideIfEmpty: true,
 								},
 								this.renderCalendars(CalendarType.Private),
-								(!isFreeSignupOnly() || !locator.logins.getUserController().isFreeAccount()) && this.renderBirthdayCalendar(),
+								this.renderBirthdayCalendar(),
 							),
 							m(
 								SidebarSection,
@@ -637,47 +633,21 @@ export class CalendarView extends BaseTopLevelView implements TopLevelView<Calen
 		)
 	}
 
-	private renderEventDetailsActions(): Array<Children> {
+	private renderEventDetailsActions(): Children {
 		const previewModel = this.viewModel.eventPreviewModel
-		const actions: Array<Children> = []
 
 		if (previewModel instanceof CalendarEventPreviewViewModel) {
-			if (previewModel.canSendUpdates) {
-				actions.push(
-					m(IconButton, {
-						icon: Icons.MailFilled,
-						label: "sendUpdates_label",
-						click: () => handleSendUpdatesClick(previewModel),
-					}),
-				)
-			}
-			if (previewModel.canEdit) {
-				actions.push(
-					m(IconButton, {
-						icon: Icons.PenFilled,
-						label: "edit_action",
-						click: (ev: MouseEvent, receiver: HTMLElement) => {
-							handleEventEditButtonClick(previewModel, ev, receiver, () => {
-								this.exitEventDetails()
-							})
-						},
-					}),
-				)
-			}
-			if (previewModel.canDelete) {
-				actions.push(
-					m(IconButton, {
-						icon: Icons.TrashFilled,
-						label: "delete_action",
-						click: async (ev: MouseEvent, receiver: HTMLElement) => {
-							await handleEventDeleteButtonClick(previewModel, ev, receiver, () => this.exitEventDetails())
-						},
-					}),
-				)
-			}
+			return m(EventDetailsActions, {
+				eventPreviewModel: previewModel,
+				events: {
+					onSendUpdates: () => handleSendUpdatesClick(previewModel),
+					onEdit: (ev, receiver) => handleEventEditButtonClick(previewModel, ev, receiver),
+					onTrash: (ev, receiver) => handleEventDeleteButtonClick(previewModel, ev, receiver),
+				},
+			})
+		} else {
+			return []
 		}
-
-		return actions
 	}
 
 	private renderFab(): Children {
@@ -1424,7 +1394,7 @@ export class CalendarView extends BaseTopLevelView implements TopLevelView<Calen
 			},
 		]
 
-		if (this.canShare(isExternal) && (!isFreeSignupOnly() || !locator.logins.getUserController().isFreeAccount())) {
+		if (this.canShare(isExternal)) {
 			actions.push({
 				label: "sharing_label",
 				icon: Icons.PersonAddFilled,
